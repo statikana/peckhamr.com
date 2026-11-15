@@ -1,8 +1,9 @@
 <script lang="ts">
 	import type { ModalDef } from '../ir.ts';
 	import ManaText from '../ManaText.svelte';
-	import { effectiveCardForObject } from '../scryfall.ts';
+	import { activeFaceIndexForObject, effectiveCardForObject } from '../scryfall.ts';
 	import type { CardInstance } from '../types.ts';
+	import { extractModalModeCostView } from './boardViewModel.ts';
 
 	let {
 		inst,
@@ -11,6 +12,7 @@
 		disabledIndices = [],
 		initialSelectedModes,
 		allowAllModes = false,
+		faceIndex,
 		onConfirm,
 		onCancel
 	}: {
@@ -20,6 +22,7 @@
 		disabledIndices?: number[];
 		initialSelectedModes?: number[];
 		allowAllModes?: boolean;
+		faceIndex?: number;
 		onConfirm: (chosenModes: number[]) => void | Promise<void>;
 		onCancel: () => void;
 	} = $props();
@@ -38,6 +41,14 @@
 	});
 
 	const effCard = $derived(effectiveCardForObject(inst));
+	const effectiveFaceIndex = $derived(faceIndex ?? activeFaceIndexForObject(inst));
+	const modeCostView = $derived(
+		extractModalModeCostView(modal, {
+			card: effCard,
+			faceIndex: effectiveFaceIndex,
+			selectedModes
+		})
+	);
 	const disabledSet = $derived(new Set(disabledIndices));
 	const effectiveMax = $derived(
 		allowAllModes ? Math.max(modal.max, modeLabels.length) : modal.max
@@ -48,6 +59,20 @@
 	const isReady = $derived(
 		selectedModes.length >= effectiveMin && selectedModes.length <= effectiveMax
 	);
+
+	function getModeCostBadge(modeIdx: number): string | null {
+		const perMode = modeCostView.perModeBadges[modeIdx] ?? null;
+		if (perMode !== null) return perMode;
+		if (modeCostView.escalateStepCost !== null) {
+			const firstPos = selectedModes.indexOf(modeIdx);
+			if (firstPos === 0) return '+ {0}';
+			if (firstPos >= 1) return modeCostView.escalateStepCost;
+			if (selectedModes.length >= 1 && selectedModes.length < effectiveMax) {
+				return modeCostView.escalateStepCost;
+			}
+		}
+		return null;
+	}
 
 	function toggleModeSelection(modeIdx: number) {
 		if (disabledSet.has(modeIdx) || modal.allowRepeat) return;
@@ -120,10 +145,20 @@
 				{/if}
 			</p>
 
+			{#if modeCostView.escalateBadge}
+				<div class="mode-cost-banner" data-testid="mode-escalate-banner">
+					<span class="mode-cost-banner-label">Extra Mode Cost:</span>
+					<span class="mode-cost-pill">
+						<ManaText text={modeCostView.escalateBadge} size={13} />
+					</span>
+				</div>
+			{/if}
+
 			{#if !modal.allowRepeat && effectiveMin === 1 && effectiveMax === 1}
 				<div class="mode-picker-list">
 					{#each modeLabels as label, i (i)}
 						{@const isDisabled = disabledSet.has(i)}
+						{@const costBadge = getModeCostBadge(i)}
 						<button
 							type="button"
 							class="hud-btn mode-option-btn"
@@ -132,7 +167,14 @@
 							title={isDisabled ? 'Unavailable (no legal targets or already chosen this turn)' : label}
 							onclick={() => onConfirm([i])}
 						>
-							<ManaText text={`${i + 1}. ${label}`} size={14} />
+							<span class="mode-option-main">
+								<ManaText text={`${i + 1}. ${label}`} size={14} />
+							</span>
+							{#if costBadge}
+								<span class="mode-cost-pill" data-testid="mode-cost-badge-{i}">
+									<ManaText text={costBadge} size={13} />
+								</span>
+							{/if}
 						</button>
 					{/each}
 				</div>
@@ -146,11 +188,17 @@
 					{#each modeLabels as label, i (i)}
 						{@const isDisabled = disabledSet.has(i)}
 						{@const pickedCount = selectedModes.filter((x) => x === i).length}
+						{@const costBadge = getModeCostBadge(i)}
 						<div class="mode-repeat-row" class:disabled={isDisabled} data-testid="mode-repeat-row-{i}">
 							<span class="mode-repeat-label">
 								<ManaText text={`${i + 1}. ${label}`} size={14} />
 							</span>
 							<div class="mode-repeat-controls">
+								{#if costBadge}
+									<span class="mode-cost-pill" data-testid="mode-cost-badge-{i}">
+										<ManaText text={costBadge} size={13} />
+									</span>
+								{/if}
 								<button
 									type="button"
 									class="hud-btn mini-btn"
@@ -174,6 +222,14 @@
 						</div>
 					{/each}
 				</div>
+				{#if modeCostView.selectedTotalCostBadge}
+					<div class="mode-total-cost-bar" data-testid="selected-modes-total-cost">
+						<span>Additional Mode Cost:</span>
+						<span class="mode-cost-pill">
+							<ManaText text={modeCostView.selectedTotalCostBadge} size={13} />
+						</span>
+					</div>
+				{/if}
 				<div class="modal-actions">
 					<button
 						type="button"
@@ -194,6 +250,7 @@
 					{#each modeLabels as label, i (i)}
 						{@const isDisabled = disabledSet.has(i)}
 						{@const isSelected = selectedModes.includes(i)}
+						{@const costBadge = getModeCostBadge(i)}
 						<button
 							type="button"
 							class={isSelected ? 'arena-main-btn can-act mode-option-btn' : 'hud-btn mode-option-btn'}
@@ -202,10 +259,25 @@
 							title={isDisabled ? 'Unavailable (no legal targets or already chosen this turn)' : label}
 							onclick={() => toggleModeSelection(i)}
 						>
-							<ManaText text={`${i + 1}. ${label}`} size={14} />
+							<span class="mode-option-main">
+								<ManaText text={`${i + 1}. ${label}`} size={14} />
+							</span>
+							{#if costBadge}
+								<span class="mode-cost-pill" data-testid="mode-cost-badge-{i}">
+									<ManaText text={costBadge} size={13} />
+								</span>
+							{/if}
 						</button>
 					{/each}
 				</div>
+				{#if modeCostView.selectedTotalCostBadge}
+					<div class="mode-total-cost-bar" data-testid="selected-modes-total-cost">
+						<span>Additional Mode Cost:</span>
+						<span class="mode-cost-pill">
+							<ManaText text={modeCostView.selectedTotalCostBadge} size={13} />
+						</span>
+					</div>
+				{/if}
 				<div class="modal-actions">
 					<button
 						type="button"
@@ -275,9 +347,46 @@
 		margin: 0.3rem 0;
 	}
 	.mode-option-btn {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
 		text-align: left;
-		justify-content: flex-start;
 		width: 100%;
+	}
+	.mode-option-main {
+		flex: 1;
+		min-width: 0;
+	}
+	.mode-cost-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.2rem;
+		flex-shrink: 0;
+		padding: 0.12rem 0.42rem;
+		border-radius: 999px;
+		background: rgba(25, 24, 26, 0.88);
+		border: 1px solid rgba(255, 216, 102, 0.65);
+		color: #ffd866;
+		font-size: 0.72rem;
+		font-weight: 700;
+	}
+	.mode-cost-banner,
+	.mode-total-cost-bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+		padding: 0.32rem 0.55rem;
+		border-radius: 6px;
+		background: rgba(255, 216, 102, 0.08);
+		border: 1px solid rgba(255, 216, 102, 0.35);
+		font-size: 0.76rem;
+		font-weight: 600;
+		color: var(--mp-text);
+	}
+	.mode-cost-banner-label {
+		color: var(--mp-text-muted);
 	}
 	.mode-repeat-row {
 		display: flex;

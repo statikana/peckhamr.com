@@ -16,7 +16,11 @@
 		ScryfallCard,
 		TargetRef
 	} from '../types.ts';
-	import { DUNGEON_ART_URI, EMBLEM_ART_URI } from './boardViewModel.ts';
+	import {
+		DUNGEON_ART_URI,
+		EMBLEM_ART_URI,
+		resolveExileHauntingTargetName
+	} from './boardViewModel.ts';
 	import { FACE_DOWN_ART_URI, resolveCardInstanceDisplay } from './promptViewModel.ts';
 
 	let {
@@ -123,6 +127,8 @@
 		<div class="modal-card-grid">
 			{#each filteredZoneCards as c (c.instanceId)}
 				{@const disp = resolveCardInstanceDisplay(c, c.zone, viewer?.playerId ?? null)}
+				{@const hauntingTargetName =
+					c.zone === 'exile' ? resolveExileHauntingTargetName(gameState, c) : null}
 				{#if activeZoneTargeting}
 					{@const canTarget = isCardTargetable ? isCardTargetable(c) : true}
 					{@const isSelected = selectedTargets.some((t) => t.id === c.instanceId)}
@@ -143,6 +149,11 @@
 					>
 						<img src={disp.imageUrl} alt={disp.displayCard.name} />
 						<span>{disp.displayCard.name}</span>
+						{#if hauntingTargetName}
+							<span class="badge purple" data-testid="exile-haunting-badge">
+								👻 Haunting: {hauntingTargetName}
+							</span>
+						{/if}
 					</button>
 				{:else}
 					{@const isMyGraveyard = Boolean(
@@ -198,6 +209,16 @@
 
 						{#if c.isSuspended && c.counters.time > 0}
 							<span class="badge purple">⏳ {c.counters.time} Time (Suspended)</span>
+						{/if}
+
+						{#if hauntingTargetName}
+							<span
+								class="badge purple"
+								data-testid="exile-haunting-badge"
+								title="Haunting {hauntingTargetName} on the battlefield (CR 702.55)"
+							>
+								👻 Haunting: {hauntingTargetName}
+							</span>
 						{/if}
 
 						{#if viewer && c.zone === 'exile' && (c.playableFromExileBy?.playerId === viewer.playerId || exileCastOptions.length > 0)}

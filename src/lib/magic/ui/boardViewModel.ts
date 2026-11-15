@@ -12,14 +12,19 @@ import {
 	getPlayerCommanderIdentity,
 	getTurnFaceUpDisplay
 } from '../engine.ts';
+import type { CostDef, ModalDef } from '../ir.ts';
 import { DUNGEON_SPECS } from '../oracle.ts';
 import { evaluatePermanent, type EvaluatedPermanent } from '../ruleTree.ts';
-import { getSuspendSpec } from '../runtime/costs.ts';
+import { describeCost, getSuspendSpec } from '../runtime/costs.ts';
 import { instanceFaceOptions, resolveObjectFaces } from '../runtime/faces.ts';
+import {
+	cardHasEscalate,
+	computeModalModeAdditionalCosts
+} from '../runtime/keywordsWave4.ts';
 import { withStableLayerInputs } from '../runtime/layerCache.ts';
 import { splitSubtypes } from '../runtime/layers.ts';
 import { totalSnowManaInPool } from '../runtime/staticsDynamicAndCosts.ts';
-import { effectiveCardForObject } from '../scryfall.ts';
+import { activeFaceIndexForObject, effectiveCardForObject } from '../scryfall.ts';
 import type {
 	CardInstance,
 	CastOption,
@@ -153,6 +158,14 @@ export interface PermanentActableSummary {
 	isActable: boolean;
 }
 
+export interface ModalModeCostView {
+	perModeBadges: Array<string | null>;
+	escalateStepCost: string | null;
+	escalateBadge: string | null;
+	selectedTotalCostBadge: string | null;
+	hasModeCosts: boolean;
+}
+
 export interface PermanentView {
 	instanceId: string;
 	perm: CardInstance;
@@ -174,7 +187,21 @@ export interface PermanentView {
 	hasHaste: boolean;
 	isSummoningSickVisual: boolean;
 	countersList: CounterBadgeEntry[];
+	classLevel: number | null;
+	caseSolved: boolean | null;
+	mergedComponentNames: string[];
+	mutateCount: number;
+	meldedComponentNames: string[];
+	isFlipped: boolean;
+	pairedWithId: string | null;
+	pairedPartnerName: string | null;
+	hauntedByNames: string[];
+	isSuspected: boolean;
 	isGoaded: boolean;
+	goadedByNames: string[];
+	isHarnessed: boolean;
+	isRenowned: boolean;
+	hasEnduringStory: boolean;
 	isSaddled: boolean;
 	isRingBearer: boolean;
 	isPrepared: boolean;
@@ -227,6 +254,9 @@ export interface PlayerStatusView {
 	speed: number;
 	isMaxSpeed: boolean;
 	hasCitysBlessing: boolean;
+	hasEnduringStory: boolean;
+	cannotCastSpellsForRestOfGame: boolean;
+	epicSpellNames: string[];
 	ringLevel: number;
 	ringBearerId: string | null;
 	ringAbilities: string[];
@@ -281,6 +311,7 @@ export interface BoardViewModel {
 	playableExileIds: string[];
 	playableExileCards: CardInstance[];
 	permittedExileCards: CardInstance[];
+	exileHauntingTargetNameById: Record<string, string>;
 	waitingOnPlayerIds: string[];
 }
 
@@ -488,6 +519,149 @@ function describeRestriction(restriction: string): { label: string; description:
 	};
 }
 
+function formatCostComponents(
+	manaCosts: readonly string[],
+	costDefs: readonly CostDef[],
+	dedupeManaDefs = false
+): string {
+	const extraMana = dedupeManaDefs
+		? []
+		: costDefs.filter((d): d is Extract<CostDef, { k: 'mana' }> => d.k === 'mana').map((d) => d.cost);
+	const allMana = [...manaCosts, ...extraMana];
+	const nonManaDefs = costDefs.filter((d) => d.k !== 'mana');
+	const parts: string[] = [];
+	if (allMana.length > 0) parts.push(allMana.join(''));
+	if (nonManaDefs.length > 0) parts.push(describeCost(nonManaDefs));
+	return parts.join(', ');
+}
+
+/**
+ * Pure per-mode additional cost readout for modal spells & abilities (`CR 700.2h` Spree / Tiered
+ * `ModalDef.perModeCosts` and `CR 702.120` Escalate). Zero rules-text parsing or keyword literals.
+ */
+export function extractModalModeCostView(
+	modal: ModalDef,
+	options?: {
+		card?: ScryfallCard;
+		faceIndex?: number;
+		selectedModes?: readonly number[];
+	}
+): ModalModeCostView {
+	const card = options?.card;
+	const faceIndex = options?.faceIndex ?? 0;
+	const selectedModes = options?.selectedModes ?? [];
+
+	const perModeBadges: Array<string | null> = modal.modes.map((_, idx) => {
+		if (!modal.perModeCosts) return null;
+		const defs = modal.perModeCosts[idx];
+		if (!defs) return null;
+		if (defs.length === 0) return '+ {0}';
+		const formatted = formatCostComponents([], defs, false);
+		return formatted ? `+ ${formatted}` : '+ {0}';
+	});
+
+	let escalateStepCost: string | null = null;
+	let escalateBadge: string | null = null;
+	let escalateDuplicatesManaDef = false;
+	if (card && cardHasEscalate(card, faceIndex)) {
+		const probeModal: ModalDef = modal.perModeCosts
+			? { ...modal, perModeCosts: undefined }
+			: modal;
+		const step = computeModalModeAdditionalCosts(card, faceIndex, probeModal, [0, 1]);
+		escalateDuplicatesManaDef = step.manaCosts.length > 0;
+		const formatted = formatCostComponents(
+			step.manaCosts,
+			step.costDefs,
+			escalateDuplicatesManaDef
+		);
+		if (formatted) {
+			escalateStepCost = `+ ${formatted}`;
+			escalateBadge = `+ ${formatted} per extra mode`;
+		}
+	}
+
+	let selectedTotalCostBadge: string | null = null;
+	if (selectedModes.length > 0) {
+		if (card) {
+			const total = computeModalModeAdditionalCosts(card, faceIndex, modal, [...selectedModes]);
+			const formatted = formatCostComponents(
+				total.manaCosts,
+				total.costDefs,
+				escalateDuplicatesManaDef
+			);
+			if (formatted) {
+				selectedTotalCostBadge = `+ ${formatted}`;
+			} else if (modal.perModeCosts) {
+				selectedTotalCostBadge = '+ {0}';
+			}
+		} else if (modal.perModeCosts) {
+			const defs: CostDef[] = [];
+			for (const mIdx of selectedModes) {
+				const entry = modal.perModeCosts[mIdx];
+				if (entry) defs.push(...entry);
+			}
+			const formatted = formatCostComponents([], defs, false);
+			selectedTotalCostBadge = formatted ? `+ ${formatted}` : '+ {0}';
+		}
+	}
+
+	const hasModeCosts = perModeBadges.some((b) => b !== null) || escalateStepCost !== null;
+	return {
+		perModeBadges,
+		escalateStepCost,
+		escalateBadge,
+		selectedTotalCostBadge,
+		hasModeCosts
+	};
+}
+
+/**
+ * Resolves the battlefield permanent name haunted by an exiled card (`CR 702.55` Haunt),
+ * respecting `hauntingTargetVersion` (`CR 400.7`) and phased-out status.
+ */
+export function resolveExileHauntingTargetName(
+	gameState: GameState,
+	exileCard: CardInstance,
+	permanentsById?: Record<string, Pick<PermanentView, 'perm' | 'displayCard'>>
+): string | null {
+	const targetId = exileCard.hauntingTargetId;
+	if (!targetId) return null;
+	if (permanentsById) {
+		const pv = permanentsById[targetId];
+		if (!pv || pv.perm.phasedOut) return null;
+		if (
+			exileCard.hauntingTargetVersion !== undefined &&
+			pv.perm.objectVersion !== undefined &&
+			exileCard.hauntingTargetVersion !== pv.perm.objectVersion
+		) {
+			return null;
+		}
+		return pv.displayCard.name;
+	}
+	for (const p of gameState.players) {
+		for (const perm of p.battlefield) {
+			if (perm.instanceId !== targetId || perm.phasedOut) continue;
+			if (
+				exileCard.hauntingTargetVersion !== undefined &&
+				perm.objectVersion !== undefined &&
+				exileCard.hauntingTargetVersion !== perm.objectVersion
+			) {
+				return null;
+			}
+			if (perm.isFaceDown) {
+				return perm.faceDownLabel || 'Face-Down Creature';
+			}
+			const effCard = effectiveCardForObject(perm);
+			const faceOpts = {
+				...instanceFaceOptions(perm, 'battlefield'),
+				...(perm.isFlipped && effCard.layout === 'flip' ? { faceIndex: 1 } : {})
+			};
+			return resolveObjectFaces(effCard, faceOpts).name || effCard.name;
+		}
+	}
+	return null;
+}
+
 function extractActiveDungeonView(player: PlayerGameState): ActiveDungeonView | null {
 	const ad = player.activeDungeon;
 	if (!ad) return null;
@@ -522,6 +696,13 @@ function extractPlayerStatus(gameState: GameState, player: PlayerGameState): Pla
 	const speed = Math.max(0, player.speed ?? 0);
 	const isMaxSpeed = speed >= 4;
 	const hasCitysBlessing = Boolean(player.hasCitysBlessing);
+	const hasEnduringStory = Boolean(player.hasEnduringStory);
+	const cannotCastSpellsForRestOfGame = Boolean(player.cannotCastSpellsForRestOfGame);
+	const epicSpellNames = (player.epicSpells ?? []).map(
+		(entry) =>
+			resolveObjectFaces(entry.card, { zone: 'stack', faceIndex: entry.faceIndex ?? 0 }).name ||
+			entry.card.name
+	);
 	const ringLevel = Math.max(0, player.ringLevel ?? 0);
 	const ringBearerId = player.ringBearerId ?? null;
 	const ringAbilities = getRingAbilitiesForLevel(ringLevel);
@@ -660,6 +841,9 @@ function extractPlayerStatus(gameState: GameState, player: PlayerGameState): Pla
 		speed,
 		isMaxSpeed,
 		hasCitysBlessing,
+		hasEnduringStory,
+		cannotCastSpellsForRestOfGame,
+		epicSpellNames,
 		ringLevel,
 		ringBearerId,
 		ringAbilities,
@@ -747,6 +931,9 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 			(p as { radCounters?: number }).radCounters ?? 0,
 			p.speed ?? 0,
 			p.hasCitysBlessing ?? false,
+			p.hasEnduringStory ?? false,
+			p.cannotCastSpellsForRestOfGame ?? false,
+			(p.epicSpells ?? []).map((ep) => `${ep.card.id}:${ep.card.name}:${ep.faceIndex ?? 0}`).join(','),
 			p.ringLevel ?? 0,
 			p.ringBearerId ?? '',
 			p.activeDungeon
@@ -808,7 +995,20 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 				(perm.activatedAbilityIdsThisTurn ?? []).join(','),
 				(perm.goadedByPlayerIds ?? []).join(','),
 				perm.saddledThisTurn ?? false,
-				(perm.grantedKeywords ?? []).join(',')
+				(perm.grantedKeywords ?? []).join(','),
+				perm.classLevel ?? -1,
+				perm.isSolved ?? false,
+				(perm.mergedComponents ?? []).map((mc) => `${mc.id}:${mc.name}`).join(','),
+				(perm.copiableState?.mergedComponents ?? []).map((mc) => `${mc.id}:${mc.name}`).join(','),
+				perm.mutateCount ?? -1,
+				(perm.meldedComponents ?? []).map((mc) => `${mc.id}:${mc.name}`).join(','),
+				perm.isFlipped ?? false,
+				perm.pairedWithId ?? '',
+				(perm.hauntedByCards ?? []).map((hc) => `${hc.id}:${hc.name}`).join(','),
+				perm.isSuspected ?? false,
+				perm.isHarnessed ?? false,
+				perm.isRenowned ?? false,
+				perm.hasEnduringStory ?? false
 			);
 			for (const [ct, cv] of Object.entries(perm.counters || {})) {
 				if (cv) parts.push(`${ct}=${cv}`);
@@ -829,7 +1029,9 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 				c.foretoldTurnNumber ?? -1,
 				c.plottedByPlayerId ?? '',
 				c.plottedTurnNumber ?? -1,
-				c.isSuspended ?? false
+				c.isSuspended ?? false,
+				c.hauntingTargetId ?? '',
+				c.hauntingTargetVersion ?? -1
 			);
 		}
 		for (const c of p.command) {
@@ -961,7 +1163,11 @@ function computeBoardViewModelInner(
 		for (const perm of player.battlefield) {
 			const evaluated = evaluatePermanent(gameState, perm);
 			const effCard = effectiveCardForObject(perm);
-			const faceView = resolveObjectFaces(effCard, instanceFaceOptions(perm, 'battlefield'));
+			const faceOpts = {
+				...instanceFaceOptions(perm, 'battlefield'),
+				...(perm.isFlipped && effCard.layout === 'flip' ? { faceIndex: 1 } : {})
+			};
+			const faceView = resolveObjectFaces(effCard, faceOpts);
 			const isFaceDown = Boolean(perm.isFaceDown);
 			const displayCard: PermanentDisplayCard = isFaceDown
 				? {
@@ -994,7 +1200,55 @@ function computeBoardViewModelInner(
 			const displayToughness = toughness - (perm.damageMarked || 0);
 			const isSummoningSickVisual = Boolean(perm.summoningSick && isCreature && !hasHaste);
 			const countersList = extractCounterBadges(perm.counters);
+
+			// CR 717 (Class) & CR 720 (Case)
+			const classLevel =
+				!isFaceDown && (subtypes.includes('Class') || perm.classLevel !== undefined)
+					? Math.max(1, perm.classLevel ?? 1)
+					: null;
+			const caseSolved =
+				!isFaceDown && (subtypes.includes('Case') || perm.isSolved !== undefined)
+					? Boolean(perm.isSolved)
+					: null;
+
+			// CR 731 (Mutate Merged Permanents), CR 713 (Meld), & CR 710 (Flip)
+			const effMerged = !isFaceDown
+				? perm.copiableState
+					? perm.copiableState.mergedComponents
+					: perm.mergedComponents
+				: undefined;
+			const mergedComponentNames =
+				effMerged && effMerged.length > 1 ? effMerged.map((mc) => mc.name) : [];
+			const mutateCount =
+				perm.mutateCount !== undefined
+					? Math.max(0, perm.mutateCount)
+					: !isFaceDown && !perm.copiableState && (perm.mergedComponents?.length ?? 0) > 1
+						? perm.mergedComponents!.length - 1
+						: 0;
+			const meldedComponentNames =
+				!isFaceDown && perm.meldedComponents && perm.meldedComponents.length > 0
+					? perm.meldedComponents.map((mc) => mc.name)
+					: [];
+			const isFlipped = Boolean(
+				!isFaceDown &&
+					(perm.isFlipped || (faceView.layout === 'flip' && activeFaceIndexForObject(perm) === 1))
+			);
+
+			// CR 702.95 (Soulbond), CR 702.55 (Haunt), CR 701.60 (Suspect), CR 701.15 (Goad), CR 701.64 (Harness), CR 702.112 (Renown), CR 702.195 (Storied)
+			const pairedWithId =
+				!perm.phasedOut && perm.pairedWithId && activeById.has(perm.pairedWithId)
+					? perm.pairedWithId
+					: null;
+			const hauntedByNames = (perm.hauntedByCards ?? []).map((hc) => hc.name);
+			const isSuspected = Boolean(perm.isSuspected);
 			const isGoaded = Boolean(perm.goadedByPlayerIds && perm.goadedByPlayerIds.length > 0);
+			const goadedByNames = isGoaded
+				? (perm.goadedByPlayerIds ?? [])
+						.map((pid) => gameState.players.find((pl) => pl.playerId === pid)?.username ?? pid)
+				: [];
+			const isHarnessed = Boolean(perm.isHarnessed);
+			const isRenowned = Boolean(perm.isRenowned);
+			const hasEnduringStory = Boolean(perm.hasEnduringStory);
 			const isSaddled = Boolean(perm.saddledThisTurn);
 			const controllerPlayer = gameState.players.find((pl) => pl.playerId === evaluated.controllerId);
 			const isRingBearer = Boolean(
@@ -1160,7 +1414,21 @@ function computeBoardViewModelInner(
 				hasHaste,
 				isSummoningSickVisual,
 				countersList,
+				classLevel,
+				caseSolved,
+				mergedComponentNames,
+				mutateCount,
+				meldedComponentNames,
+				isFlipped,
+				pairedWithId,
+				pairedPartnerName: null,
+				hauntedByNames,
+				isSuspected,
 				isGoaded,
+				goadedByNames,
+				isHarnessed,
+				isRenowned,
+				hasEnduringStory,
 				isSaddled,
 				isRingBearer,
 				isPrepared,
@@ -1186,13 +1454,34 @@ function computeBoardViewModelInner(
 		}
 	}
 
-	// Step 3: Precompute hand, command, graveyard, and exile playability for the viewer.
+	// Resolve Soulbond partner names in O(B) using already-evaluated `permanentsById` views.
+	for (const pv of Object.values(permanentsById)) {
+		if (pv.pairedWithId) {
+			pv.pairedPartnerName = permanentsById[pv.pairedWithId]?.displayCard.name ?? null;
+		}
+	}
+
+	// Step 3: Precompute hand, command, graveyard, and exile playability for the viewer, plus exile Haunt links.
 	const handPlayabilityById: Record<string, HandCardPlayabilityView> = {};
 	const commandPlayabilityById: Record<string, boolean> = {};
 	const playableGraveyardIds: string[] = [];
 	const playableExileIds: string[] = [];
 	const playableExileCards: CardInstance[] = [];
 	const permittedExileCards: CardInstance[] = [];
+	const exileHauntingTargetNameById: Record<string, string> = {};
+
+	for (const player of gameState.players) {
+		for (const exCard of player.exile) {
+			const hauntingTargetName = resolveExileHauntingTargetName(
+				gameState,
+				exCard,
+				permanentsById
+			);
+			if (hauntingTargetName) {
+				exileHauntingTargetNameById[exCard.instanceId] = hauntingTargetName;
+			}
+		}
+	}
 
 	if (viewer) {
 		for (const inst of viewer.hand) {
@@ -1322,6 +1611,7 @@ function computeBoardViewModelInner(
 		playableExileIds,
 		playableExileCards,
 		permittedExileCards,
+		exileHauntingTargetNameById,
 		waitingOnPlayerIds
 	};
 }
