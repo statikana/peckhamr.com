@@ -1948,6 +1948,7 @@
 		<ModePickerModal
 			inst={modePickerModal.inst} modal={modePickerModal.modal} modeLabels={modePickerModal.modeLabels}
 			disabledIndices={modePickerModal.disabledIndices} allowAllModes={modePickerModal.allowAllModes}
+			faceIndex={modePickerModal.kind === 'spell' ? (modePickerModal.option?.faceIndex ?? 0) : (modePickerModal.ability?.faceIndex ?? 0)}
 			onConfirm={handleConfirmModePicker} onCancel={() => (modePickerModal = null)}
 		/>
 	{/if}

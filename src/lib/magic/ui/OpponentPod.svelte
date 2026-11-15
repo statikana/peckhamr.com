@@ -71,6 +71,16 @@
 			? `The Ring (Level ${status.ringLevel}/4 — CR 701.54):\n${status.ringAbilities.join('\n')}`
 			: ''
 	);
+
+	const hasEpicDesignation = $derived(
+		status.cannotCastSpellsForRestOfGame || status.epicSpellNames.length > 0
+	);
+
+	const epicTooltip = $derived(
+		status.epicSpellNames.length > 0
+			? `${status.username} — Epic (CR 702.50): Can't cast spells for the rest of the game. Upkeep copies: ${status.epicSpellNames.join(', ')}`
+			: `${status.username} can't cast spells for the rest of the game (CR 702.50)`
+	);
 </script>
 
 <section
@@ -133,6 +143,24 @@
 					title="{status.username} has the City's Blessing (CR 702.131)"
 				>
 					🏛️ City's Blessing
+				</span>
+			{/if}
+			{#if status.hasEnduringStory}
+				<span
+					class="opp-pill storied"
+					data-testid="opp-storied-pill"
+					title="{status.username} has an Enduring Story for the rest of the game (CR 702.195)"
+				>
+					📜 Storied
+				</span>
+			{/if}
+			{#if hasEpicDesignation}
+				<span
+					class="opp-pill epic"
+					data-testid="opp-epic-pill"
+					title={epicTooltip}
+				>
+					⏳ Epic{status.epicSpellNames.length > 1 ? ` ×${status.epicSpellNames.length}` : ''}
 				</span>
 			{/if}
 			{#if status.ringLevel > 0}
@@ -465,6 +493,16 @@
 		border-color: var(--mp-cyan);
 		color: var(--mp-cyan);
 		background: rgba(120, 220, 232, 0.12);
+	}
+	.opp-pill.storied {
+		border-color: #ffd866;
+		color: #ffd866;
+		background: rgba(255, 216, 102, 0.14);
+	}
+	.opp-pill.epic {
+		border-color: var(--mp-red);
+		color: var(--mp-red);
+		background: rgba(255, 97, 136, 0.14);
 	}
 	.opp-pill.ring {
 		border-color: #ffd866;

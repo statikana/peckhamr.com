@@ -55,7 +55,8 @@
 	const effectiveActable = $derived(actable ?? view.actableSummary.isActable);
 
 	const effectiveStackDepth = $derived(
-		stackOffsetIndex ?? Math.min(3, view.attachments.length)
+		stackOffsetIndex ??
+			Math.min(3, view.attachments.length + Math.max(0, view.mergedComponentNames.length - 1))
 	);
 
 	function counterToneClass(entry: CounterBadgeEntry): string {
@@ -97,6 +98,11 @@
 	class:auto-tap-preview={isAutoTapPreviewed}
 	class:sick={view.isSummoningSickVisual}
 	class:is-goaded={view.isGoaded}
+	class:is-suspected={view.isSuspected}
+	class:is-flipped={view.isFlipped}
+	class:is-melded={view.meldedComponentNames.length > 0}
+	class:is-merged={view.mergedComponentNames.length > 1}
+	class:is-paired={view.pairedPartnerName !== null}
 	class:is-mounted={view.isSaddled}
 	class:is-ring-bearer={view.isRingBearer}
 	class:is-battle={view.isBattle}
@@ -197,8 +203,106 @@
 					📖 PREP
 				</span>
 			{/if}
+			{#if view.classLevel !== null}
+				<span
+					class="badge gold"
+					data-testid="class-level-badge"
+					title="Class Level {view.classLevel} (CR 717)"
+				>
+					Lv.{view.classLevel}
+				</span>
+			{/if}
+			{#if view.caseSolved !== null}
+				<span
+					class="badge {view.caseSolved ? 'green' : 'neutral'}"
+					data-testid="case-status-badge"
+					title="Case {view.caseSolved ? 'Solved' : 'Unsolved'} (CR 720)"
+				>
+					{view.caseSolved ? '✓ SOLVED' : 'UNSOLVED'}
+				</span>
+			{/if}
+			{#if view.mergedComponentNames.length > 1}
+				<span
+					class="badge purple"
+					data-testid="merged-stack-badge"
+					title="Merged Stack (×{view.mergedComponentNames.length}, mutated {view.mutateCount}× — CR 731): {view.mergedComponentNames.join(' → ')}"
+				>
+					🧬×{view.mergedComponentNames.length}
+				</span>
+			{/if}
+			{#if view.meldedComponentNames.length > 0}
+				<span
+					class="badge purple"
+					data-testid="melded-badge"
+					title="Melded Permanent (CR 713): {view.meldedComponentNames.join(' + ')}"
+				>
+					MELDED
+				</span>
+			{/if}
+			{#if view.isFlipped}
+				<span
+					class="badge cyan"
+					data-testid="flipped-badge"
+					title="Flipped Permanent (CR 710)"
+				>
+					↻ FLIPPED
+				</span>
+			{/if}
+			{#if view.pairedPartnerName !== null}
+				<span
+					class="badge cyan"
+					data-testid="paired-badge"
+					title="Paired with {view.pairedPartnerName} (CR 702.95)"
+				>
+					🔗 PAIRED
+				</span>
+			{/if}
+			{#if view.hauntedByNames.length > 0}
+				<span
+					class="badge purple"
+					data-testid="haunted-badge"
+					title="Haunted by {view.hauntedByNames.join(', ')} (CR 702.55)"
+				>
+					👻 HAUNTED
+				</span>
+			{/if}
+			{#if view.isSuspected}
+				<span
+					class="badge red"
+					data-testid="suspected-badge"
+					title="Suspected: has menace and can't block (CR 701.60)"
+				>
+					SUSPECTED
+				</span>
+			{/if}
 			{#if view.isGoaded}
-				<span class="badge red">GOADED</span>
+				<span
+					class="badge red"
+					data-testid="goaded-badge"
+					title={view.goadedByNames.length > 0
+						? `Goaded by ${view.goadedByNames.join(', ')} (CR 701.15)`
+						: 'Goaded (CR 701.15)'}
+				>
+					GOADED
+				</span>
+			{/if}
+			{#if view.isHarnessed}
+				<span
+					class="badge amber"
+					data-testid="harnessed-badge"
+					title="Harnessed: ∞ abilities active (CR 701.64)"
+				>
+					∞ HARNESSED
+				</span>
+			{/if}
+			{#if view.isRenowned}
+				<span
+					class="badge gold"
+					data-testid="renowned-badge"
+					title="Renowned (CR 702.112)"
+				>
+					★ RENOWNED
+				</span>
 			{/if}
 			{#if view.isSaddled}
 				<span class="badge amber" title="Active mount bonus this turn">🐎</span>
@@ -310,8 +414,108 @@
 						📖 PREPARED
 					</span>
 				{/if}
+				{#if view.classLevel !== null}
+					<span
+						class="badge gold"
+						data-testid="class-level-badge"
+						title="Class Level {view.classLevel} (CR 717)"
+					>
+						Lv. {view.classLevel}
+					</span>
+				{/if}
+				{#if view.caseSolved !== null}
+					<span
+						class="badge {view.caseSolved ? 'green' : 'neutral'}"
+						data-testid="case-status-badge"
+						title="Case {view.caseSolved ? 'Solved' : 'Unsolved'} (CR 720)"
+					>
+						{view.caseSolved ? 'Solved' : 'Unsolved'}
+					</span>
+				{/if}
+				{#if view.mergedComponentNames.length > 1}
+					<span
+						class="badge purple"
+						data-testid="merged-stack-badge"
+						title="Merged Stack (×{view.mergedComponentNames.length}, mutated {view.mutateCount}× — CR 731): {view.mergedComponentNames.join(' → ')}"
+					>
+						×{view.mergedComponentNames.length}
+					</span>
+				{/if}
+				{#if view.meldedComponentNames.length > 0}
+					<span
+						class="badge purple"
+						data-testid="melded-badge"
+						title="Melded Permanent (CR 713): {view.meldedComponentNames.join(' + ')}"
+					>
+						Melded
+					</span>
+				{/if}
+				{#if view.isFlipped}
+					<span
+						class="badge cyan"
+						data-testid="flipped-badge"
+						title="Flipped Permanent (CR 710)"
+					>
+						↻ Flipped
+					</span>
+				{/if}
+				{#if view.pairedPartnerName !== null}
+					<span
+						class="badge cyan"
+						data-testid="paired-badge"
+						title="Paired with {view.pairedPartnerName} (CR 702.95)"
+					>
+						🔗 Paired
+					</span>
+				{/if}
+				{#if view.hauntedByNames.length > 0}
+					<span
+						class="badge purple"
+						data-testid="haunted-badge"
+						title="Haunted by {view.hauntedByNames.join(', ')} (CR 702.55)"
+					>
+						👻 Haunted{view.hauntedByNames.length > 1 ? ` ×${view.hauntedByNames.length}` : ''}
+					</span>
+				{/if}
 				{#if perm.isToken}<span class="badge cyan">TOK</span>{/if}
-				{#if view.isGoaded}<span class="badge red">GOADED</span>{/if}
+				{#if view.isSuspected}
+					<span
+						class="badge red"
+						data-testid="suspected-badge"
+						title="Suspected: has menace and can't block (CR 701.60)"
+					>
+						{isCompact ? 'SUSP' : 'Suspected'}
+					</span>
+				{/if}
+				{#if view.isGoaded}
+					<span
+						class="badge red"
+						data-testid="goaded-badge"
+						title={view.goadedByNames.length > 0
+							? `Goaded by ${view.goadedByNames.join(', ')} (CR 701.15)`
+							: 'Goaded (CR 701.15)'}
+					>
+						Goaded
+					</span>
+				{/if}
+				{#if view.isHarnessed}
+					<span
+						class="badge amber"
+						data-testid="harnessed-badge"
+						title="Harnessed: ∞ abilities active (CR 701.64)"
+					>
+						∞ {isCompact ? 'HARN' : 'Harnessed'}
+					</span>
+				{/if}
+				{#if view.isRenowned}
+					<span
+						class="badge gold"
+						data-testid="renowned-badge"
+						title="Renowned (CR 702.112)"
+					>
+						★ {isCompact ? 'REN' : 'Renowned'}
+					</span>
+				{/if}
 				{#if view.isSaddled}
 					<span class="badge amber" title="Active mount bonus this turn">🐎 MOUNTED</span>
 				{/if}
@@ -738,6 +942,24 @@
 	.mini-card.is-ring-bearer {
 		border-color: #ffd866;
 		box-shadow: 0 0 8px rgba(255, 216, 102, 0.55);
+	}
+	.board-card.is-flipped,
+	.mini-card.is-flipped {
+		border-color: #78dce8;
+		box-shadow: inset 0 -2px 0 #78dce8;
+	}
+	.board-card.is-melded,
+	.mini-card.is-melded {
+		border-color: #ab9df2;
+		box-shadow: 0 0 8px rgba(171, 157, 242, 0.45);
+	}
+	.board-card.is-paired,
+	.mini-card.is-paired {
+		border-color: rgba(120, 220, 232, 0.85);
+	}
+	.board-card.is-suspected,
+	.mini-card.is-suspected {
+		border-color: rgba(255, 97, 136, 0.78);
 	}
 	.badge.ring-bearer {
 		box-shadow: 0 0 6px rgba(255, 216, 102, 0.7);

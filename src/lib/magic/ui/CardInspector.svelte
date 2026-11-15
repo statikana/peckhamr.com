@@ -8,7 +8,12 @@
 	} from '../compiler/support.ts';
 	import { inspectCardContinuousBreakdown, type CardContinuousBreakdown } from '../engine.ts';
 	import type { CardInstance, GameActionPayload, GameState, ScryfallCard } from '../types.ts';
-	import { DUNGEON_ART_URI, EMBLEM_ART_URI } from './boardViewModel.ts';
+	import {
+		buildBoardViewModel,
+		DUNGEON_ART_URI,
+		EMBLEM_ART_URI,
+		resolveExileHauntingTargetName
+	} from './boardViewModel.ts';
 	import { FACE_DOWN_ART_URI } from './promptViewModel.ts';
 
 	let {
@@ -45,6 +50,103 @@
 	);
 	const inspectUnsupported = $derived(
 		inspectedCard ? cardSupportReport(inspectedCard).unsupported : []
+	);
+
+	const inspectedPermView = $derived.by(() => {
+		if (!inspectedInstance || !gameState || inspectedInstance.zone !== 'battlefield') return null;
+		const fallbackViewerId = gameState.players[0]?.playerId ?? '';
+		const vm = buildBoardViewModel(gameState, fallbackViewerId);
+		return vm.permanentsById[inspectedInstance.instanceId] ?? null;
+	});
+
+	const exileHauntingTargetName = $derived.by(() => {
+		if (!inspectedInstance || !gameState || inspectedInstance.zone !== 'exile') return null;
+		return resolveExileHauntingTargetName(gameState, inspectedInstance);
+	});
+
+	const inspectorClassLevel = $derived.by(() => {
+		if (inspectedPermView) return inspectedPermView.classLevel;
+		if (!inspectedInstance || inspectedInstance.isFaceDown) return null;
+		if (inspectedInstance.classLevel !== undefined) return Math.max(1, inspectedInstance.classLevel);
+		return null;
+	});
+
+	const inspectorCaseSolved = $derived.by(() => {
+		if (inspectedPermView) return inspectedPermView.caseSolved;
+		if (!inspectedInstance || inspectedInstance.isFaceDown) return null;
+		if (inspectedInstance.isSolved !== undefined) return Boolean(inspectedInstance.isSolved);
+		return null;
+	});
+
+	const inspectorMergedNames = $derived.by(() => {
+		if (inspectedPermView) return inspectedPermView.mergedComponentNames;
+		if (!inspectedInstance || inspectedInstance.isFaceDown) return [];
+		const effMerged = inspectedInstance.copiableState
+			? inspectedInstance.copiableState.mergedComponents
+			: inspectedInstance.mergedComponents;
+		return effMerged && effMerged.length > 1 ? effMerged.map((c) => c.name) : [];
+	});
+
+	const inspectorMutateCount = $derived(
+		inspectedPermView ? inspectedPermView.mutateCount : (inspectedInstance?.mutateCount ?? 0)
+	);
+
+	const inspectorMeldedNames = $derived.by(() => {
+		if (inspectedPermView) return inspectedPermView.meldedComponentNames;
+		if (!inspectedInstance || inspectedInstance.isFaceDown) return [];
+		return (inspectedInstance.meldedComponents ?? []).map((c) => c.name);
+	});
+
+	const inspectorIsFlipped = $derived(
+		inspectedPermView ? inspectedPermView.isFlipped : Boolean(inspectedInstance?.isFlipped)
+	);
+	const inspectorPairedPartner = $derived(inspectedPermView?.pairedPartnerName ?? null);
+	const inspectorHauntedByNames = $derived(
+		inspectedPermView
+			? inspectedPermView.hauntedByNames
+			: (inspectedInstance?.hauntedByCards ?? []).map((c) => c.name)
+	);
+	const inspectorIsSuspected = $derived(
+		inspectedPermView ? inspectedPermView.isSuspected : Boolean(inspectedInstance?.isSuspected)
+	);
+	const inspectorIsGoaded = $derived(
+		inspectedPermView
+			? inspectedPermView.isGoaded
+			: Boolean(inspectedInstance?.goadedByPlayerIds && inspectedInstance.goadedByPlayerIds.length > 0)
+	);
+	const inspectorGoadedByNames = $derived(inspectedPermView?.goadedByNames ?? []);
+	const inspectorIsHarnessed = $derived(
+		inspectedPermView ? inspectedPermView.isHarnessed : Boolean(inspectedInstance?.isHarnessed)
+	);
+	const inspectorIsRenowned = $derived(
+		inspectedPermView ? inspectedPermView.isRenowned : Boolean(inspectedInstance?.isRenowned)
+	);
+	const inspectorHasEnduringStory = $derived(
+		inspectedPermView
+			? inspectedPermView.hasEnduringStory
+			: Boolean(inspectedInstance?.hasEnduringStory)
+	);
+	const hasAnyStatusTags = $derived(
+		Boolean(
+			inspectedInstance &&
+				(inspectedInstance.isEmblem ||
+					inspectedInstance.isPrepared ||
+					inspectedInstance.protectorId ||
+					(inspectedInstance.counters?.defense ?? 0) > 0 ||
+					(inspectedInstance.unlockedFaces && inspectedInstance.unlockedFaces.length > 0) ||
+					inspectorClassLevel !== null ||
+					inspectorCaseSolved !== null ||
+					inspectorIsFlipped ||
+					inspectorMeldedNames.length > 0 ||
+					inspectorPairedPartner !== null ||
+					inspectorHauntedByNames.length > 0 ||
+					exileHauntingTargetName !== null ||
+					inspectorIsSuspected ||
+					inspectorIsGoaded ||
+					inspectorIsHarnessed ||
+					inspectorIsRenowned ||
+					inspectorHasEnduringStory)
+		)
 	);
 </script>
 
@@ -99,7 +201,7 @@
 						</span>
 					{/if}
 				</div>
-				{#if inspectedInstance && (inspectedInstance.isEmblem || inspectedInstance.isPrepared || inspectedInstance.protectorId || (inspectedInstance.unlockedFaces && inspectedInstance.unlockedFaces.length > 0))}
+				{#if inspectedInstance && hasAnyStatusTags}
 					<div class="zoom-status-tags">
 						{#if inspectedInstance.isEmblem}
 							<span class="inspector-tag purple">🛡️ Emblem</span>
@@ -116,6 +218,87 @@
 						{#if inspectedInstance.counters.defense > 0}
 							<span class="inspector-tag gold">Def: {inspectedInstance.counters.defense}</span>
 						{/if}
+						{#if inspectorClassLevel !== null}
+							<span class="inspector-tag gold" data-testid="inspector-class-level">
+								Lv. {inspectorClassLevel}
+							</span>
+						{/if}
+						{#if inspectorCaseSolved !== null}
+							<span
+								class="inspector-tag {inspectorCaseSolved ? 'green' : ''}"
+								data-testid="inspector-case-status"
+							>
+								{inspectorCaseSolved ? '✓ Solved' : 'Unsolved'}
+							</span>
+						{/if}
+						{#if inspectorIsFlipped}
+							<span class="inspector-tag cyan" data-testid="inspector-flipped">↻ Flipped</span>
+						{/if}
+						{#if inspectorMeldedNames.length > 0}
+							<span class="inspector-tag purple" data-testid="inspector-melded">Melded</span>
+						{/if}
+						{#if inspectorPairedPartner !== null}
+							<span class="inspector-tag cyan" data-testid="inspector-paired">
+								🔗 Paired: {inspectorPairedPartner}
+							</span>
+						{/if}
+						{#if inspectorHauntedByNames.length > 0}
+							<span class="inspector-tag purple" data-testid="inspector-haunted">
+								👻 Haunted: {inspectorHauntedByNames.join(', ')}
+							</span>
+						{/if}
+						{#if exileHauntingTargetName !== null}
+							<span class="inspector-tag purple" data-testid="inspector-haunting">
+								👻 Haunting: {exileHauntingTargetName}
+							</span>
+						{/if}
+						{#if inspectorIsSuspected}
+							<span class="inspector-tag red" data-testid="inspector-suspected">Suspected</span>
+						{/if}
+						{#if inspectorIsGoaded}
+							<span class="inspector-tag red" data-testid="inspector-goaded">
+								Goaded{inspectorGoadedByNames.length > 0
+									? ` (${inspectorGoadedByNames.join(', ')})`
+									: ''}
+							</span>
+						{/if}
+						{#if inspectorIsHarnessed}
+							<span class="inspector-tag gold" data-testid="inspector-harnessed">∞ Harnessed</span>
+						{/if}
+						{#if inspectorIsRenowned}
+							<span class="inspector-tag gold" data-testid="inspector-renowned">★ Renowned</span>
+						{/if}
+						{#if inspectorHasEnduringStory}
+							<span class="inspector-tag gold" data-testid="inspector-storied">📜 Storied</span>
+						{/if}
+					</div>
+				{/if}
+				{#if inspectorMergedNames.length > 1}
+					<div class="alt-kw-section compact" data-testid="inspector-merged-stack">
+						<div class="alt-kw-title">
+							MERGED STACK (×{inspectorMergedNames.length}{#if inspectorMutateCount > 0} · Mutated {inspectorMutateCount}×{/if})
+						</div>
+						<div class="alt-kw-list">
+							{#each inspectorMergedNames as compName, idx (idx)}
+								<div class="alt-kw-row">
+									<span class="kw-source granted">#{idx + 1}{idx === 0 ? ' (Top)' : ''}</span>
+									<span class="kw-name">{compName}</span>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+				{#if inspectorMeldedNames.length > 0}
+					<div class="alt-kw-section compact" data-testid="inspector-melded-components">
+						<div class="alt-kw-title">MELDED COMPONENTS (CR 713)</div>
+						<div class="alt-kw-list">
+							{#each inspectorMeldedNames as compName, idx (idx)}
+								<div class="alt-kw-row">
+									<span class="kw-source innate">Part {idx + 1}</span>
+									<span class="kw-name">{compName}</span>
+								</div>
+							{/each}
+						</div>
 					</div>
 				{/if}
 				{#if inspectBreakdown && inspectBreakdown.items.length > 0}
@@ -250,6 +433,14 @@
 	.inspector-tag.gold {
 		border-color: #ffd866;
 		color: #ffd866;
+	}
+	.inspector-tag.green {
+		border-color: var(--mp-green, #a9dc76);
+		color: var(--mp-green, #a9dc76);
+	}
+	.inspector-tag.red {
+		border-color: var(--mp-red, #ff6188);
+		color: var(--mp-red, #ff6188);
 	}
 	.zoom-type {
 		color: var(--mp-cyan, #78dce8);

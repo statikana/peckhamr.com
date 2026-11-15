@@ -57,6 +57,16 @@
 			? `The Ring (Level ${status.ringLevel}/4 — CR 701.54):\n${status.ringAbilities.join('\n')}`
 			: ''
 	);
+
+	const hasEpicDesignation = $derived(
+		status.cannotCastSpellsForRestOfGame || status.epicSpellNames.length > 0
+	);
+
+	const epicTooltip = $derived(
+		status.epicSpellNames.length > 0
+			? `Epic (CR 702.50): Can't cast spells for the rest of the game. Upkeep copies: ${status.epicSpellNames.join(', ')}`
+			: "Can't cast spells for the rest of the game (CR 702.50)"
+	);
 </script>
 
 <div class="my-vitals">
@@ -94,7 +104,7 @@
 			{/if}
 		</div>
 
-		{#if status.speed > 0 || status.hasCitysBlessing || status.ringLevel > 0 || status.activeDungeon || status.completedDungeonCount > 0}
+		{#if status.speed > 0 || status.hasCitysBlessing || status.hasEnduringStory || hasEpicDesignation || status.ringLevel > 0 || status.activeDungeon || status.completedDungeonCount > 0}
 			<div class="player-designations-row">
 				{#if status.speed > 0}
 					<span
@@ -115,6 +125,24 @@
 						title="You have the City's Blessing for the rest of the game (CR 702.131)"
 					>
 						🏛️ City's Blessing
+					</span>
+				{/if}
+				{#if status.hasEnduringStory}
+					<span
+						class="status-pill storied"
+						data-testid="vitals-storied-pill"
+						title="You have an Enduring Story for the rest of the game (CR 702.195)"
+					>
+						📜 Storied
+					</span>
+				{/if}
+				{#if hasEpicDesignation}
+					<span
+						class="status-pill epic"
+						data-testid="vitals-epic-pill"
+						title={epicTooltip}
+					>
+						⏳ Epic{status.epicSpellNames.length > 1 ? ` ×${status.epicSpellNames.length}` : ''}
 					</span>
 				{/if}
 				{#if status.ringLevel > 0}
@@ -450,6 +478,16 @@
 		border-color: var(--mp-cyan);
 		color: var(--mp-cyan);
 		background: rgba(120, 220, 232, 0.12);
+	}
+	.status-pill.storied {
+		border-color: #ffd866;
+		color: #ffd866;
+		background: rgba(255, 216, 102, 0.14);
+	}
+	.status-pill.epic {
+		border-color: var(--mp-red);
+		color: var(--mp-red);
+		background: rgba(255, 97, 136, 0.14);
 	}
 	.status-pill.ring {
 		border-color: #ffd866;
