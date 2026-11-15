@@ -33,7 +33,7 @@ import { hashText, normalizeFace, printedText } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 38;
+export const COMPILER_VERSION = 39;
 
 const CACHE = new Map<string, CardDefinition>();
 
