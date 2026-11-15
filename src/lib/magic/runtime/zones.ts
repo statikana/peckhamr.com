@@ -74,6 +74,16 @@ import {
 	stashPreLeaveGrantedReplacements
 } from './staticsDynamicAndCosts.ts';
 // --- End Track P11 ---
+// --- Track P15 ---
+import {
+	amplifyMatchingHandCards,
+	applyDayboundEtbReplacement,
+	applyWave5EtbCountersAndSetup,
+	faceHasCompleated,
+	getAmplifyTotalN,
+	sagaHasReadAhead as getSagaReadAheadSpec
+} from './framesBattlesAndKeywordsWave5.ts';
+// --- End Track P15 ---
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -340,7 +350,10 @@ function ensureCopiedPlaneswalkerStartingLoyalty(state: GameState, obj: CardInst
 		bfView.loyalty !== undefined &&
 		(obj.counters.loyalty || 0) === 0
 	) {
-		const baseLoyalty = bfView.loyalty;
+		// --- Track P15 (CR 702.150a Compleated) ---
+		const compleatedDrop = faceHasCompleated(obj) ? 2 * (obj.compleatedLifePaidCount ?? 0) : 0;
+		const baseLoyalty = Math.max(0, bfView.loyalty - compleatedDrop);
+		// --- End Track P15 ---
 		if (baseLoyalty > 0) {
 			const mult = counterMultiplier(state, obj, 'loyalty');
 			obj.counters.loyalty = baseLoyalty * mult;
@@ -692,6 +705,130 @@ function enqueueNextEtbChoicePrompt(
 		obj.devouredCount = 0;
 	}
 	// --- End Track P12 ---
+	// --- Track P15: Siege Protector (CR 310.11a), Read ahead (CR 702.155a), Amplify (CR 702.38a) ---
+	if (!obj.isFaceDown) {
+		const p15FaceView = resolveObjectFaces(
+			effectiveCardForObject(obj),
+			instanceFaceOptions(obj, 'battlefield')
+		);
+		if (p15FaceView.types.includes('Battle') && !obj.siegeProtectorChosen) {
+			const isSiege = p15FaceView.subtypes.includes('Siege');
+			const candidates = isSiege
+				? state.players.filter((p) => !p.lost && p.playerId !== chooser.playerId)
+				: state.players.filter((p) => !p.lost);
+			if (candidates.length <= 1) {
+				obj.protectorId = candidates[0]?.playerId ?? null;
+				obj.siegeProtectorChosen = true;
+			} else {
+				const description = `As ${objName} enters the battlefield, choose an opponent to protect it (CR 310.11a):`;
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: chooser.playerId,
+					kind: 'chooseMode',
+					purpose: 'etb_choice',
+					title: `${objName} — Choose a Protector`,
+					description,
+					continuation: {
+						kind: 'handler',
+						name: 'etb_choice',
+						data: {
+							...(baseData as Record<
+								string,
+								string | number | boolean | null | string[] | Record<string, number>
+							>),
+							choiceField: 'siegeProtector',
+							candidatePlayerIds: candidates.map((c) => c.playerId)
+						}
+					},
+					choice: {
+						kind: 'chooseMode',
+						modes: candidates.map((c) => `${c.username} (${c.life} life)`),
+						min: 1,
+						max: 1
+					}
+				});
+				return true;
+			}
+		}
+
+		const raSpec = getSagaReadAheadSpec(obj);
+		if (raSpec.hasReadAhead && obj.readAheadChosenChapter === undefined) {
+			if (raSpec.maxChapter <= 1) {
+				obj.readAheadChosenChapter = 1;
+			} else {
+				const modes = Array.from({ length: raSpec.maxChapter }, (_, i) => `Chapter ${i + 1}`);
+				const description = `As ${objName} enters the battlefield, choose a number from 1 to ${raSpec.maxChapter}. It enters with that many lore counters on it (Read ahead, CR 702.155a):`;
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: chooser.playerId,
+					kind: 'chooseMode',
+					purpose: 'etb_choice',
+					title: `${objName} — Read Ahead`,
+					description,
+					continuation: {
+						kind: 'handler',
+						name: 'etb_choice',
+						data: {
+							...(baseData as Record<
+								string,
+								string | number | boolean | null | string[] | Record<string, number>
+							>),
+							choiceField: 'readAhead'
+						}
+					},
+					choice: {
+						kind: 'chooseMode',
+						modes,
+						min: 1,
+						max: 1
+					}
+				});
+				return true;
+			}
+		}
+
+		const amplifyN = getAmplifyTotalN(obj);
+		if (amplifyN > 0 && !obj.amplifyDone) {
+			const ampCands = amplifyMatchingHandCards(state, obj, chooser.hand);
+			if (ampCands.length === 0) {
+				obj.amplifyDone = true;
+			} else {
+				const description = `As ${objName} enters the battlefield, you may reveal any number of creature cards from your hand that share a creature type with it for Amplify ${amplifyN} (CR 702.38a).`;
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: chooser.playerId,
+					kind: 'chooseObjects',
+					purpose: 'etb_choice',
+					title: `${objName} — Amplify ${amplifyN}`,
+					description,
+					candidateInstanceIds: ampCands.map((c) => c.instanceId),
+					countRequired: 0,
+					continuation: {
+						kind: 'handler',
+						name: 'etb_choice',
+						data: {
+							...(baseData as Record<
+								string,
+								string | number | boolean | null | string[] | Record<string, number>
+							>),
+							choiceField: 'amplify',
+							amplifyN
+						}
+					},
+					choice: {
+						kind: 'chooseObjects',
+						candidates: ampCands.map((c) => c.instanceId),
+						min: 0,
+						max: ampCands.length,
+						zone: 'hand',
+						reason: `Choose creature cards in hand to reveal for ${objName}'s Amplify ${amplifyN}.`
+					}
+				});
+				return true;
+			}
+		}
+	}
+	// --- End Track P15 ---
 	return false;
 }
 
@@ -849,6 +986,22 @@ function finalizeZoneMove(
 		obj.etbCounterChoiceDone = undefined;
 		obj.counterTimestamps = undefined;
 		// --- End Track P11 ---
+		// --- Track P15 (CR 400.7) ---
+		delete obj.protectorId;
+		delete obj.siegeProtectorChosen;
+		delete obj.isPrepared;
+		delete obj.enteredTurnSerial;
+		delete obj.readAheadChosenChapter;
+		delete obj.castWithImpending;
+		delete obj.compleatedLifePaidCount;
+		delete obj.giftPromised;
+		delete obj.giftRecipientId;
+		delete obj.craftedWithCards;
+		delete obj.encodedSpellCards;
+		delete obj.provokeMustBlockId;
+		delete obj.usedOncePerGameAbilityIds;
+		delete obj.amplifyDone;
+		// --- End Track P15 ---
 		const prevObjVersion = obj.objectVersion || 1;
 		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
 			list: T[] | undefined
@@ -916,11 +1069,30 @@ function finalizeZoneMove(
 		obj.etbCounterChoiceDone = undefined;
 		obj.counterTimestamps = undefined;
 		// --- End Track P11 ---
+		// --- Track P15 (CR 400.7) ---
+		delete obj.protectorId;
+		delete obj.siegeProtectorChosen;
+		delete obj.isPrepared;
+		delete obj.enteredTurnSerial;
+		delete obj.readAheadChosenChapter;
+		delete obj.craftedWithCards;
+		delete obj.encodedSpellCards;
+		delete obj.provokeMustBlockId;
+		delete obj.usedOncePerGameAbilityIds;
+		delete obj.amplifyDone;
+		// --- End Track P15 ---
 		if (dest !== 'stack') {
 			obj.manaColorsSpent = undefined;
 			// --- Track P10 ---
 			obj.manaSpentCount = undefined;
 			// --- End Track P10 ---
+			// --- Track P15 ---
+			delete obj.castWithImpending;
+			delete obj.compleatedLifePaidCount;
+			delete obj.giftPromised;
+			delete obj.giftRecipientId;
+			delete obj.enteredWithX;
+			// --- End Track P15 ---
 			obj.dashed = undefined;
 			obj.prototyped = undefined;
 			obj.activeFaceIndex = undefined;
@@ -969,6 +1141,11 @@ function finalizeZoneMove(
 		if (!obj.defaultControllerId) {
 			obj.defaultControllerId = opts.controllerId ?? effectiveReceiver.playerId;
 		}
+		// --- Track P15: Daybound night-ETB replacement (CR 702.145b) ---
+		if ((fromZone !== 'battlefield' || Boolean(opts.leaveBattlefieldReset)) && !obj.isFaceDown) {
+			applyDayboundEtbReplacement(state, obj);
+		}
+		// --- End Track P15 ---
 		const bfView = resolveObjectFaces(
 			effectiveCardForObject(obj),
 			instanceFaceOptions(obj, 'battlefield')
@@ -979,7 +1156,10 @@ function finalizeZoneMove(
 			bfView.loyalty !== undefined &&
 			(obj.counters.loyalty || 0) === 0
 		) {
-			const baseLoyalty = bfView.loyalty;
+			// --- Track P15 (CR 702.150a Compleated) ---
+			const compleatedDrop = faceHasCompleated(obj) ? 2 * (obj.compleatedLifePaidCount ?? 0) : 0;
+			const baseLoyalty = Math.max(0, bfView.loyalty - compleatedDrop);
+			// --- End Track P15 ---
 			if (baseLoyalty > 0) {
 				const mult = counterMultiplier(state, obj, 'loyalty');
 				obj.counters.loyalty = baseLoyalty * mult;
@@ -999,12 +1179,20 @@ function finalizeZoneMove(
 	// --- Track P11 ---
 	let chosenEtbCounter: CounterType | undefined;
 	// --- End Track P11 ---
+	// --- Track P15 ---
+	let wave5AmplifyCounters = 0;
+	// --- End Track P15 ---
 	if (isEnteringBattlefield) {
 		// --- Track P9 ---
 		obj.cameUnderControlAt = allocateEchoTick(state);
 		obj.lastKnownCounters = undefined;
 		obj.lastKnownPower = undefined;
 		obj.lastKnownToughness = undefined;
+		// --- Track P15 ---
+		if (!obj.isFaceDown) {
+			obj.enteredTurnSerial = state.turnSerial ?? state.turnNumber;
+		}
+		// --- End Track P15 ---
 	}
 	if (isEnteringBattlefield && !obj.isFaceDown) {
 		const ctrlId = opts.controllerId ?? obj.controllerId ?? effectiveReceiver.playerId;
@@ -1192,6 +1380,38 @@ function finalizeZoneMove(
 				}
 			}
 			// --- End Track P12 ---
+			// --- Track P15: Bot ETB choices for Siege protector, Read ahead, and Amplify ---
+			const botP15View = resolveObjectFaces(
+				effectiveCardForObject(obj),
+				instanceFaceOptions(obj, 'battlefield')
+			);
+			if (botP15View.types.includes('Battle') && !obj.siegeProtectorChosen) {
+				const isSiege = botP15View.subtypes.includes('Siege');
+				const cands = isSiege
+					? state.players.filter((p) => !p.lost && p.playerId !== ctrl.playerId)
+					: state.players.filter((p) => !p.lost);
+				obj.siegeProtectorChosen = true;
+				if (cands.length === 0) {
+					obj.protectorId = null;
+				} else {
+					const sorted = [...cands].sort((a, b) => a.life - b.life || a.seatIndex - b.seatIndex);
+					obj.protectorId = sorted[0].playerId;
+				}
+			}
+			const botRaSpec = getSagaReadAheadSpec(obj);
+			if (botRaSpec.hasReadAhead && obj.readAheadChosenChapter === undefined) {
+				obj.readAheadChosenChapter = botRaSpec.maxChapter;
+			}
+			const botAmpN = getAmplifyTotalN(obj);
+			if (botAmpN > 0 && !obj.amplifyDone) {
+				obj.amplifyDone = true;
+				const ampCands = amplifyMatchingHandCards(state, obj, ctrl.hand);
+				for (const hc of ampCands) {
+					markHandCardRevealedToAll(state, hc);
+				}
+				wave5AmplifyCounters = botAmpN * ampCands.length;
+			}
+			// --- End Track P15 ---
 		} else {
 			const baseData = buildPendingEtbData();
 			if (enqueueNextEtbChoicePrompt(state, obj, ctrl, etbSpec, baseData, null)) {
@@ -1233,6 +1453,14 @@ function finalizeZoneMove(
 			// --- Track P12 ---
 			applyWave4EtbCountersAndSetup(state, obj, placeRegisteredCounters);
 			// --- End Track P12 ---
+			// --- Track P15 ---
+			applyWave5EtbCountersAndSetup(
+				state,
+				obj,
+				placeRegisteredCounters,
+				wave5AmplifyCounters
+			);
+			// --- End Track P15 ---
 			noteLayerInputsChanged(state);
 		}
 		if (shuffleDestLibrary && dest === 'library') {
@@ -1267,6 +1495,13 @@ function finalizeZoneMove(
 		obj
 	);
 	// --- End Track P7 ---
+	// --- Track P15: CR 702.69a Gravestorm permanent-to-graveyard counter ---
+	if (fromZone === 'battlefield' && dest === 'graveyard' && opts.emit !== false) {
+		state.permanentsPutIntoGraveyardFromBattlefieldThisTurn =
+			(state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0) + 1;
+		noteLayerInputsChanged(state);
+	}
+	// --- End Track P15 ---
 	// --- Track P12: CR 702.187b–c Mayhem discard tracking ---
 	if (opts.discardReason && dest === 'graveyard' && !ceases) {
 		obj.discardedByPlayerIdThisTurn = opts.discardPlayerId ?? fromPlayerId ?? obj.ownerId;
@@ -2145,6 +2380,53 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 				`${chooser.username} sacrificed ${obj.devouredCount ?? 0} permanent(s) for ${bfView.name}'s Devour (CR 702.82a).`
 			);
 		// --- End Track P12 ---
+		// --- Track P15 ---
+		} else if (choiceField === 'siegeProtector' && answer.kind === 'chooseMode') {
+			const candIds = Array.isArray(data.candidatePlayerIds)
+				? data.candidatePlayerIds.map(String)
+				: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenProtectorId = candIds[chosenIdx] ?? candIds[0] ?? null;
+			obj.protectorId = chosenProtectorId;
+			obj.siegeProtectorChosen = true;
+			const protPlayer = state.players.find((p) => p.playerId === chosenProtectorId);
+			if (protPlayer) {
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose ${protPlayer.username} to protect ${bfView.name} (CR 310.11a).`
+				);
+			}
+		} else if (choiceField === 'readAhead' && answer.kind === 'chooseMode') {
+			const chosenChapter = (answer.indices[0] ?? 0) + 1;
+			obj.readAheadChosenChapter = chosenChapter;
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose Chapter ${chosenChapter} for ${bfView.name} (Read ahead, CR 702.155a).`
+			);
+		} else if (choiceField === 'amplify' && answer.kind === 'chooseObjects') {
+			obj.amplifyDone = true;
+			const amplifyN = typeof data.amplifyN === 'number' ? data.amplifyN : getAmplifyTotalN(obj);
+			const legalMatching = new Set(
+				amplifyMatchingHandCards(state, obj, chooser.hand).map((c) => c.instanceId)
+			);
+			let revealedCount = 0;
+			for (const oid of answer.objectIds) {
+				if (!legalMatching.has(oid)) continue;
+				const hc = chooser.hand.find((c) => c.instanceId === oid);
+				if (hc) {
+					markHandCardRevealedToAll(state, hc);
+					revealedCount++;
+				}
+			}
+			nextData.wave5AmplifyCounters = amplifyN * revealedCount;
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} revealed ${revealedCount} card(s) from hand for ${bfView.name}'s Amplify ${amplifyN} (CR 702.38a).`
+			);
+		// --- End Track P15 ---
 		} else {
 			return;
 		}
@@ -2189,6 +2471,16 @@ registerPromptHandler('etb_choice', (state, prompt, answer) => {
 			// --- Track P12 ---
 			applyWave4EtbCountersAndSetup(state, obj, placeRegisteredCounters);
 			// --- End Track P12 ---
+			// --- Track P15 ---
+			const p15AmpCounters =
+				typeof nextData.wave5AmplifyCounters === 'number' ? nextData.wave5AmplifyCounters : 0;
+			applyWave5EtbCountersAndSetup(
+				state,
+				obj,
+				placeRegisteredCounters,
+				p15AmpCounters
+			);
+			// --- End Track P15 ---
 		}
 		noteLayerInputsChanged(state);
 
@@ -2350,7 +2642,18 @@ function maybePlaceSagaEtbLoreCounter(state: GameState, obj: CardInstance): void
 	if ((obj.counters.lore || 0) > 0) return;
 	const ev = evaluatePermanent(state, obj);
 	if (!ev.hasSubType('Saga')) return;
-	if (sagaHasReadAhead(obj)) return;
+	// --- Track P15: CR 702.155a Read ahead ---
+	const raSpec = getSagaReadAheadSpec(obj);
+	if (raSpec.hasReadAhead || sagaHasReadAhead(obj)) {
+		const chosen = Math.max(
+			1,
+			Math.min(raSpec.maxChapter, obj.readAheadChosenChapter ?? raSpec.maxChapter)
+		);
+		obj.readAheadChosenChapter = chosen;
+		placeRegisteredCounters(state, obj, 'lore', chosen);
+		return;
+	}
+	// --- End Track P15 ---
 	placeRegisteredCounters(state, obj, 'lore', 1);
 }
 

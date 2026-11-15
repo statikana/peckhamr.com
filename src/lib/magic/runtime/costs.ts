@@ -74,6 +74,9 @@ import { resolveQuotedAbilityDefs } from './reflexiveManaAndActions.ts';
 // --- Track P12 ---
 import { recordPlayerLifeLossWave4 } from './keywordsWave4.ts';
 // --- End Track P12 ---
+// --- Track P15 ---
+import { onPlayerLostLifeCheckSpeedTrigger } from './framesBattlesAndKeywordsWave5.ts';
+// --- End Track P15 ---
 
 export type { SerializedPlannedCost };
 export {
@@ -657,8 +660,11 @@ export function effectiveAbilityManaCost(
 	xValue = 0,
 	// --- Track P11 ---
 	sourcePerm?: CardInstance,
-	isManaAbility = false
+	isManaAbility = false,
 	// --- End Track P11 ---
+	// --- Track P15 ---
+	powerUpReduction = false
+	// --- End Track P15 ---
 ): { manaCost: string; requirement: ManaCostRequirement } {
 	// Read-only: one layer-cache validation for the battlefield scan (Phase 6d).
 	return withStableLayerInputs(state, () =>
@@ -670,7 +676,8 @@ export function effectiveAbilityManaCost(
 			abilityKeyword,
 			xValue,
 			sourcePerm,
-			isManaAbility
+			isManaAbility,
+			powerUpReduction
 		)
 	);
 }
@@ -684,8 +691,11 @@ function effectiveAbilityManaCostInner(
 	xValue = 0,
 	// --- Track P11 ---
 	sourcePerm?: CardInstance,
-	isManaAbility = false
+	isManaAbility = false,
 	// --- End Track P11 ---
+	// --- Track P15 ---
+	powerUpReduction = false
+	// --- End Track P15 ---
 ): { manaCost: string; requirement: ManaCostRequirement } {
 	const kw =
 		abilityKeyword ??
@@ -803,6 +813,44 @@ function effectiveAbilityManaCostInner(
 		}
 	}
 	// --- End Track P11 ---
+	// --- Track P15: CR 702.193a–b Power-up reduces activation mana cost by permanent's mana cost if it entered this turn ---
+	if (
+		powerUpReduction &&
+		sourcePerm &&
+		sourcePerm.zone === 'battlefield' &&
+		sourcePerm.enteredTurnSerial !== undefined &&
+		sourcePerm.enteredTurnSerial === (state.turnSerial ?? state.turnNumber)
+	) {
+		const permCard = sourcePerm.copiableCard ?? sourcePerm.card;
+		const permManaCost = resolveObjectFaces(
+			permCard,
+			instanceFaceOptions(sourcePerm, 'battlefield')
+		).manaCost;
+		if (permManaCost) {
+			const permReq = parseManaCost(permManaCost, 0);
+			const abReq = parseManaCost(baseManaCost === '{0}' ? '' : baseManaCost, xValue);
+			genericReduction += permReq.generic;
+			const manaCols: ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
+			for (const col of manaCols) {
+				const pAmt = permReq.colored[col] ?? 0;
+				if (pAmt <= 0) continue;
+				const aAmt = abReq.colored[col] ?? 0;
+				const curColRed = coloredReduction[col] ?? 0;
+				const remCol = Math.max(0, aAmt - curColRed);
+				const reduceSame = Math.min(pAmt, remCol);
+				const excess = pAmt - reduceSame;
+				if (reduceSame > 0) {
+					coloredReduction[col] = curColRed + reduceSame;
+					hasColoredReduction = true;
+				}
+				if (excess > 0) {
+					genericReduction += excess;
+				}
+			}
+			anyModifierApplied = true;
+		}
+	}
+	// --- End Track P15 ---
 
 	const parseOpts =
 		hasColoredReduction || coloredOnly || minTotalMana > 0
@@ -947,6 +995,9 @@ export function describeCost(defs: CostDef[]): string {
 				case 'payEnergy':
 					return `Pay ${amountText(d.count)} {E}`;
 				case 'loyalty':
+					// --- Track P15 ---
+					if (d.isX) return `${d.sign ?? '+'}X`;
+					// --- End Track P15 ---
 					return d.delta >= 0 ? `+${d.delta}` : `${d.delta}`;
 				case 'removeCounters': {
 					// --- Track P11 ---
@@ -1008,7 +1059,13 @@ export interface CostContext {
 	/** Object IDs already committed to another payment (e.g. CastCostAid) that cannot be reused (CR 118.10). */
 	reservedObjectIds?: ReadonlySet<string>;
 	// --- Track P10 ---
-	spendCtx?: { capturedColorsSpent?: ManaColor[]; capturedManaSpentCount?: number };
+	spendCtx?: {
+		capturedColorsSpent?: ManaColor[];
+		capturedManaSpentCount?: number;
+		// --- Track P15 ---
+		capturedPhyrexianLifePaidCount?: number;
+		// --- End Track P15 ---
+	};
 	// --- End Track P10 ---
 	canPayMana: (req: ManaCostRequirement, reservedIds?: ReadonlySet<string>) => boolean;
 	payMana: (req: ManaCostRequirement) => boolean;
@@ -1238,9 +1295,19 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 			}
 			return null;
 		}
-		case 'loyalty':
+		case 'loyalty': {
+			// --- Track P15: CR 606.4 +X / -X loyalty ---
+			if (def.isX) {
+				const xVal = Math.max(0, ctx.xValue || 0);
+				if (def.sign === '-' && (src.counters.loyalty || 0) < xVal) {
+					return 'Not enough loyalty counters.';
+				}
+				return null;
+			}
+			// --- End Track P15 ---
 			if (def.delta < 0 && src.counters.loyalty < -def.delta) return 'Not enough loyalty counters.';
 			return null;
+		}
 		case 'removeCounters': {
 			// --- Track P11 ---
 			const amount = def.removeAll ? 0 : n(def.count, ctx);
@@ -1982,6 +2049,9 @@ export function executeCostPaymentParts(
 						// --- Track P12 ---
 						recordPlayerLifeLossWave4(player, amount);
 						// --- End Track P12 ---
+						// --- Track P15: CR 702.179d Start your engines! opponent life-loss check ---
+						onPlayerLostLifeCheckSpeedTrigger(ctx.state, player.playerId, amount);
+						// --- End Track P15 ---
 						targetLog.push(`paid ${amount} life`);
 					}
 				}
@@ -2000,7 +2070,13 @@ export function executeCostPaymentParts(
 			}
 			case 'loyalty':
 				if (objStart === 0) {
-					source.counters.loyalty += def.delta;
+					// --- Track P15: CR 606.4 +X / -X loyalty ---
+					const delta = def.isX
+						? (def.sign === '-' ? -1 : 1) * Math.max(0, ctx.xValue || 0)
+						: def.delta;
+					source.counters.loyalty = (source.counters.loyalty || 0) + delta;
+					noteLayerInputsChanged(ctx.state);
+					// --- End Track P15 ---
 					source.usedLoyaltyThisTurn = true;
 				}
 				break;
@@ -2228,6 +2304,10 @@ export type ApplyCastCostAidsResult =
 			remainingReq: ManaCostRequirement;
 			tapIds: string[];
 			exileIds: string[];
+			// --- Track P15 ---
+			assistPlayerId?: string;
+			assistGenericPaid?: number;
+			// --- End Track P15 ---
 			summaryParts: string[];
 			paidByCandidate: Record<string, ManaColor | 'generic'>;
 	  }
@@ -2310,6 +2390,9 @@ export function applyCastCostAids(
 	const seenIds = new Set<string>();
 	const tapEntries: Array<{ id: string; colors: ManaColor[]; paysGeneric: number }> = [];
 	const exileEntries: Array<{ id: string; paysGeneric: number }> = [];
+	// --- Track P15 ---
+	const assistEntries: Array<{ id: string; paysGeneric: number }> = [];
+	// --- End Track P15 ---
 
 	for (const [aidId, rawIds] of Object.entries(costAidIds)) {
 		if (!rawIds || rawIds.length === 0) continue;
@@ -2319,15 +2402,30 @@ export function applyCastCostAids(
 		}
 		const eligible = new Set(aid.candidateIds);
 		if (
-			aid.kind === 'exileCard' &&
+			(aid.kind === 'exileCard' || aid.kind === 'assistPlayer') &&
 			aid.maxGenericReduction !== undefined &&
 			rawIds.length * aid.paysGeneric > aid.maxGenericReduction
 		) {
 			return {
 				ok: false,
-				error: `Selected ${rawIds.length} card(s) for ${aid.label}, exceeding max reduction ${aid.maxGenericReduction}.`
+				error: `Selected ${rawIds.length} entry(s) for ${aid.label}, exceeding max reduction ${aid.maxGenericReduction}.`
 			};
 		}
+		// --- Track P15: CR 702.132a Assist allows one player to pay multiple generic mana ---
+		if (aid.kind === 'assistPlayer') {
+			const distinctPlayers = new Set(rawIds);
+			if (distinctPlayers.size > 1) {
+				return { ok: false, error: 'Assist allows only one other player to pay generic mana.' };
+			}
+			for (const id of rawIds) {
+				if (!eligible.has(id)) {
+					return { ok: false, error: `Ineligible player "${id}" for ${aid.label}.` };
+				}
+				assistEntries.push({ id, paysGeneric: aid.paysGeneric });
+			}
+			continue;
+		}
+		// --- End Track P15 ---
 		for (const id of rawIds) {
 			if (seenIds.has(id)) {
 				return { ok: false, error: `Duplicate payment aid candidate "${id}" (CR 118.10).` };
@@ -2389,6 +2487,19 @@ export function applyCastCostAids(
 	for (const e of exileEntries) {
 		paidByCandidate[e.id] = 'generic';
 	}
+	// --- Track P15 ---
+	const assistGenericTotal = assistEntries.reduce((sum, e) => sum + e.paysGeneric, 0);
+	if (assistGenericTotal > generic) {
+		return {
+			ok: false,
+			error: `Cannot pay ${assistGenericTotal} generic mana with Assist: only ${generic} generic mana remaining in total cost.`
+		};
+	}
+	generic -= assistGenericTotal;
+	for (const e of assistEntries) {
+		paidByCandidate[e.id] = 'generic';
+	}
+	// --- End Track P15 ---
 
 	// Sort flexible taps with fewer eligible needed colors first so mono-color taps get priority.
 	const sortedFlex = [...flexibleTaps].sort((a, b) => {
@@ -2445,6 +2556,9 @@ export function applyCastCostAids(
 	const summaryParts: string[] = [];
 	if (tapEntries.length > 0) summaryParts.push(`tapped ${tapEntries.length} creature(s)`);
 	if (exileEntries.length > 0) summaryParts.push(`exiled ${exileEntries.length} card(s) from graveyard`);
+	// --- Track P15 ---
+	if (assistGenericTotal > 0) summaryParts.push(`assisted for {${assistGenericTotal}}`);
+	// --- End Track P15 ---
 
 	return {
 		ok: true,
@@ -2455,6 +2569,11 @@ export function applyCastCostAids(
 		},
 		tapIds: tapEntries.map((e) => e.id),
 		exileIds: exileEntries.map((e) => e.id),
+		// --- Track P15 ---
+		...(assistEntries.length > 0
+			? { assistPlayerId: assistEntries[0].id, assistGenericPaid: assistGenericTotal }
+			: {}),
+		// --- End Track P15 ---
 		summaryParts,
 		paidByCandidate
 	};

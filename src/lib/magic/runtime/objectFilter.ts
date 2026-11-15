@@ -57,6 +57,13 @@ import {
 	computePartyCount
 } from './staticsDynamicAndCosts.ts';
 // --- End Track P11 ---
+// --- Track P15 ---
+import {
+	evaluateP15Amount,
+	evaluateP15Condition,
+	matchesP15ObjectFilter
+} from './framesBattlesAndKeywordsWave5.ts';
+// --- End Track P15 ---
 
 export interface FilterContext {
 	state: GameState;
@@ -612,6 +619,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	// --- Track P12 ---
 	if (!matchesP12ObjectFilter(obj, filter, ctx, matchesObjectFilter)) return false;
 	// --- End Track P12 ---
+	// --- Track P15 ---
+	if (!matchesP15ObjectFilter(filter, obj, ctx)) return false;
+	// --- End Track P15 ---
 	return true;
 }
 
@@ -758,6 +768,11 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			);
 		}
 		// --- End Track P11 ---
+		// --- Track P15 ---
+		case 'playerSpeed':
+		case 'gravestormCount':
+			return evaluateP15Amount(amount, ctx.state, ctx.controllerId) ?? 0;
+		// --- End Track P15 ---
 		default:
 			return 0;
 	}
@@ -886,6 +901,27 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'spellsCastThisTurnCount':
 			return evaluateP12Condition(cond, ctx, matchesObjectFilter) ?? false;
 		// --- End Track P12 ---
+		// --- Track P15 ---
+		case 'maxSpeed':
+		case 'citysBlessing':
+		case 'giftPromised':
+		case 'isDay':
+		case 'isNight':
+		case 'isYourTurn':
+		case 'selfPrepared':
+		case 'isImpending':
+		case 'enteredWithXAtLeast':
+			return (
+				evaluateP15Condition(cond, ctx.state, ctx.controllerId, {
+					source: ctx.source,
+					giftPromised: Boolean(
+						ctx.source?.giftPromised ||
+							ctx.stackItem?.giftKind ||
+							ctx.stackItem?.sourceGiftPromised
+					)
+				}) ?? false
+			);
+		// --- End Track P15 ---
 		default:
 			return false;
 	}

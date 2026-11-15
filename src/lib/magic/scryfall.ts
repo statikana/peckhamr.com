@@ -24,7 +24,11 @@ const VALID_CARD_LAYOUTS = new Set<CardLayout>([
 	'modal_dfc',
 	'adventure',
 	'meld',
-	'reversible_card'
+	'reversible_card',
+	// --- Track P15 ---
+	'prepare',
+	'omen'
+	// --- End Track P15 ---
 ]);
 
 const COLOR_SYMBOLS: ReadonlyArray<ManaColor> = ['W', 'U', 'B', 'R', 'G'];
@@ -300,6 +304,14 @@ export function normalizeScryfallCard(raw: Record<string, any>): ScryfallCard {
 				: raw.loyalty !== undefined
 					? String(raw.loyalty)
 					: undefined,
+		// --- Track P15 ---
+		defense:
+			front.defense !== undefined
+				? String(front.defense)
+				: raw.defense !== undefined
+					? String(raw.defense)
+					: undefined,
+		// --- End Track P15 ---
 		imageUrl,
 		artCropUrl,
 		rarity: raw.rarity ? String(raw.rarity) : undefined,
@@ -320,6 +332,9 @@ export function normalizeScryfallCard(raw: Record<string, any>): ScryfallCard {
 					power: back.power !== undefined ? String(back.power) : undefined,
 					toughness: back.toughness !== undefined ? String(back.toughness) : undefined,
 					loyalty: back.loyalty !== undefined ? String(back.loyalty) : undefined,
+					// --- Track P15 ---
+					defense: back.defense !== undefined ? String(back.defense) : undefined,
+					// --- End Track P15 ---
 					imageUrl: backImageUris.normal || imageUrl
 			  }
 			: undefined
@@ -355,6 +370,7 @@ export function getCardFaces(card: ScryfallCard): ScryfallCardFace[] {
 				...(card.power !== undefined ? { power: card.power } : {}),
 				...(card.toughness !== undefined ? { toughness: card.toughness } : {}),
 				...(card.loyalty !== undefined ? { loyalty: card.loyalty } : {}),
+				...(card.defense !== undefined ? { defense: card.defense } : {}),
 				imageUrl: card.imageUrl,
 				artCropUrl: card.artCropUrl
 			},
@@ -367,6 +383,7 @@ export function getCardFaces(card: ScryfallCard): ScryfallCardFace[] {
 				...(back.power !== undefined ? { power: back.power } : {}),
 				...(back.toughness !== undefined ? { toughness: back.toughness } : {}),
 				...(back.loyalty !== undefined ? { loyalty: back.loyalty } : {}),
+				...(back.defense !== undefined ? { defense: back.defense } : {}),
 				imageUrl: back.imageUrl
 			}
 		];
@@ -384,6 +401,7 @@ export function getCardFaces(card: ScryfallCard): ScryfallCardFace[] {
 			...(card.power !== undefined ? { power: card.power } : {}),
 			...(card.toughness !== undefined ? { toughness: card.toughness } : {}),
 			...(card.loyalty !== undefined ? { loyalty: card.loyalty } : {}),
+			...(card.defense !== undefined ? { defense: card.defense } : {}),
 			imageUrl: card.imageUrl,
 			artCropUrl: card.artCropUrl
 		}
@@ -643,21 +661,27 @@ export async function searchScryfallCards(
 }
 
 function partnerWithTarget(card: ScryfallCard): string | null {
-	const m = card.oracleText.match(/\bPartner with ([^\n(.]+)/i);
+	// --- Track P15: Prefer compiled IR partner keyword ---
+	for (const ab of cardAbilities(card)) {
+		if (ab.kind === 'keyword' && ab.keyword.name === 'partner' && ab.keyword.param && /^with\s+/i.test(ab.keyword.param)) {
+			return ab.keyword.param.replace(/^with\s+/i, '').trim().toLowerCase();
+		}
+	}
+	const m = card.oracleText.match(/(?:^|\n)Partner with ([^\n(.]+)/i);
 	return m ? m[1].trim().toLowerCase() : null;
 }
 
 function hasFriendsForever(card: ScryfallCard): boolean {
-	return (
-		card.keywords.some((k) => k.toLowerCase() === 'friends forever') ||
-		/\bfriends forever\b/i.test(card.oracleText)
+	// --- Track P15: Read compiled IR keyword (CR 702.124i) ---
+	return cardAbilities(card).some(
+		(ab) => ab.kind === 'keyword' && ab.keyword.name === 'friends forever'
 	);
 }
 
 function hasDoctorsCompanion(card: ScryfallCard): boolean {
-	return (
-		card.keywords.some((k) => k.toLowerCase() === "doctor's companion") ||
-		/\bdoctor's companion\b/i.test(card.oracleText)
+	// --- Track P15: Read compiled IR keyword (CR 702.124m) ---
+	return cardAbilities(card).some(
+		(ab) => ab.kind === 'keyword' && ab.keyword.name === "doctor's companion"
 	);
 }
 
@@ -699,7 +723,13 @@ function partnerTextVariant(card: ScryfallCard): string | null {
 }
 
 function hasChooseABackground(card: ScryfallCard): boolean {
-	return Boolean(card.hasChooseBackground) || /\bchoose a background\b/i.test(card.oracleText);
+	// --- Track P15: Read compiled IR keyword (CR 702.124k) ---
+	return (
+		Boolean(card.hasChooseBackground) ||
+		cardAbilities(card).some(
+			(ab) => ab.kind === 'keyword' && ab.keyword.name === 'choose a background'
+		)
+	);
 }
 
 function isLegendaryBackground(card: ScryfallCard): boolean {
@@ -858,3 +888,27 @@ export function validateCommanderDeck(
 }
 
 export const validateDeck = validateCommanderDeck;
+
+// --- Track P15 ---
+export function makeInherentAbilityCard(id: string, name: string, rulesSummary = ''): ScryfallCard {
+	return {
+		id,
+		name,
+		manaCost: '',
+		cmc: 0,
+		typeLine: 'Ability',
+		oracleText: rulesSummary,
+		colors: [],
+		colorIdentity: [],
+		keywords: [],
+		imageUrl: '',
+		artCropUrl: '',
+		legalCommander: false,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false
+	};
+}
+// --- End Track P15 ---
+

@@ -276,6 +276,37 @@ import {
 	wave4TriggerTargetSpecs
 } from './runtime/keywordsWave4.ts';
 // --- End Track P12 ---
+// --- Track P15 ---
+import {
+	buildAssistCostAid,
+	buildWave5OptionalCastCosts,
+	canExternalEffectTransform,
+	checkBattleStateBasedActions,
+	checkDayNightUntapTransition,
+	checkSpeedAscendAndDayNightSbas,
+	checkSpellAscendOnResolve,
+	checkWave5AbilityActivation,
+	collectWave5CastOptionsForCard,
+	collectWave5CastTriggers,
+	deliverPromisedGift,
+	enqueueParadigmMain1Triggers,
+	enqueueProvokeAttackTriggers,
+	evaluateP15Condition,
+	findFaceGiftKeyword,
+	handleCipherSpellPostResolve,
+	handleParadigmSpellPostResolve,
+	isPermanentBattle,
+	isWave5StackItem,
+	onBattleDefenseCountersRemoved,
+	onPlayerLostLifeCheckSpeedTrigger,
+	payCraftMaterialsOnActivate,
+	recordCombatDamagePlayerWave5,
+	registerWave5Host,
+	resolveWave5StackItem,
+	splicedSpellAbilitiesForOptionalCounts,
+	wave5TriggerTargetSpecs
+} from './runtime/framesBattlesAndKeywordsWave5.ts';
+// --- End Track P15 ---
 export { applyCastCostAids, formatManaRequirement, getSuspendSpec };
 import { getKeywordSpec } from './keywords.ts';
 import {
@@ -328,6 +359,9 @@ import { parseCost } from './compiler/costs.ts';
 import { runtimeTriggers } from './compiler/triggers.ts';
 import { buildBoardSnapshot, noteLayerInputsChanged, withStableLayerInputs } from './runtime/layerCache.ts';
 import {
+	// --- Track P15 ---
+	enqueuePendingTrigger,
+	// --- End Track P15 ---
 	flushInlineTriggers,
 	flushTriggers,
 	matchTriggers,
@@ -783,7 +817,9 @@ export function getPlayerCommanderIdentity(player: PlayerGameState): ManaColor[]
 	return Array.from(set);
 }
 
-type CastableSourceZone = 'hand' | 'command' | 'exile' | 'graveyard' | 'library';
+// --- Track P15: Preparation copy casts from battlefield (CR 723.3c) ---
+type CastableSourceZone = 'hand' | 'command' | 'exile' | 'graveyard' | 'library' | 'battlefield';
+// --- End Track P15 ---
 
 function optionTargetsBecomeEach(
 	sourceCard: ScryfallCard | undefined,
@@ -797,7 +833,9 @@ function optionTargetsBecomeEach(
 	return keywordAltCost(sourceCard, found.keyword) !== null;
 }
 
-const SUPPORTED_MULTIFACE_LAYOUTS = new Set(['split', 'modal_dfc', 'adventure']);
+// --- Track P15: Omen Face 1 is castable from hand (CR 721.3); Prepare Face 1 is NOT (CR 723.3) ---
+const SUPPORTED_MULTIFACE_LAYOUTS = new Set(['split', 'modal_dfc', 'adventure', 'omen']);
+// --- End Track P15 ---
 
 function cardHasSupportedMultiFace(card: ScryfallCard): boolean {
 	const layout =
@@ -876,6 +914,15 @@ function buildCastPaymentAids(
 			});
 		}
 	}
+	// --- Track P15: CR 702.132a Assist ---
+	if (hasKw('assist')) {
+		const baseReq = parseManaCost(
+			resolveObjectFaces(effectiveCard, { zone: 'stack', faceIndex, fused }).manaCost
+		);
+		const assistAid = buildAssistCostAid(state, actor, effectiveCard, faceIndex, baseReq.generic);
+		if (assistAid) aids.push(assistAid);
+	}
+	// --- End Track P15 ---
 	return aids.length > 0 ? aids : undefined;
 }
 
@@ -885,6 +932,12 @@ function enumerateCandidateCastOptions(
 	inst: CardInstance,
 	fromZone: CastableSourceZone
 ): CastOption[] {
+	// --- Track P15: Preparation spell copy cast from battlefield (CR 723.3c) ---
+	if (fromZone === 'battlefield') {
+		const bfActor = state.players.find((p) => p.playerId === actorId);
+		return bfActor ? collectWave5CastOptionsForCard(state, bfActor, inst, 'battlefield', true) : [];
+	}
+	// --- End Track P15 ---
 	const card = inst.copiableCard ?? inst.card;
 	if (fromZone === 'graveyard' && inst.ownerId !== actorId) {
 		return [];
@@ -938,22 +991,35 @@ function enumerateCandidateCastOptions(
 		const faceTypes = faceChars.types;
 		const faceManaCost = faceChars.manaCost;
 		const faceName = faceDef.name;
-		const isAdventureFace = isMultiFace && layout === 'adventure' && fi === 1;
+		// --- Track P15: Omen Face 1 shuffles into library on resolution (CR 721.3d) ---
+		const isOmenFace =
+			isMultiFace &&
+			fi === 1 &&
+			(layout === 'omen' || (layout === 'adventure' && faceChars.subtypes.includes('Omen')));
+		const isAdventureFace = isMultiFace && layout === 'adventure' && fi === 1 && !isOmenFace;
+		// --- End Track P15 ---
 		const faceIndexProp = isMultiFace ? { faceIndex: fi } : {};
 		const idFor = (baseId: string) => (fi === 0 ? baseId : `face:${fi}:${baseId}`);
 
 		const additional = spellAdditionalCost(card, fi, false);
 		const mandatoryAdditionalCosts =
 			additional && additional.defs.length > 0 ? additional.defs : undefined;
-		const optionalAdditionalCosts = spellOptionalAdditionalCosts(card, fi, false);
+		const optionalAdditionalCosts = [
+			...spellOptionalAdditionalCosts(card, fi, false),
+			// --- Track P15: Gift (CR 702.174) & Splice (CR 702.47) optional costs ---
+			...(actor ? buildWave5OptionalCastCosts(state, actor, inst, fi) : [])
+			// --- End Track P15 ---
+		];
 		const optionalProp =
 			optionalAdditionalCosts.length > 0 ? { optionalAdditionalCosts } : {};
 		const facePaymentAids = buildCastPaymentAids(state, actor, inst, fromZone, fi, false, false);
 		const paymentAidsProp = facePaymentAids ? { paymentAids: facePaymentAids } : {};
 		const targetInfo = getSpellTargetRequirement(card, { faceIndex: fi } as CastOption);
-		const adventureMods: Partial<SpellModifications> = isAdventureFace
-			? { exileAdventureOnResolve: true }
-			: {};
+		const adventureMods: Partial<SpellModifications> = isOmenFace
+			? { shuffleOmenOnResolve: true }
+			: isAdventureFace
+				? { exileAdventureOnResolve: true }
+				: {};
 
 		let hasZonePermission = false;
 		const isLandOnlyFace = faceTypes.includes('Land') && !faceTypes.includes('Creature');
@@ -1241,8 +1307,24 @@ function enumerateCandidateCastOptions(
 				buildPaymentAids: (zone, faceIdx, isFused, isFree) =>
 					buildCastPaymentAids(state, actor, inst, zone, faceIdx, isFused, isFree),
 				getSpellTargetRequirement
-			})
+			}),
 			// --- End Track P12 ---
+			// --- Track P15: Cleave, Freerunning, Impending, Prowl, More Than Meets the Eye ---
+			...(actor
+				? collectWave5CastOptionsForCard(state, actor, inst, fromZone, true).map((o) => {
+						const pa = buildCastPaymentAids(
+							state,
+							actor,
+							inst,
+							fromZone,
+							o.faceIndex ?? 0,
+							Boolean(o.fused),
+							o.baseCost.kind === 'free'
+						);
+						return pa ? { ...o, paymentAids: pa } : o;
+					})
+				: [])
+			// --- End Track P15 ---
 		);
 	}
 
@@ -1319,7 +1401,10 @@ function resolveCastOptionForAction(
 		fromZone !== 'command' &&
 		fromZone !== 'exile' &&
 		fromZone !== 'graveyard' &&
-		fromZone !== 'library'
+		fromZone !== 'library' &&
+		// --- Track P15 ---
+		fromZone !== 'battlefield'
+		// --- End Track P15 ---
 	) {
 		return { ok: false, error: 'Spells can only be cast from your Hand, Command Zone, or Exile.' };
 	}
@@ -1418,6 +1503,9 @@ function resolveCastOptionForAction(
 	const defaultOpt =
 		candidates.find((o) => o.id === 'normal') ??
 		candidates.find((o) => o.id === 'library:top') ??
+		// --- Track P15 ---
+		candidates.find((o) => o.id === 'battlefield:prepare_copy') ??
+		// --- End Track P15 ---
 		candidates.find((o) => o.id === 'exile:suspend') ??
 		candidates.find((o) => o.id === 'exile:permission') ??
 		candidates.find((o) => o.id === 'exile:foretell') ??
@@ -1586,6 +1674,32 @@ export function planCastCostAids(
 		}
 	}
 
+	// --- Track P15: CR 702.132a Assist generic mana payment from another player ---
+	for (const aid of aids) {
+		if (aid.kind !== 'assistPlayer') continue;
+		if (!preferUseAids && canCurrentlyPay()) continue;
+		const maxRed = Math.min(aid.maxGenericReduction ?? remaining.generic, remaining.generic);
+		if (maxRed <= 0) continue;
+		for (const candPlayerId of aid.candidateIds) {
+			const candPlayer = state.players.find((p) => p.playerId === candPlayerId && !p.lost);
+			if (!candPlayer) continue;
+			let maxAssist = 0;
+			for (let g = maxRed; g >= 1; g--) {
+				if (canPayOrAutoTap(candPlayer, parseManaCost(`{${g}}`), state)) {
+					maxAssist = g;
+					break;
+				}
+			}
+			if (maxAssist <= 0) continue;
+			costAidIds[aid.id] = Array.from({ length: maxAssist }, () => candPlayerId);
+			remaining.generic -= maxAssist;
+			if (canCurrentlyPay()) break;
+			delete costAidIds[aid.id];
+			remaining.generic += maxAssist;
+		}
+	}
+	// --- End Track P15 ---
+
 	return { costAidIds, costAidColorChoices, remainingReq: remaining, reservedTapIds, reservedExileIds };
 }
 
@@ -1690,6 +1804,74 @@ function hasGlobalSpendManaAsAnyColor(state: GameState, player: PlayerGameState)
 	return false;
 }
 
+// --- Track P15: Cleave (CR 702.148), Gift-promised (CR 702.174b), & Splice (CR 702.47c) spell IR helpers ---
+function compileOptionSpellEffects(
+	card: ScryfallCard,
+	faceIndex = 0,
+	fused = false,
+	cleaved = false,
+	giftPromised = false,
+	chosenModes?: number[]
+) {
+	if (!fused && (cleaved || giftPromised)) {
+		const face = compileCard(card).faces[faceIndex];
+		const altSpec = cleaved
+			? face?.cleavedSpellSpec
+			: giftPromised
+				? face?.giftPromisedSpellSpec
+				: undefined;
+		if (altSpec) {
+			if (altSpec.modal && chosenModes) {
+				const expanded = expandModalEffects(altSpec.modal, chosenModes);
+				if (expanded) {
+					return {
+						steps: expanded.steps,
+						targets: expanded.targets,
+						modal: altSpec.modal,
+						unparsed: [] as string[]
+					};
+				}
+			}
+			return {
+				steps: [...altSpec.effect],
+				targets: [...altSpec.targets],
+				...(altSpec.modal ? { modal: altSpec.modal } : {}),
+				unparsed: [] as string[]
+			};
+		}
+	}
+	const base = compileSpellEffects(card, faceIndex, fused);
+	if (base && chosenModes && base.modal) {
+		const expanded = expandModalEffects(base.modal, chosenModes);
+		if (expanded) {
+			return {
+				steps: expanded.steps,
+				targets: expanded.targets,
+				modal: base.modal,
+				unparsed: base.unparsed
+			};
+		}
+	}
+	return base;
+}
+
+function offsetTargetIndicesInSteps<T>(val: T, offset: number): T {
+	if (offset <= 0 || val === null || typeof val !== 'object') return val;
+	if (Array.isArray(val)) {
+		return val.map((item) => offsetTargetIndicesInSteps(item, offset)) as unknown as T;
+	}
+	const obj = val as Record<string, unknown>;
+	const out: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(obj)) {
+		out[k] = offsetTargetIndicesInSteps(v, offset);
+	}
+	if ((obj.k === 'target' || obj.k === 'targetPlayer') && typeof obj.index === 'number') {
+		out.index = obj.index + offset;
+	}
+	return out as T;
+}
+// --- End Track P15 ---
+
 function getSpellCostRequirementForOption(
 	player: PlayerGameState,
 	inst: CardInstance,
@@ -1725,10 +1907,16 @@ function getSpellCostRequirementForOption(
 	};
 
 	const { manaCosts: extraManaCosts } = expandOptionalAdditionalCosts(option, optionalCostCounts);
-	// --- Track P12: Spree / Tiered / Escalate per-mode mana costs ---
+	// --- Track P12 + P15: Spree / Tiered / Escalate + Cleave / Gift modal per-mode mana costs ---
 	const compiledModal = option.spellMods?.castFaceDown
 		? undefined
-		: compileSpellEffects(inst.card, option.faceIndex ?? 0, Boolean(option.fused))?.modal;
+		: compileOptionSpellEffects(
+				inst.card,
+				option.faceIndex ?? 0,
+				Boolean(option.fused),
+				Boolean(option.spellMods?.cleaved),
+				Boolean(option.spellMods?.giftPromised || (optionalCostCounts?.['opt:gift'] ?? 0) > 0)
+			)?.modal;
 	const modalExtra = computeModalModeAdditionalCosts(
 		inst.card,
 		option.faceIndex ?? 0,
@@ -1862,11 +2050,12 @@ export function chooseBotAbilityCostPayment(
 		ab.id,
 		ab.manaCost,
 		ab.costKeyword,
-		// --- Track P11 ---
+		// --- Track P11 & P15 ---
 		0,
 		perm,
-		ab.isManaAbility
-		// --- End Track P11 ---
+		ab.isManaAbility,
+		ab.powerUpReduction
+		// --- End Track P11 & P15 ---
 	).requirement;
 	return (
 		chooseCostPayment(costContext(state, player, perm, 0, false, abilityMana), abilityCost.defs) ??
@@ -2059,7 +2248,9 @@ function finalizeCastSpell(
 	actor: PlayerGameState,
 	inst: CardInstance,
 	sourcePlayer: PlayerGameState,
-	sourceZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library',
+	// --- Track P15: Preparation copy casts from battlefield (CR 723.3c) ---
+	sourceZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library' | 'battlefield',
+	// --- End Track P15 ---
 	opts: {
 		targets: TargetRef[];
 		targetsBySpec?: TargetRef[][];
@@ -2081,6 +2272,10 @@ function finalizeCastSpell(
 		// --- Track P10 ---
 		manaSpentCount?: number;
 		// --- End Track P10 ---
+		// --- Track P15 ---
+		phyrexianLifePaidCount?: number;
+		giftRecipientId?: string;
+		// --- End Track P15 ---
 	}
 ): void {
 	const actorId = actor.playerId;
@@ -2088,7 +2283,8 @@ function finalizeCastSpell(
 	const stackFused = Boolean(opts.fused);
 	const castFaceDownSpec = opts.spellMods?.castFaceDown;
 	const faceDownLabel = castFaceDownSpec ? allocateFaceDownLabel(state) : undefined;
-	const stackView = resolveObjectFaces(effectiveCardForObject(inst), {
+	const spellSourceCard = effectiveCardForObject(inst);
+	const stackView = resolveObjectFaces(spellSourceCard, {
 		zone: 'stack',
 		faceIndex: stackFaceIdx,
 		fused: stackFused,
@@ -2112,10 +2308,30 @@ function finalizeCastSpell(
 	}
 
 	const wasForetoldCard = sourceZone === 'exile' && Boolean(inst.foretoldByPlayerId);
-	const effectiveSpellMods: SpellModifications | undefined =
+	// --- Track P15: Gift promised tracking (CR 702.174a–b) & Preparation copy (CR 723.3c) ---
+	const isGiftPaid = Boolean(opts.spellMods?.giftPromised || (opts.optionalCostCounts?.['opt:gift'] ?? 0) > 0);
+	const giftInfo = isGiftPaid ? findFaceGiftKeyword(spellSourceCard, stackFaceIdx) : null;
+	const resolvedGiftRecipientId = isGiftPaid
+		? (opts.giftRecipientId ??
+			state.players.find((p) => p.playerId !== actorId && !p.lost)?.playerId)
+		: undefined;
+	const splicedEntries = splicedSpellAbilitiesForOptionalCounts(
+		actor,
+		opts.optionalCostCounts
+	);
+	for (const sp of splicedEntries) {
+		markHandCardRevealedToAll(state, sp.handInst);
+	}
+	const isPreparationCopy =
+		sourceZone === 'battlefield' || Boolean(opts.spellMods?.preparationCopy);
+	// --- End Track P15 ---
+	const baseSpellMods: SpellModifications | undefined =
 		wasForetoldCard && !opts.spellMods?.foretold
 			? { ...opts.spellMods, foretold: true }
 			: opts.spellMods;
+	const effectiveSpellMods: SpellModifications | undefined = isGiftPaid && !baseSpellMods?.giftPromised
+		? { ...baseSpellMods, giftPromised: true }
+		: baseSpellMods;
 	const exSourceName =
 		opts.exSourceName ??
 		inst.playableFromExileBy?.sourceName ??
@@ -2126,30 +2342,43 @@ function finalizeCastSpell(
 				: opts.castOptionId === 'exile:warp' || inst.warpedByOwnerId
 					? 'Warp'
 					: undefined);
-	if (castFaceDownSpec) {
-		inst.isFaceDown = true;
-		inst.faceDownSpec = { ...castFaceDownSpec };
-		inst.faceDownLabel = faceDownLabel;
-	} else if (inst.isFaceDown) {
-		// CR 702.143a / CR 601.2a: Casting a face-down card in exile for a face-up option turns it face up on the stack.
-		inst.isFaceDown = false;
-		inst.faceDownSpec = undefined;
-		inst.faceDownLabel = undefined;
+	if (isPreparationCopy) {
+		// CR 723.3c: Casting a copy of a prepared permanent's preparation spell unprepares the permanent
+		// while leaving the permanent itself on the battlefield!
+		inst.isPrepared = false;
+		noteLayerInputsChanged(state);
+	} else {
+		if (castFaceDownSpec) {
+			inst.isFaceDown = true;
+			inst.faceDownSpec = { ...castFaceDownSpec };
+			inst.faceDownLabel = faceDownLabel;
+		} else if (inst.isFaceDown) {
+			// CR 702.143a / CR 601.2a: Casting a face-down card in exile for a face-up option turns it face up on the stack.
+			inst.isFaceDown = false;
+			inst.faceDownSpec = undefined;
+			inst.faceDownLabel = undefined;
+		}
+		inst.prototyped = effectiveSpellMods?.prototyped ? true : undefined;
+		inst.manaColorsSpent = opts.manaColorsSpent ? [...opts.manaColorsSpent] : undefined;
+		// --- Track P10 ---
+		inst.manaSpentCount = opts.manaSpentCount;
+		// --- End Track P10 ---
+		// --- Track P9 ---
+		inst.dashed = effectiveSpellMods?.dashed ? true : undefined;
+		// --- End Track P9 ---
+		// --- Track P15 ---
+		inst.compleatedLifePaidCount = opts.phyrexianLifePaidCount;
+		inst.castWithImpending = effectiveSpellMods?.impendingN ? true : undefined;
+		inst.giftPromised = isGiftPaid ? true : undefined;
+		inst.giftRecipientId = resolvedGiftRecipientId;
+		// --- End Track P15 ---
+		moveObject(state, inst, 'stack', {
+			from: { player: sourcePlayer, zone: sourceZone },
+			newTimestamp: true,
+			bumpVersion: true
+		});
+		inst.playableFromExileBy = undefined;
 	}
-	inst.prototyped = effectiveSpellMods?.prototyped ? true : undefined;
-	inst.manaColorsSpent = opts.manaColorsSpent ? [...opts.manaColorsSpent] : undefined;
-	// --- Track P10 ---
-	inst.manaSpentCount = opts.manaSpentCount;
-	// --- End Track P10 ---
-	// --- Track P9 ---
-	inst.dashed = effectiveSpellMods?.dashed ? true : undefined;
-	// --- End Track P9 ---
-	moveObject(state, inst, 'stack', {
-		from: { player: sourcePlayer, zone: sourceZone },
-		newTimestamp: true,
-		bumpVersion: true
-	});
-	inst.playableFromExileBy = undefined;
 
 	if (!actor.commanderCastCounts) {
 		actor.commanderCastCounts = {};
@@ -2160,8 +2389,13 @@ function finalizeCastSpell(
 		actor.commanderCastCounts[inst.instanceId] = inst.commanderCastCount;
 	}
 	actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
+	// --- Track P15: Day/Night active-player spell count (CR 732.5) ---
+	if (state.players[state.activePlayerIndex]?.playerId === actorId) {
+		state.spellsCastByActivePlayerThisTurn = (state.spellsCastByActivePlayerThisTurn ?? 0) + 1;
+	}
+	// --- End Track P15 ---
 	// --- Track P12 ---
-	recordSpellCastWave4(state, actor, inst.card, stackFaceIdx);
+	recordSpellCastWave4(state, actor, spellSourceCard, stackFaceIdx);
 	// --- End Track P12 ---
 
 	const { targets, targetsBySpec, chosenModes, xValue: xVal, castOptionId, optionalCostCounts } = opts;
@@ -2177,16 +2411,18 @@ function finalizeCastSpell(
 			? findPermanentOnBoard(state, awakenLandRef.id)?.inst
 			: undefined;
 	// --- End Track P12 ---
+	const copySourceId = isPreparationCopy ? uid('prep_copy', state) : inst.instanceId;
 	const stackItem: StackItem = withStackItemText(
 		{
 			id: uid('stk', state),
-			sourceInstanceId: inst.instanceId,
-			sourceObjectVersion: inst.objectVersion,
-			card: inst.card,
-			ownerId: inst.ownerId,
+			sourceInstanceId: copySourceId,
+			sourceObjectVersion: isPreparationCopy ? 1 : inst.objectVersion,
+			card: spellSourceCard,
+			ownerId: isPreparationCopy ? actorId : inst.ownerId,
 			controllerId: actorId,
 			kind: 'spell',
 			title: spellDisplayName,
+			...(isPreparationCopy ? { isCopy: true } : {}),
 			...(opts.manaColorsSpent ? { manaColorsSpent: [...opts.manaColorsSpent] } : {}),
 			// --- Track P10 ---
 			...(opts.manaSpentCount !== undefined ? { manaSpentCount: opts.manaSpentCount } : {}),
@@ -2213,12 +2449,19 @@ function finalizeCastSpell(
 				? { awakenTargetVersion: awakenLandPerm.objectVersion }
 				: {}),
 			// --- End Track P12 ---
+			// --- Track P15 ---
+			...(opts.phyrexianLifePaidCount ? { phyrexianLifePaidCount: opts.phyrexianLifePaidCount } : {}),
+			gravestormCount: state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0,
+			...(giftInfo ? { giftKind: giftInfo.giftKind } : {}),
+			...(resolvedGiftRecipientId ? { giftRecipientId: resolvedGiftRecipientId } : {}),
+			...(splicedEntries.length > 0 ? { splicedCards: splicedEntries.map((e) => e.card) } : {}),
+			// --- End Track P15 ---
 			...(optionalCostCounts ? { optionalCostCounts } : {}),
-			commanderCastCount: inst.commanderCastCount,
+			commanderCastCount: isPreparationCopy ? 0 : inst.commanderCastCount,
 			requiresGuidedResolution: false,
 			createdAt: Date.now()
 		},
-		castFaceDownSpec ? '' : inst.card
+		castFaceDownSpec ? '' : spellSourceCard
 	);
 
 	state.stack.push(stackItem);
@@ -2323,6 +2566,11 @@ function finalizeCastSpell(
 		recordSpellManaExpended(state, actor, opts.manaSpentCount!);
 	}
 	// --- End Track P10 ---
+	// --- Track P15: Increment, Ripple, Ravenous, Demonstrate, Gravestorm cast triggers ---
+	for (const pt of collectWave5CastTriggers(state, stackItem, inst, actor)) {
+		enqueuePendingTrigger(state, { ...pt, mode: 'stack' });
+	}
+	// --- End Track P15 ---
 	resetTriggerLoopTracking(state);
 	flushTriggers(state);
 	checkStateBasedActions(state);
@@ -2376,6 +2624,29 @@ function finalizeActivateAbility(
 		}
 	}
 	// --- End Track P12 ---
+	// --- Track P15: oncePerGame & Craft (CR 702.167a) material payment ---
+	if (pcp.oncePerGame && pcp.abilityId && perm.objectVersion === pcp.sourceObjectVersion) {
+		if (!perm.usedOncePerGameAbilityIds?.includes(pcp.abilityId)) {
+			perm.usedOncePerGameAbilityIds = [
+				...(perm.usedOncePerGameAbilityIds ?? []),
+				pcp.abilityId
+			];
+		}
+	}
+	let craftedMaterialCards: ScryfallCard[] | undefined;
+	if (pcp.costKeyword === 'craft') {
+		const craftCards = payCraftMaterialsOnActivate(
+			state,
+			actor,
+			pcp.sourceInstanceId,
+			card,
+			pcp.craftMaterialIds
+		);
+		if (craftCards.length > 0) {
+			craftedMaterialCards = craftCards;
+		}
+	}
+	// --- End Track P15 ---
 	const abModal =
 		// --- Track P10 ---
 		pcp.grantedAbilityText
@@ -2456,6 +2727,9 @@ function finalizeActivateAbility(
 			// --- Track P10 ---
 			...(pcp.grantedAbilityText ? { grantedAbilityText: pcp.grantedAbilityText } : {}),
 			// --- End Track P10 ---
+			// --- Track P15 ---
+			...(craftedMaterialCards ? { splicedCards: craftedMaterialCards } : {}),
+			// --- End Track P15 ---
 			controllerId: actorId,
 			kind: 'activated',
 			abilityId: pcp.abilityId,
@@ -2606,6 +2880,11 @@ function executeOrResumePendingCostPayment(
 			pcp.manaSpentCount = ctx.spendCtx.capturedManaSpentCount;
 		}
 		// --- End Track P10 ---
+		// --- Track P15 ---
+		if (ctx.spendCtx?.capturedPhyrexianLifePaidCount) {
+			pcp.phyrexianLifePaidCount = ctx.spendCtx.capturedPhyrexianLifePaidCount;
+		}
+		// --- End Track P15 ---
 	}
 	const paid = executeCostPaymentParts(
 		ctx,
@@ -2657,8 +2936,12 @@ function executeOrResumePendingCostPayment(
 				additionalIncomplete: pcp.additionalIncomplete,
 				manaColorsSpent: pcp.manaColorsSpent,
 				// --- Track P10 ---
-				manaSpentCount: pcp.manaSpentCount
+				manaSpentCount: pcp.manaSpentCount,
 				// --- End Track P10 ---
+				// --- Track P15 ---
+				phyrexianLifePaidCount: pcp.phyrexianLifePaidCount,
+				giftRecipientId: pcp.giftRecipientId
+				// --- End Track P15 ---
 			});
 		}
 	} else if (pcp.kind === 'activate_ability') {
@@ -2801,6 +3084,10 @@ function isAbilityActivationConditionMet(
 	perm: CardInstance,
 	cond: Condition
 ): boolean {
+	// --- Track P15 ---
+	const p15Res = evaluateP15Condition(cond, state, actorId, { source: perm });
+	if (p15Res !== null) return p15Res;
+	// --- End Track P15 ---
 	if (
 		cond.k === 'creatureDiedThisTurn' ||
 		cond.k === 'attackedThisTurn' ||
@@ -2951,6 +3238,26 @@ function checkActivationRestrictionsOnly(
 		}
 	}
 	// --- End Track P12 ---
+	// --- Track P15: Power-up, Craft, Reconfigure, Transfigure, Aura swap, activatorWho ---
+	if (ab.activatorWho === 'opponent' && actorId === perm.controllerId) {
+		return {
+			ok: false,
+			error: `${perm.card.name}: Only an opponent may activate this ability (CR 602.2).`
+		};
+	}
+	const actorObj = state.players.find((p) => p.playerId === actorId);
+	if (
+		actorObj &&
+		(ab.costKeyword === 'power-up' ||
+			ab.costKeyword === 'craft' ||
+			ab.costKeyword === 'reconfigure' ||
+			ab.costKeyword === 'transfigure' ||
+			ab.costKeyword === 'aura swap')
+	) {
+		const w5Err = checkWave5AbilityActivation(state, actorObj, perm, ab.id, ab.costKeyword);
+		if (w5Err) return { ok: false, error: w5Err };
+	}
+	// --- End Track P15 ---
 	const restrictions = ab.activationRestrictions;
 	if (!restrictions?.length) return { ok: true };
 	const activePlayer = state.players[state.activePlayerIndex];
@@ -2960,6 +3267,23 @@ function checkActivationRestrictionsOnly(
 			error: `${perm.card.name}: This ability can only be activated once each turn.`
 		};
 	}
+	// --- Track P15 ---
+	if (restrictions.includes('oncePerGame') && perm.usedOncePerGameAbilityIds?.includes(ab.id)) {
+		return {
+			ok: false,
+			error: `${perm.card.name}: This ability can only be activated once per game.`
+		};
+	}
+	if (restrictions.includes('beforeAttackers')) {
+		const preAtkPhases: GamePhase[] = ['upkeep', 'draw', 'main1', 'begin_combat'];
+		if (!preAtkPhases.includes(state.phase)) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: Activate only before attackers are declared.`
+			};
+		}
+	}
+	// --- End Track P15 ---
 	if (restrictions.includes('duringYourTurn') && activePlayer?.playerId !== actorId) {
 		return {
 			ok: false,
@@ -3605,6 +3929,11 @@ function simulateOrExecuteManaOnly(
 				// --- Track P12 ---
 				recordPlayerLifeLossWave4(player, lifeToPay);
 				// --- End Track P12 ---
+				// --- Track P15: Compleated life-paid tracking (CR 702.150a) & Speed trigger (CR 702.178b) ---
+				spendCtx.capturedPhyrexianLifePaidCount =
+					(spendCtx.capturedPhyrexianLifePaidCount ?? 0) + Math.floor(lifeToPay / 2);
+				onPlayerLostLifeCheckSpeedTrigger(state, player.playerId, lifeToPay);
+				// --- End Track P15 ---
 			}
 		}
 		return true;
@@ -4165,6 +4494,11 @@ function simulateOrExecuteManaOnly(
 			// --- Track P12 ---
 			recordPlayerLifeLossWave4(player, lifeToPay);
 			// --- End Track P12 ---
+			// --- Track P15: Compleated life-paid tracking (CR 702.150a) & Speed trigger (CR 702.178b) ---
+			spendCtx.capturedPhyrexianLifePaidCount =
+				(spendCtx.capturedPhyrexianLifePaidCount ?? 0) + Math.floor(lifeToPay / 2);
+			onPlayerLostLifeCheckSpeedTrigger(state, player.playerId, lifeToPay);
+			// --- End Track P15 ---
 		}
 	}
 
@@ -4785,9 +5119,18 @@ export function runBeginningOfTurn(state: GameState): void {
 		// --- Track P9 ---
 		p.damageDealtToThisTurn = 0;
 		// --- End Track P9 ---
+		// --- Track P15 ---
+		delete p.dealtCombatDamageWithSubtypesThisTurn;
+		delete p.dealtCombatDamageWithCommanderThisTurn;
+		// --- End Track P15 ---
 	}
 	state.playersDrawnThisTurn = [];
 	state.triggeredOnceThisTurn = undefined;
+	// --- Track P15: Day/Night spell history (CR 732.5) & Gravestorm counter (CR 702.69a) ---
+	state.prevTurnSpellsCastByActivePlayer = state.spellsCastByActivePlayerThisTurn ?? 0;
+	state.spellsCastByActivePlayerThisTurn = 0;
+	state.permanentsPutIntoGraveyardFromBattlefieldThisTurn = 0;
+	// --- End Track P15 ---
 	// --- Track P7 ---
 	resetTurnHistoryAtTurnStart(state);
 	// --- End Track P7 ---
@@ -5533,11 +5876,48 @@ function applyGameActionInner(
 				`${actor.username} unlocked ${faceDef.name} on ${perm.card.name} (CR 709.5e).`,
 				actorId
 			);
+			// --- Track P15: Emit DoorUnlocked (CR 709.5h) & RoomFullyUnlocked (CR 709.5i) ---
+			emitEvent(state, {
+				kind: 'DoorUnlocked',
+				playerId: actorId,
+				objectId: perm.instanceId,
+				object: perm,
+				faceIndex: action.faceIndex
+			});
+			const totalRoomDoors = compileCard(effectiveCardForObject(perm)).faces.filter((f) =>
+				f.characteristics.subtypes.includes('Room')
+			).length;
+			if (totalRoomDoors >= 2 && (perm.unlockedFaces?.length ?? 0) >= totalRoomDoors) {
+				emitEvent(state, {
+					kind: 'RoomFullyUnlocked',
+					playerId: actorId,
+					objectId: perm.instanceId,
+					object: perm
+				});
+			}
+			// --- End Track P15 ---
 			resetTriggerLoopTracking(state);
 			flushTriggers(state);
 			checkStateBasedActions(state);
 			return { ok: true };
 		}
+
+		// --- Track P15: Preparation spell copy cast action (CR 723.3c) ---
+		case 'cast_preparation_copy': {
+			return applyGameAction(state, actorId, {
+				type: 'cast_spell',
+				instanceId: action.instanceId,
+				fromZone: 'battlefield',
+				optionId: 'battlefield:prepare_copy',
+				faceIndex: 1,
+				targets: action.targets,
+				xValue: action.xValue,
+				modes: action.modes,
+				costPayment: action.costPayment,
+				targetDivisions: action.targetDivisions
+			});
+		}
+		// --- End Track P15 ---
 
 		case 'suspend_card': {
 			const handIdx = actor.hand.findIndex((c) => c.instanceId === action.instanceId);
@@ -5733,7 +6113,7 @@ function applyGameActionInner(
 			// Locate card in hand, command zone, graveyard, playable exile, or top of library
 			let inst: CardInstance | undefined;
 			let sourcePlayer: PlayerGameState = actor;
-			let sourceZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library' = 'hand';
+			let sourceZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library' | 'battlefield' = 'hand';
 
 			const handIdx = actor.hand.findIndex((c) => c.instanceId === action.instanceId);
 			if (handIdx >= 0 && (!action.fromZone || action.fromZone === 'hand')) {
@@ -5777,6 +6157,21 @@ function applyGameActionInner(
 				sourcePlayer = actor;
 				sourceZone = 'library';
 			}
+			// --- Track P15: Preparation spell copy cast from battlefield (CR 723.3c) ---
+			if (
+				!inst &&
+				action.fromZone === 'battlefield'
+			) {
+				const bfPrep = actor.battlefield.find(
+					(c) => !c.phasedOut && c.instanceId === action.instanceId
+				);
+				if (bfPrep) {
+					inst = bfPrep;
+					sourcePlayer = actor;
+					sourceZone = 'battlefield';
+				}
+			}
+			// --- End Track P15 ---
 
 			if (!inst) {
 				return {
@@ -5840,9 +6235,21 @@ function applyGameActionInner(
 			const targets = action.targets || [];
 			const optFaceIdx = castOption.faceIndex ?? 0;
 			const optFused = Boolean(castOption.fused);
+			// --- Track P15: Cleave / Gift-promised modal lookup ---
+			const isOptCleaved = Boolean(castOption.spellMods?.cleaved);
+			const isOptGiftPromised = Boolean(
+				castOption.spellMods?.giftPromised || (normalizedOptCounts['opt:gift'] ?? 0) > 0
+			);
 			const compiledModal = castOption.spellMods?.castFaceDown
 				? undefined
-				: compileSpellEffects(inst.card, optFaceIdx, optFused)?.modal;
+				: compileOptionSpellEffects(
+						inst.card,
+						optFaceIdx,
+						optFused,
+						isOptCleaved,
+						isOptGiftPromised
+					)?.modal;
+			// --- End Track P15 ---
 			const activeSpec = (sp: TargetSpec) =>
 				!sp.condition || isCastConditionMet(sp.condition, inst.card, normalizedOptCounts, castOption);
 			const chooseAllModes = hasChooseAllModesOptionalCost(
@@ -5959,6 +6366,19 @@ function applyGameActionInner(
 						action.costAidColorChoices
 					);
 					if (!r.ok) return false;
+					// --- Track P15: Verify Assist player can pay their generic mana share ---
+					if (r.assistPlayerId && (r.assistGenericPaid ?? 0) > 0) {
+						const assistPl = state.players.find(
+							(p) => p.playerId === r.assistPlayerId && !p.lost
+						);
+						if (
+							!assistPl ||
+							!canPayOrAutoTap(assistPl, parseManaCost(`{${r.assistGenericPaid}}`), state)
+						) {
+							return false;
+						}
+					}
+					// --- End Track P15 ---
 					const res = new Set<string>([...r.tapIds, ...r.exileIds]);
 					return canPayOrAutoTap(
 						actor,
@@ -6013,6 +6433,27 @@ function applyGameActionInner(
 			const aidTapIds = aidResult.tapIds;
 			const aidExileIds = aidResult.exileIds;
 			const reservedAidIds = new Set<string>([...aidTapIds, ...aidExileIds]);
+			// --- Track P15: Assist player verification (CR 702.132a) ---
+			const assistPlayerObj =
+				aidResult.assistPlayerId && (aidResult.assistGenericPaid ?? 0) > 0
+					? state.players.find((p) => p.playerId === aidResult.assistPlayerId && !p.lost)
+					: undefined;
+			if (aidResult.assistPlayerId && (aidResult.assistGenericPaid ?? 0) > 0) {
+				if (
+					!assistPlayerObj ||
+					!canPayOrAutoTap(
+						assistPlayerObj,
+						parseManaCost(`{${aidResult.assistGenericPaid}}`),
+						state
+					)
+				) {
+					return {
+						ok: false,
+						error: 'Assisting player has insufficient mana to pay generic mana for Assist.'
+					};
+				}
+			}
+			// --- End Track P15 ---
 			// --- Track P12: Emerge (CR 702.119a) & Harmonize (CR 702.180a) cost payment ---
 			const emergeSacParts: SerializedPlannedCost[] = [];
 			if (castOption.id === 'alt:emerge') {
@@ -6231,6 +6672,22 @@ function applyGameActionInner(
 				) {
 					return { ok: false, error: manaError };
 				}
+				// --- Track P15: Deduct Assist generic mana from assisting player (CR 702.132a) ---
+				if (assistPlayerObj && (aidResult.assistGenericPaid ?? 0) > 0) {
+					if (
+						!payManaWithAutoTap(
+							assistPlayerObj,
+							parseManaCost(`{${aidResult.assistGenericPaid}}`),
+							state
+						)
+					) {
+						return {
+							ok: false,
+							error: 'Assisting player has insufficient mana to pay generic mana for Assist.'
+						};
+					}
+				}
+				// --- End Track P15 ---
 				const pcp: PendingCostPayment = {
 					kind: 'cast_spell',
 					actorId,
@@ -6249,6 +6706,9 @@ function applyGameActionInner(
 					...(castOption.fused ? { fused: true } : {}),
 					spellMods: effectiveSpellMods,
 					...(hasOptCounts ? { optionalCostCounts: normalizedOptCounts } : {}),
+					// --- Track P15 ---
+					...(action.giftRecipientId ? { giftRecipientId: action.giftRecipientId } : {}),
+					// --- End Track P15 ---
 					...(inst.playableFromExileBy?.sourceName
 						? { exSourceName: inst.playableFromExileBy.sourceName }
 						: {}),
@@ -6267,10 +6727,40 @@ function applyGameActionInner(
 					nextPartIndex: 0,
 					nextObjectIndex: 0,
 					descriptions: [],
-					aidDescriptions: []
+					aidDescriptions: [...aidResult.summaryParts]
 				};
 				return executeOrResumePendingCostPayment(state, pcp, ctx);
 			}
+			// --- Track P15: Verify actor can pay before deducting Assist player mana ---
+			if (
+				assistPlayerObj &&
+				(aidResult.assistGenericPaid ?? 0) > 0 &&
+				!canPayOrAutoTap(
+					actor,
+					remainingCostReq,
+					state,
+					action.costPayment?.phyrexianLifeCount,
+					spendCtx,
+					reservedAidIds
+				)
+			) {
+				return { ok: false, error: manaError };
+			}
+			if (assistPlayerObj && (aidResult.assistGenericPaid ?? 0) > 0) {
+				if (
+					!payManaWithAutoTap(
+						assistPlayerObj,
+						parseManaCost(`{${aidResult.assistGenericPaid}}`),
+						state
+					)
+				) {
+					return {
+						ok: false,
+						error: 'Assisting player has insufficient mana to pay generic mana for Assist.'
+					};
+				}
+			}
+			// --- End Track P15 ---
 			if (
 				!payManaWithAutoTap(
 					actor,
@@ -6296,11 +6786,16 @@ function applyGameActionInner(
 				fused: castOption.fused,
 				spellMods: effectiveSpellMods,
 				...(hasOptCounts ? { optionalCostCounts: normalizedOptCounts } : {}),
+				...(aidResult.summaryParts.length > 0 ? { aidDescriptions: aidResult.summaryParts } : {}),
 				additionalIncomplete: Boolean(additional && !additional.complete),
 				manaColorsSpent: spendCtx.capturedColorsSpent,
 				// --- Track P10 ---
-				manaSpentCount: spendCtx.capturedManaSpentCount
+				manaSpentCount: spendCtx.capturedManaSpentCount,
 				// --- End Track P10 ---
+				// --- Track P15 ---
+				phyrexianLifePaidCount: spendCtx.capturedPhyrexianLifePaidCount,
+				giftRecipientId: action.giftRecipientId
+				// --- End Track P15 ---
 			});
 			return { ok: true };
 		}
@@ -6338,6 +6833,14 @@ function applyGameActionInner(
 			}
 
 			const abXValue = Math.max(0, Math.floor(action.xValue ?? 0));
+			// --- Track P15: Validate -X loyalty activation cost (CR 606.4) ---
+			if (ab.loyaltySign === '-' && abXValue > (perm.counters.loyalty ?? 0)) {
+				return {
+					ok: false,
+					error: `${perm.card.name} only has ${perm.counters.loyalty ?? 0} loyalty counter(s); cannot pay -${abXValue} (CR 606.4).`
+				};
+			}
+			// --- End Track P15 ---
 			const abTargetInfo: TargetRequirementInfo = ab.targetInfo;
 			// --- Track P7 ---
 			const permEffCard =
@@ -6418,10 +6921,11 @@ function applyGameActionInner(
 				ab.manaCost,
 				ab.costKeyword,
 				abXValue,
-				// --- Track P11 ---
+				// --- Track P11 & P15 ---
 				perm,
-				ab.isManaAbility
-				// --- End Track P11 ---
+				ab.isManaAbility,
+				ab.powerUpReduction
+				// --- End Track P11 & P15 ---
 			).requirement;
 			const phyAbilityChoice = maybeAskPhyrexianCostChoice(
 				state,
@@ -6492,6 +6996,10 @@ function applyGameActionInner(
 				...(perm.chosenSubType ? { sourceChosenSubType: perm.chosenSubType } : {}),
 				...(perm.chosenColor ? { sourceChosenColor: perm.chosenColor } : {}),
 				onceEachTurn: Boolean(ab.activationRestrictions?.includes('onceEachTurn')),
+				// --- Track P15 ---
+				...(ab.activationRestrictions?.includes('oncePerGame') ? { oncePerGame: true } : {}),
+				...(action.craftMaterialIds ? { craftMaterialIds: [...action.craftMaterialIds] } : {}),
+				// --- End Track P15 ---
 				effectText: ab.effectText,
 				abilityCostIncomplete: !abilityCost.complete,
 				...(ab.grantSourceCard ? { grantSourceCard: ab.grantSourceCard } : {}),
@@ -6989,6 +7497,9 @@ function performDeclareAttackers(
 		attackerInstanceId: string;
 		defenderPlayerId: string;
 		defenderPlaneswalkerId?: string | null;
+		// --- Track P15 ---
+		defenderBattleId?: string | null;
+		// --- End Track P15 ---
 	}>,
 	fromPhaseEntry: boolean,
 	/** Only for the bot's last-resort empty declaration, after a 'rule' line has been logged. */
@@ -7027,8 +7538,39 @@ function performDeclareAttackers(
 			return { ok: false, error: `${creature.card.name} cannot attack.` };
 		}
 
+		// --- Track P15: CR 310.8–9 Attacking a Battle ---
+		if (assign.defenderPlaneswalkerId && assign.defenderBattleId) {
+			return {
+				ok: false,
+				error: 'A creature cannot attack both a planeswalker and a battle (CR 508.1b).'
+			};
+		}
+		let resolvedDefenderPlayerId = assign.defenderPlayerId;
+		if (assign.defenderBattleId) {
+			const targetBattleFound = findPermanentOnBoard(state, assign.defenderBattleId);
+			if (
+				!targetBattleFound ||
+				targetBattleFound.inst.phasedOut ||
+				!isPermanentBattle(state, targetBattleFound.inst)
+			) {
+				return { ok: false, error: 'Invalid defending battle (CR 310.8a, 508.1b).' };
+			}
+			const protectorId = targetBattleFound.inst.protectorId;
+			if (!protectorId) {
+				return { ok: false, error: 'That battle currently has no protector (CR 310.8a).' };
+			}
+			if (protectorId === actorId) {
+				return {
+					ok: false,
+					error: `Strict Rules Violation: You cannot attack ${targetBattleFound.inst.card.name} because you are its protector (CR 310.8b, 310.9b).`
+				};
+			}
+			resolvedDefenderPlayerId = protectorId;
+		}
+		// --- End Track P15 ---
+
 		const defender = state.players.find(
-			(p) => p.playerId === assign.defenderPlayerId && !p.lost
+			(p) => p.playerId === resolvedDefenderPlayerId && !p.lost
 		);
 		if (!defender || defender.playerId === actorId) {
 			return { ok: false, error: 'Invalid defending player.' };
@@ -7076,7 +7618,8 @@ function performDeclareAttackers(
 			if (
 				nonGoaderAvailable &&
 				(creature.goadedByPlayerIds.includes(defender.playerId) ||
-					Boolean(assign.defenderPlaneswalkerId))
+					Boolean(assign.defenderPlaneswalkerId) ||
+					Boolean(assign.defenderBattleId))
 			) {
 				return {
 					ok: false,
@@ -7102,7 +7645,8 @@ function performDeclareAttackers(
 			if (
 				canAttackReqOpp &&
 				(defender.playerId !== creature.encoreMustAttackPlayerId ||
-					Boolean(assign.defenderPlaneswalkerId))
+					Boolean(assign.defenderPlaneswalkerId) ||
+					Boolean(assign.defenderBattleId))
 			) {
 				return {
 					ok: false,
@@ -7113,7 +7657,7 @@ function performDeclareAttackers(
 		// --- End Track P12 ---
 
 		// Check attack tax on defending player (CR 508.1d)
-		if (!assign.defenderPlaneswalkerId) {
+		if (!assign.defenderPlaneswalkerId && !assign.defenderBattleId) {
 			totalPropagandaTaxGeneric += getAttackTaxGeneric(state, defender);
 		}
 	}
@@ -7168,8 +7712,14 @@ function performDeclareAttackers(
 		const creature = actor.battlefield.find(
 			(c) => c.instanceId === assign.attackerInstanceId
 		)!;
+		// --- Track P15 ---
+		const defBattleProtectorId = assign.defenderBattleId
+			? findPermanentOnBoard(state, assign.defenderBattleId)?.inst.protectorId
+			: undefined;
+		const effectiveDefId = defBattleProtectorId ?? assign.defenderPlayerId;
+		// --- End Track P15 ---
 		const defender = state.players.find(
-			(p) => p.playerId === assign.defenderPlayerId && !p.lost
+			(p) => p.playerId === effectiveDefId && !p.lost
 		)!;
 		if (!vigilantIds.has(creature.instanceId)) {
 			tapPermanent(state, creature);
@@ -7179,6 +7729,9 @@ function performDeclareAttackers(
 			controllerId: actorId,
 			defenderPlayerId: defender.playerId,
 			defenderPlaneswalkerId: assign.defenderPlaneswalkerId || null,
+			// --- Track P15 ---
+			...(assign.defenderBattleId ? { defenderBattleId: assign.defenderBattleId } : {}),
+			// --- End Track P15 ---
 			blockerInstanceIds: [],
 			wasBlocked: false
 		});
@@ -7225,6 +7778,14 @@ function performDeclareAttackers(
 			playerId: actor.playerId,
 			attackerIds: validAttackers.map((a) => a.attackerInstanceId)
 		});
+		// --- Track P15: Provoke attack triggers (CR 702.39a) ---
+		for (const va of validAttackers) {
+			const atkInst = actor.battlefield.find((c) => c.instanceId === va.attackerInstanceId);
+			if (atkInst) {
+				enqueueProvokeAttackTriggers(state, atkInst, va.defenderPlayerId);
+			}
+		}
+		// --- End Track P15 ---
 	} else {
 		addLog(state, 'combat', `${actor.username} declared no attackers.`, actorId);
 	}
@@ -7446,9 +8007,12 @@ export function chooseBotBlockAssignments(
 			// --- Track P7 ---
 			if (isCantBlockThisTurn(state, b)) continue;
 			// --- End Track P7 ---
-			if (!hasRestriction(state, b, 'blocksEachCombat')) continue;
+			// --- Track P15: Provoke requirement (CR 702.39a) ---
+			if (!hasRestriction(state, b, 'blocksEachCombat') && !b.provokeMustBlockId) continue;
 
 			const legalAtks = attacksAgainstBot.filter((atk) => {
+				if (b.provokeMustBlockId && atk.attackerInstanceId !== b.provokeMustBlockId) return false;
+				// --- End Track P15 ---
 				const atkOwner = state.players.find((p) => p.playerId === atk.controllerId);
 				const atkCard = atkOwner?.battlefield.find(
 					(c) => !c.phasedOut && c.instanceId === atk.attackerInstanceId
@@ -9658,6 +10222,9 @@ function beginPhase(state: GameState, phase: GamePhase, activePlayer?: PlayerGam
 	let stepTurnBasedPaused = false;
 	withTriggersDeferred(state, () => {
 		if (phase === 'untap' && active && !active.lost) {
+			// --- Track P15: Day/Night turn-based transition at start of untap (CR 732.5, CR 502.4) ---
+			checkDayNightUntapTransition(state);
+			// --- End Track P15 ---
 			// --- Track P11 ---
 			stepTurnBasedPaused = executeUntapTurnBasedActions(state, active);
 			// --- End Track P11 ---
@@ -9815,8 +10382,12 @@ for (const kind of [
 	// --- Track P12 ---
 	'ClassLevelGained',
 	'CaseSolved',
-	'BecameRenowned'
+	'BecameRenowned',
 	// --- End Track P12 ---
+	// --- Track P15 ---
+	'DoorUnlocked',
+	'RoomFullyUnlocked'
+	// --- End Track P15 ---
 ] as const) {
 	registerEventHandler(kind, (state, ev) => {
 		// --- Track P12 ---
@@ -9884,6 +10455,12 @@ registerEventHandler('PhaseBegin', (state, ev) => {
 		runSuspendUpkeep(state, activePlayer);
 	}
 	matchTriggers(state, ev);
+	// --- Track P15: CR 702.192a / 722 Paradigm precombat main phase trigger ---
+	if (ev.phase === 'main1' && activePlayer) {
+		enqueueParadigmMain1Triggers(state, activePlayer);
+		flushTriggers(state);
+	}
+	// --- End Track P15 ---
 	if ((ev.phase === 'end_step' || ev.phase === 'upkeep' || ev.phase === 'end_combat') && activePlayer) {
 		flushTriggers(state);
 		if (ev.phase === 'end_step' && !activePlayer.lost && state.monarchPlayerId === activePlayer.playerId) {
@@ -9983,6 +10560,13 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 	const sourceWasCast = Boolean(t.sourceWasCast ?? sourceObjForProto.wasCast);
 	const sourceCastFromZone = t.sourceCastFromZone ?? sourceObjForProto.castFromZone;
 	// --- End Track P7 ---
+	// --- Track P15 ---
+	const sourceGiftPromised = Boolean(t.sourceGiftPromised ?? sourceObjForProto.giftPromised);
+	const sourceEnteredWithX = t.sourceEnteredWithX ?? sourceObjForProto.enteredWithX;
+	const sourceCastWithImpending = Boolean(
+		t.sourceCastWithImpending ?? sourceObjForProto.castWithImpending
+	);
+	// --- End Track P15 ---
 	const sourceIsFaceDown = Boolean(foundSource?.inst.isFaceDown);
 	const sourceFaceDownLabel = foundSource?.inst.faceDownLabel;
 	const sourceFaceDownSpec = foundSource?.inst.faceDownSpec;
@@ -10031,6 +10615,18 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(t.wave4N !== undefined ? { wave4N: t.wave4N } : {}),
 			...(t.wave4CostText !== undefined ? { wave4CostText: t.wave4CostText } : {}),
 			// --- End Track P12 ---
+			// --- Track P15 ---
+			...(sourceGiftPromised ? { sourceGiftPromised: true } : {}),
+			...(sourceEnteredWithX !== undefined ? { sourceEnteredWithX } : {}),
+			...(sourceCastWithImpending ? { sourceCastWithImpending: true } : {}),
+			...(t.gravestormCount !== undefined ? { gravestormCount: t.gravestormCount } : {}),
+			...(t.giftKind ? { giftKind: t.giftKind } : {}),
+			...(t.giftRecipientId ? { giftRecipientId: t.giftRecipientId } : {}),
+			...(t.wave5Tag ? { wave5Tag: t.wave5Tag } : {}),
+			...(t.wave5N !== undefined ? { wave5N: t.wave5N } : {}),
+			...(t.wave5CostText !== undefined ? { wave5CostText: t.wave5CostText } : {}),
+			...(t.wave5Card ? { wave5Card: t.wave5Card } : {}),
+			// --- End Track P15 ---
 			...(sourcePrototyped ? { sourcePrototyped: true } : {}),
 			// --- Track P7 ---
 			...(sourceWasCast ? { sourceWasCast: true } : {}),
@@ -10201,6 +10797,50 @@ function resolveStackItemCompiledEffects(item: StackItem) {
 			item.chosenModes
 		);
 	}
+	// --- Track P15: Cleave (CR 702.148), Gift-promised (CR 702.174b), & Splice (CR 702.47c) ---
+	if (item.kind === 'spell') {
+		const cleaved = Boolean(item.spellMods?.cleaved);
+		const giftPromised = Boolean(
+			item.spellMods?.giftPromised ||
+				item.giftKind ||
+				(item.optionalCostCounts?.['opt:gift'] ?? 0) > 0
+		);
+		const hasSplice = Boolean(item.splicedCards && item.splicedCards.length > 0);
+		if (cleaved || giftPromised || hasSplice) {
+			const base = compileOptionSpellEffects(
+				item.card,
+				item.faceIndex ?? 0,
+				Boolean(item.fused),
+				cleaved,
+				giftPromised,
+				item.chosenModes
+			);
+			if (!base) return null;
+			if (!hasSplice) {
+				return {
+					steps: base.steps,
+					targets: base.targets,
+					...(base.modal ? { modal: base.modal } : {}),
+					unparsed: [] as []
+				};
+			}
+			const accSteps: EffectStep[] = [...base.steps];
+			const accTargets: TargetSpec[] = [...base.targets];
+			for (const spCard of item.splicedCards ?? []) {
+				const sp = compileSpellEffects(spCard, 0, false);
+				if (!sp || sp.unparsed.length > 0) return null;
+				accSteps.push(...offsetTargetIndicesInSteps(sp.steps, accTargets.length));
+				accTargets.push(...sp.targets);
+			}
+			return {
+				steps: accSteps,
+				targets: accTargets,
+				...(base.modal ? { modal: base.modal } : {}),
+				unparsed: [] as []
+			};
+		}
+	}
+	// --- End Track P15 ---
 	return compiledStackItemEffects(item);
 }
 
@@ -10745,6 +11385,10 @@ function triggerItemTargetSpecs(item: StackItem): TargetSpec[] {
 	const w4Specs = wave4TriggerTargetSpecs(item);
 	if (w4Specs) return w4Specs;
 	// --- End Track P12 ---
+	// --- Track P15: Provoke target specs ---
+	const w5Specs = wave5TriggerTargetSpecs(item);
+	if (w5Specs) return w5Specs;
+	// --- End Track P15 ---
 	const compiled = triggerItemEffect(item);
 	if (!compiled || !staticallyInterpretable(compiled, true) || !triggerSpecsSupported(compiled.targets)) return [];
 	return compiled.targets;
@@ -11537,6 +12181,7 @@ function resolveWardTrigger(
 		} else if (lifeCost !== undefined) {
 			opp.life -= lifeCost;
 			recordPlayerLifeLossWave4(opp, lifeCost);
+			if (lifeCost > 0) onPlayerLostLifeCheckSpeedTrigger(state, opp.playerId, lifeCost);
 			paid = true;
 			addLog(
 				state,
@@ -11720,6 +12365,9 @@ function isUnautomatedStackItem(item: StackItem): boolean {
 		return false;
 	}
 	// --- End Track P12 ---
+	// --- Track P15 ---
+	if (isWave5StackItem(item)) return false;
+	// --- End Track P15 ---
 	if (item.kind === 'activated') return true;
 	if (item.kind === 'spell') {
 		const types = resolveObjectFaces(item.card, stackItemFaceOptions(item)).types;
@@ -12100,6 +12748,19 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	}
 	// --- End Track P12 ---
 
+	// --- Track P15 ---
+	if (isWave5StackItem(item)) {
+		const wave5Res = resolveWave5StackItem(state, item);
+		if (wave5Res === 'paused') return;
+		triggerPathCounts.interpreter++;
+		removeItemFromStack();
+		givePriorityToActiveOrNextPlayer(state);
+		state.passedPriorityPlayerIds = [];
+		checkStateBasedActions(state);
+		return;
+	}
+	// --- End Track P15 ---
+
 	// A spell or ability the compiler marked supported resolves on the IR interpreter
 	// (runtime/effects.ts); anything else isn't automated (below).
 	// --- Track P12: Backup-granted innate activated ability lookup ---
@@ -12135,6 +12796,17 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			addLog(state, 'rule', `${controller.username} (bot) skipped unsupported ability ${item.title}: it isn't automated.`, controller.playerId);
 		}
 	}
+	// --- Track P15: CR 702.174b instant/sorcery Gift delivery & CR 702.131b spell Ascend ---
+	if (item.kind === 'spell' && !item.effectResume) {
+		const preResolveTypes = resolveObjectFaces(item.card, stackItemFaceOptions(item)).types;
+		if (preResolveTypes.includes('Instant') || preResolveTypes.includes('Sorcery')) {
+			if (item.giftKind) {
+				deliverPromisedGift(state, item.giftKind, item.giftRecipientId, item.card.name);
+			}
+			checkSpellAscendOnResolve(state, item, controller);
+		}
+	}
+	// --- End Track P15 ---
 	let exiledBySelfReference = false;
 	let librarySelf: { position: 'top' | 'bottom'; fromTop?: number } | undefined;
 	const steps: EffectStep[] = compiled?.steps ?? [];
@@ -12327,6 +12999,19 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			perm.wasCast = !item.isCopy ? true : undefined;
 			perm.castFromZone = !item.isCopy ? item.castFromZone : undefined;
 			// --- End Track P7 ---
+			// --- Track P15 ---
+			perm.compleatedLifePaidCount = item.phyrexianLifePaidCount
+				? item.phyrexianLifePaidCount
+				: undefined;
+			perm.castWithImpending = item.spellMods?.impendingN ? true : undefined;
+			perm.giftPromised =
+				item.giftKind ||
+				item.spellMods?.giftPromised ||
+				(item.optionalCostCounts?.['opt:gift'] ?? 0) > 0
+					? true
+					: undefined;
+			perm.giftRecipientId = item.giftRecipientId;
+			// --- End Track P15 ---
 			// Reset pre-filled loyalty so moveObject initializes loyalty with counterMultiplier (CR 306.5b)
 			perm.counters.loyalty = 0;
 
@@ -12336,6 +13021,11 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 					perm.faceDownSpec = { ...item.faceDownSpec };
 				}
 				perm.faceDownLabel = item.faceDownLabel ?? allocateFaceDownLabel(state);
+			} else if (item.spellMods?.convertedMttm) {
+				// --- Track P15: CR 702.162a More Than Meets the Eye enters converted (back face up) ---
+				perm.activeFaceIndex = 1;
+				perm.transformed = true;
+				// --- End Track P15 ---
 			} else if (item.faceIndex !== undefined) {
 				perm.activeFaceIndex = item.faceIndex;
 				// CR 702.146b / CR 712.8c: A transforming DFC cast transformed (e.g. via Disturb) enters transformed.
@@ -12471,16 +13161,57 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 						});
 					}
 				}
+				// --- Track P15: CR 709.5h Room entering with unlocked door(s) triggers "When you unlock this door" ---
+				if (stackSubtypes.includes('Room') && perm.unlockedFaces && perm.unlockedFaces.length > 0) {
+					for (const doorIdx of perm.unlockedFaces) {
+						emitEvent(state, {
+							kind: 'DoorUnlocked',
+							playerId: controller.playerId,
+							objectId: perm.instanceId,
+							object: perm,
+							faceIndex: doorIdx
+						});
+					}
+					const totalRoomDoors = compileCard(effectiveCardForObject(perm)).faces.filter((f) =>
+						f.characteristics.subtypes.includes('Room')
+					).length;
+					if (totalRoomDoors >= 2 && perm.unlockedFaces.length >= totalRoomDoors) {
+						emitEvent(state, {
+							kind: 'RoomFullyUnlocked',
+							playerId: controller.playerId,
+							objectId: perm.instanceId,
+							object: perm
+						});
+					}
+				}
+				// --- End Track P15 ---
 			}
 			flushTriggers(state);
-		} else if (!item.isCopy) {
+		} else if (!handleParadigmSpellPostResolve(state, item, controller) && !item.isCopy) {
 			// CR 702.27a: If the buyback cost was paid, put the resolving spell into its owner's hand
 			// instead of into that player's graveyard (moveStackSpellToZone still overrides with
 			// exileOnLeaveStack per CR 702.34a when cast via Flashback).
 			if (exiledBySelfReference || item.spellMods?.exileAdventureOnResolve) {
 				moveStackSpellToZone(state, item, 'exile');
+			} else if (item.spellMods?.shuffleOmenOnResolve && !item.spellMods?.exileOnLeaveStack) {
+				// --- Track P15: CR 721.3d Omen spell shuffles into owner's library on resolution ---
+				moveStackSpellToZone(state, item, 'library', { position: 'top' });
+				shuffleLibrary(state, cardOwner);
+				addLog(
+					state,
+					'rule',
+					`${item.title} was shuffled into ${cardOwner.username}'s library (CR 721.3d).`,
+					controller.playerId
+				);
+				// --- End Track P15 ---
 			} else if (librarySelf) {
 				moveStackSpellToZone(state, item, 'library', librarySelf);
+			} else if (
+				!item.spellMods?.returnToHandOnResolve &&
+				!item.spellMods?.exileOnLeaveStack &&
+				handleCipherSpellPostResolve(state, item, controller)
+			) {
+				// --- Track P15: CR 702.99a Cipher exiled & encoded onto controlled creature ---
 			} else if (
 				// --- Track P9 ---
 				item.castFromZone === 'hand' &&
@@ -13336,6 +14067,21 @@ function pushCopiedStackItem(
 					? { optionalCostCounts: { ...orig.optionalCostCounts } }
 					: {}),
 				...(orig.spellMods ? { spellMods: { ...orig.spellMods } } : {}),
+				// --- Track P15: CR 702.47c / CR 702.174h copy Splice & Gift decisions ---
+				...(orig.splicedCards ? { splicedCards: [...orig.splicedCards] } : {}),
+				...(orig.giftKind
+					? {
+							giftKind: orig.giftKind,
+							...(orig.giftRecipientId && orig.giftRecipientId !== controller.playerId
+								? { giftRecipientId: orig.giftRecipientId }
+								: {
+										giftRecipientId: state.players.find(
+											(p) => !p.lost && p.playerId !== controller.playerId
+										)?.playerId
+									})
+						}
+					: {}),
+				// --- End Track P15 ---
 				requiresGuidedResolution: orig.requiresGuidedResolution,
 				isCopy: true,
 				createdAt: Date.now()
@@ -13491,6 +14237,20 @@ function pushCopiedStackItem(
 				? { triggerEventStackItem: JSON.parse(JSON.stringify(orig.triggerEventStackItem)) as StackItem }
 				: {}),
 			...(orig.stormCount !== undefined ? { stormCount: orig.stormCount } : {}),
+			// --- Track P15 ---
+			...(orig.gravestormCount !== undefined ? { gravestormCount: orig.gravestormCount } : {}),
+			...(orig.giftKind ? { giftKind: orig.giftKind } : {}),
+			...(orig.giftRecipientId ? { giftRecipientId: orig.giftRecipientId } : {}),
+			...(orig.sourceGiftPromised ? { sourceGiftPromised: true } : {}),
+			...(orig.sourceEnteredWithX !== undefined
+				? { sourceEnteredWithX: orig.sourceEnteredWithX }
+				: {}),
+			...(orig.sourceCastWithImpending ? { sourceCastWithImpending: true } : {}),
+			...(orig.wave5Tag ? { wave5Tag: orig.wave5Tag } : {}),
+			...(orig.wave5N !== undefined ? { wave5N: orig.wave5N } : {}),
+			...(orig.wave5CostText !== undefined ? { wave5CostText: orig.wave5CostText } : {}),
+			...(orig.wave5Card ? { wave5Card: orig.wave5Card } : {}),
+			// --- End Track P15 ---
 			requiresGuidedResolution: orig.requiresGuidedResolution,
 			isCopy: true,
 			createdAt: Date.now()
@@ -13698,6 +14458,92 @@ registerWave4Host({
 });
 // --- End Track P12 ---
 
+// --- Track P15 ---
+registerWave5Host({
+	uid,
+	addLog,
+	emitEvent,
+	flushTriggers,
+	canPayOrAutoTap: (player, req, state, phyrexianLifeCount, reservedObjectIds) =>
+		canPayOrAutoTap(player, req, state, phyrexianLifeCount, { isSpell: false }, reservedObjectIds),
+	payManaWithAutoTap: (player, req, state, phyrexianLifeCount, reservedObjectIds) =>
+		payManaWithAutoTap(
+			player,
+			req,
+			state,
+			phyrexianLifeCount,
+			{ isSpell: false },
+			reservedObjectIds
+		),
+	costContext: (state, player, source, xValue, isSpell, baseMana) =>
+		costContext(state, player, source, xValue, isSpell, baseMana),
+	createTokens: (state, controller, spec, count) => {
+		const out: CardInstance[] = [];
+		const total = Math.max(0, count) * tokenMultiplier(state, controller.playerId);
+		for (let i = 0; i < total; i++) {
+			out.push(createTokenOnBoard(state, controller, spec));
+		}
+		return out;
+	},
+	copyPermanentAsToken,
+	copyStackSpell: (state, original, controller, mayChooseNewTargets) => {
+		if (mayChooseNewTargets) {
+			const slots = getStackItemRetargetSlots(state, original, controller.playerId);
+			if (slots.length > 0) {
+				const chosen = chooseBotStackItemRetarget(state, controller, original, slots, 0);
+				return pushCopiedStackItem(state, controller, original, chosen.targets, chosen.targetsBySpec);
+			}
+		}
+		return pushCopiedStackItem(state, controller, original, original.targets, original.targetsBySpec);
+	},
+	addCountersToPermanent: (state, perm, counterType, amount) => {
+		addCountersToPermanent(state, perm, counterType, amount);
+		return amount;
+	},
+	tapPermanent,
+	untapPermanent: (state, perm) => {
+		if (!perm.tapped) return;
+		if ((perm.counters.stun || 0) > 0) {
+			const prevStun = perm.counters.stun || 0;
+			const nextStun = Math.max(0, prevStun - 1);
+			perm.counters.stun = nextStun;
+			emitEvent(state, {
+				kind: 'CounterRemoved',
+				objectId: perm.instanceId,
+				object: perm,
+				counterType: 'stun',
+				amount: prevStun - nextStun,
+				previousCount: prevStun,
+				newCount: nextStun
+			});
+			flushTriggers(state);
+			return;
+		}
+		perm.tapped = false;
+		noteLayerInputsChanged(state);
+		if (!perm.phasedOut) {
+			emitEvent(state, {
+				kind: 'BecomesUntapped',
+				objectId: perm.instanceId,
+				object: perm
+			});
+			flushTriggers(state);
+		}
+	},
+	finalizeCastSpell: (state, actor, inst, sourcePlayer, sourceZone, opts) =>
+		finalizeCastSpell(state, actor, inst, sourcePlayer, sourceZone, opts),
+	resumeStackItem: (state, stackItemId) => {
+		const found = state.stack.find((s) => s.id === stackItemId);
+		if (found) resumeStackItem(state, found);
+	},
+	drawCards: (state, player, count) => drawCards(state, player, count, true),
+	markHandCardRevealedToAll,
+	shuffleLibrary,
+	transformPermanentRaw: transformPermanent,
+	moveStackSpellToZone: (state, stackItem, dest) => moveStackSpellToZone(state, stackItem, dest)
+});
+// --- End Track P15 ---
+
 /**
  * CR 702.26: Phasing Out a permanent also indirectly phases out any Auras/Equipment attached to it.
  * Phased-out permanents do not change zones (no LTB/ETB triggers fire!).
@@ -13728,7 +14574,7 @@ export function phaseOutPermanent(state: GameState, perm: CardInstance): void {
 		}
 	}
 	noteLayerInputsChanged(state);
-	// Remove from combat if attacking, blocking, or being attacked as a planeswalker (CR 506.4, 506.4c)
+	// Remove from combat if attacking, blocking, or being attacked as a planeswalker/battle (CR 506.4, 506.4c)
 	state.combat.attackers = state.combat.attackers.filter(
 		(a) => !phasedIds.has(a.attackerInstanceId)
 	);
@@ -13736,6 +14582,9 @@ export function phaseOutPermanent(state: GameState, perm: CardInstance): void {
 		atk.blockerInstanceIds = atk.blockerInstanceIds.filter((id) => !phasedIds.has(id));
 		if (atk.defenderPlaneswalkerId && phasedIds.has(atk.defenderPlaneswalkerId)) {
 			atk.defenderPlaneswalkerId = 'removed';
+		}
+		if (atk.defenderBattleId && phasedIds.has(atk.defenderBattleId)) {
+			atk.defenderBattleId = 'removed';
 		}
 	}
 }
@@ -14602,6 +15451,13 @@ export function advancePhaseOrStep(state: GameState): void {
 			state.combat.declaredBlockersPlayerIds = [];
 			state.combat.blockersDeclared = false;
 			state.combat.dealtFirstStrikeDamageIds = [];
+			// --- Track P15: Clear Provoke combat blocking requirement ---
+			for (const p of state.players) {
+				for (const perm of p.battlefield) {
+					delete perm.provokeMustBlockId;
+				}
+			}
+			// --- End Track P15 ---
 			noteLayerInputsChanged(state);
 			if ((state.additionalCombatPhases ?? 0) > 0) {
 				state.additionalCombatPhases!--;
@@ -14725,8 +15581,10 @@ function executeCombatDamageStep(
 
 	type AttackerDamageAssignment =
 		| { kind: 'none_pw_left' }
+		| { kind: 'none_battle_left' }
 		| { kind: 'none_blocked_left' }
 		| { kind: 'planeswalker'; target: CardInstance; amount: number; mode: 'unblocked' | 'trample' }
+		| { kind: 'battle'; target: CardInstance; amount: number; mode: 'unblocked' | 'trample' }
 		| { kind: 'player'; target: PlayerGameState; amount: number; mode: 'unblocked' | 'trample' }
 		| { kind: 'blocker'; target: CardInstance; amount: number };
 
@@ -14789,6 +15647,20 @@ function executeCombatDamageStep(
 								evaluatePermanent(state, c).isPlaneswalker
 						)
 					: undefined;
+			// --- Track P15: CR 310.6 / CR 310.10 Battle combat damage assignment ---
+			const attackingBattle = Boolean(atkEntry.defenderBattleId);
+			const defBattleFound =
+				atkEntry.defenderBattleId && atkEntry.defenderBattleId !== 'removed'
+					? findPermanentOnBoard(state, atkEntry.defenderBattleId)
+					: null;
+			const defBattle =
+				defBattleFound &&
+				!defBattleFound.inst.phasedOut &&
+				isPermanentBattle(state, defBattleFound.inst) &&
+				defBattleFound.inst.protectorId === defPlayer.playerId
+					? defBattleFound.inst
+					: undefined;
+			// --- End Track P15 ---
 
 			if (!atkEntry.wasBlocked && blockers.length === 0) {
 				if (defWalker) {
@@ -14798,22 +15670,34 @@ function executeCombatDamageStep(
 						amount: remainingDamage,
 						mode: 'unblocked'
 					});
-				} else if (!attackingPlaneswalker) {
+				} else if (defBattle) {
+					attackerAssignments.push({
+						kind: 'battle',
+						target: defBattle,
+						amount: remainingDamage,
+						mode: 'unblocked'
+					});
+				} else if (!attackingPlaneswalker && !attackingBattle) {
 					attackerAssignments.push({
 						kind: 'player',
 						target: defPlayer,
 						amount: remainingDamage,
 						mode: 'unblocked'
 					});
+				} else if (attackingBattle) {
+					attackerAssignments.push({ kind: 'none_battle_left' });
 				} else {
 					attackerAssignments.push({ kind: 'none_pw_left' });
 				}
 			} else if (atkEntry.wasBlocked && blockers.length === 0 && !atkTrample) {
 				attackerAssignments.push({ kind: 'none_blocked_left' });
 			} else {
-				// CR 702.19f: A creature with Trample attacking a planeswalker that left combat cannot assign excess
+				// CR 702.19f: A creature with Trample attacking a planeswalker/battle that left combat cannot assign excess
 				// damage to the defending player; all damage must be assigned to its blockers (or 0 if none remain).
-				const canTrampleOver = atkTrample && (!attackingPlaneswalker || Boolean(defWalker));
+				const canTrampleOver =
+					atkTrample &&
+					(!attackingPlaneswalker || Boolean(defWalker)) &&
+					(!attackingBattle || Boolean(defBattle));
 				let allPriorBlockersLethal = true;
 				for (let i = 0; i < blockers.length; i++) {
 					const b = blockers[i];
@@ -14904,7 +15788,14 @@ function executeCombatDamageStep(
 							amount: remainingDamage,
 							mode: 'trample'
 						});
-					} else if (!attackingPlaneswalker) {
+					} else if (defBattle) {
+						attackerAssignments.push({
+							kind: 'battle',
+							target: defBattle,
+							amount: remainingDamage,
+							mode: 'trample'
+						});
+					} else if (!attackingPlaneswalker && !attackingBattle) {
 						attackerAssignments.push({
 							kind: 'player',
 							target: defPlayer,
@@ -14967,6 +15858,14 @@ function executeCombatDamageStep(
 					`${attacker.card.name} was attacking a planeswalker that left combat, so it deals no combat damage (CR 506.4c, 510.1b).`,
 					atkPlayer.playerId
 				);
+			} else if (asgn.kind === 'none_battle_left') {
+				// CR 506.4c / 510.1b: An unblocked creature whose attacked battle left combat deals no combat damage.
+				addLog(
+					state,
+					'combat',
+					`${attacker.card.name} was attacking a battle that left combat, so it deals no combat damage (CR 506.4c, 510.1b).`,
+					atkPlayer.playerId
+				);
 			} else if (asgn.kind === 'none_blocked_left') {
 				// CR 509.1h / 510.1c: An attacking creature that became blocked remains blocked even if all blockers
 				// left the battlefield before combat damage. Without Trample, it assigns 0 combat damage!
@@ -14976,7 +15875,9 @@ function executeCombatDamageStep(
 					`${attacker.card.name} was blocked (its blocker left combat) and does not have Trample, so it deals no combat damage (CR 510.1c).`,
 					atkPlayer.playerId
 				);
-			} else if (asgn.kind === 'planeswalker') {
+			} else if (asgn.kind === 'planeswalker' || asgn.kind === 'battle') {
+				const isBattleTarget = asgn.kind === 'battle';
+				const counterLabel = isBattleTarget ? 'Defense' : 'Loyalty';
 				const dealt = dealDamageToPermanent(
 					state,
 					asgn.target,
@@ -14988,8 +15889,8 @@ function executeCombatDamageStep(
 						actorId: atkPlayer.playerId,
 						vfxLabel:
 							asgn.mode === 'trample'
-								? `Trample -${asgn.amount} Loyalty`
-								: `-${asgn.amount} Loyalty`
+								? `Trample -${asgn.amount} ${counterLabel}`
+								: `-${asgn.amount} ${counterLabel}`
 					}
 				);
 				totalDealtByAttacker += dealt;
@@ -15038,6 +15939,9 @@ function executeCombatDamageStep(
 				);
 				totalDealtByAttacker += dealt;
 				if (dealt > 0) {
+					// --- Track P15: Record combat damage for Prowl, Freerunning, Ingest, & Cipher ---
+					recordCombatDamagePlayerWave5(state, attacker, asgn.target);
+					// --- End Track P15 ---
 					const damagedAttackers = combatDamagedPlayers.get(asgn.target.playerId);
 					if (!damagedAttackers) {
 						combatDamagedPlayers.set(asgn.target.playerId, [attacker]);
@@ -15207,6 +16111,7 @@ function clearEndOfTurnAndDamage(state: GameState): void {
 			perm.saddledThisTurn = undefined;
 			perm.saddledThisTurnByIds = undefined;
 			perm.exertedThisTurn = undefined;
+			delete perm.provokeMustBlockId;
 			if (perm.goadExpirations) {
 				for (const [goaderId, dur] of Object.entries(perm.goadExpirations)) {
 					if (dur === 'endOfTurn') {
@@ -15650,6 +16555,19 @@ export function checkStateBasedActions(state: GameState): void {
 						atk.defenderPlaneswalkerId = 'removed';
 					}
 				}
+				// --- Track P15: CR 310.10 / CR 506.4c Battle combat removal check ---
+				if (atk.defenderBattleId && atk.defenderBattleId !== 'removed') {
+					const bFound = findPermanentOnBoard(state, atk.defenderBattleId);
+					if (
+						!bFound ||
+						bFound.inst.phasedOut ||
+						!isPermanentBattle(state, bFound.inst) ||
+						bFound.inst.protectorId !== atk.defenderPlayerId
+					) {
+						atk.defenderBattleId = 'removed';
+					}
+				}
+				// --- End Track P15 ---
 			}
 			if (combatChanged) {
 				noteLayerInputsChanged(state);
@@ -16207,6 +17125,16 @@ export function checkStateBasedActions(state: GameState): void {
 		if (syncBattlefieldControllers(state)) {
 			anyActionTaken = true;
 		}
+		// --- Track P15: Battle SBAs (CR 704.5p,v–y) & Speed/Ascend/Day-Night SBAs ---
+		if (checkBattleStateBasedActions(state)) {
+			anyActionTaken = true;
+			boardInvalidatedInPass = true;
+		}
+		if (checkSpeedAscendAndDayNightSbas(state)) {
+			anyActionTaken = true;
+			boardInvalidatedInPass = true;
+		}
+		// --- End Track P15 ---
 
 		// 7. Simultaneous Player Loss SBAs (CR 104.3c, 104.4a, 704.5a-c, 903.10a) — respects Platinum Angel!
 		const newlyEliminated: Array<{
@@ -16783,7 +17711,9 @@ function normalizeTargetRequirement(
 					? 'ArtifactOrEnchantment'
 					: kind === 'nonland_permanent'
 						? 'NonlandPermanent'
-						: undefined
+						: kind === 'battle'
+							? 'Battle'
+							: undefined
 	};
 }
 
@@ -17250,6 +18180,12 @@ function validateTargetLegalityInner(
 		return {
 			ok: false,
 			error: `Strict Rules Violation: ${found.inst.card.name} is a Land (requires a nonland permanent).`
+		};
+	}
+	if (targetKind === 'battle' && !tLine.includes('Battle')) {
+		return {
+			ok: false,
+			error: `Strict Rules Violation: ${found.inst.card.name} is not a Battle.`
 		};
 	}
 
@@ -18063,8 +18999,10 @@ export function transformPermanent(state: GameState, perm: CardInstance): boolea
 	}
 	const effCard = effectiveCardForObject(perm);
 	const faces = getCardFaces(effCard);
+	const effLayout =
+		effCard.layout ?? (faces.length > 1 && effCard.backFace ? 'transform' : 'normal');
 	// CR 701.27d: Non-DFCs / non-transforming DFCs cannot transform; nothing happens.
-	if (effCard.layout !== 'transform' || faces.length < 2) return false;
+	if (effLayout !== 'transform' || faces.length < 2) return false;
 	const oldIdx = activeFaceIndexForObject(perm);
 	const newTransformed = oldIdx === 0;
 	const nextFaceIdx = newTransformed ? 1 : 0;
@@ -18668,6 +19606,22 @@ function checkSpellCastOptionLegalityInner(
 		effectiveManaReq = aidRes.remainingReq;
 		for (const id of aidRes.tapIds) reservedAidIds.add(id);
 		for (const id of aidRes.exileIds) reservedAidIds.add(id);
+		// --- Track P15: CR 702.132a Assist strict mana payment validation ---
+		if (aidRes.assistPlayerId && (aidRes.assistGenericPaid ?? 0) > 0) {
+			const assistPl = state.players.find(
+				(p) => p.playerId === aidRes.assistPlayerId && !p.lost && p.playerId !== actor.playerId
+			);
+			if (
+				!assistPl ||
+				!canPayOrAutoTap(assistPl, parseManaCost(`{${aidRes.assistGenericPaid}}`), state)
+			) {
+				return {
+					ok: false,
+					error: `Chosen player cannot pay {${aidRes.assistGenericPaid}} for Assist.`
+				};
+			}
+		}
+		// --- End Track P15 ---
 		if (!canPayOrAutoTap(actor, effectiveManaReq, state, undefined, spendCtx, reservedAidIds)) {
 			return {
 				ok: false,
@@ -18725,10 +19679,28 @@ function checkSpellCastOptionLegalityInner(
 		};
 	}
 
+	// --- Track P15: CR 702.174a Gift requires at least one alive opponent ---
+	if (
+		((normalizedOptCounts['opt:gift'] ?? 0) > 0 || option.spellMods?.giftPromised) &&
+		!state.players.some((p) => !p.lost && p.playerId !== actorId)
+	) {
+		return {
+			ok: false,
+			error: `Illegal Cast: You cannot promise a gift when you have no opponent (CR 702.174a).`
+		};
+	}
+	// --- End Track P15 ---
+
 	// Check target legality (including multi-target & single-graveyard constraints)
 	const spellCompiled = isFaceDownCast
 		? null
-		: compileSpellEffects(inst.card, option.faceIndex ?? 0, Boolean(option.fused));
+		: compileOptionSpellEffects(
+				inst.card,
+				option.faceIndex ?? 0,
+				Boolean(option.fused),
+				Boolean(option.spellMods?.cleaved),
+				Boolean(option.spellMods?.giftPromised || (normalizedOptCounts['opt:gift'] ?? 0) > 0)
+			);
 	if (spellCompiled?.modal && !option.fused && !isFaceDownCast) {
 		const activeSpec = (sp: TargetSpec) =>
 			!sp.condition || isCastConditionMet(sp.condition, inst.card, normalizedOptCounts, option);
@@ -18863,7 +19835,9 @@ function findActivatedAbilityTarget(
 ):
 	| { ok: true; source: CardInstance; ability: EffectiveActivatedAbility }
 	| { ok: false; error: string } {
-	const bfPerm = actor.battlefield.find((c) => c.instanceId === instanceId);
+	const bfPerm =
+		actor.battlefield.find((c) => c.instanceId === instanceId) ??
+		findPermanentOnBoard(state, instanceId)?.inst;
 	const handCard = bfPerm ? undefined : actor.hand.find((c) => c.instanceId === instanceId);
 	const graveCard =
 		bfPerm || handCard ? undefined : actor.graveyard.find((c) => c.instanceId === instanceId);
@@ -18877,11 +19851,11 @@ function findActivatedAbilityTarget(
 	if (!source) {
 		return {
 			ok: false,
-			error: 'Card not found on your battlefield, in your hand, in your graveyard, or in the command zone.'
+			error: 'Card not found on the battlefield, in your hand, in your graveyard, or in the command zone.'
 		};
 	}
 	if (source.zone === 'battlefield' && source.phasedOut) {
-		return { ok: false, error: 'Permanent not found on your battlefield.' };
+		return { ok: false, error: 'Permanent not found on the battlefield.' };
 	}
 	const cmdId = getPlayerCommanderIdentity(actor);
 	const abilities = getEffectiveActivatedAbilities(state, actor, source, cmdId);
@@ -18897,6 +19871,23 @@ function findActivatedAbilityTarget(
 						: 'Ability not found on this permanent.'
 		};
 	}
+	// --- Track P15: CR 602.2 Enforce who may activate this battlefield ability ---
+	if (source.zone === 'battlefield') {
+		const who = ab.activatorWho ?? 'you';
+		if (who === 'you' && source.controllerId !== actor.playerId) {
+			return {
+				ok: false,
+				error: 'Only the controller of this permanent may activate this ability (CR 602.2).'
+			};
+		}
+		if (who === 'opponent' && source.controllerId === actor.playerId) {
+			return {
+				ok: false,
+				error: 'Only an opponent may activate this ability (CR 602.2).'
+			};
+		}
+	}
+	// --- End Track P15 ---
 	const allowedZones = ab.activationZones ?? ['battlefield'];
 	if (!allowedZones.includes(source.zone)) {
 		return {
@@ -18938,9 +19929,18 @@ function checkAbilityActivationLegalityInner(
 		if (perm.phasedOut) {
 			return { ok: false, error: `${perm.card.name} is phased out.` };
 		}
-		if (!actor.battlefield.some((c) => c.instanceId === perm.instanceId)) {
+		if (!findPermanentOnBoard(state, perm.instanceId)) {
+			return { ok: false, error: 'Permanent not found on the battlefield.' };
+		}
+		// --- Track P15: CR 602.2 activatorWho legality ---
+		const who = ab.activatorWho ?? 'you';
+		if (who === 'you' && perm.controllerId !== actorId) {
 			return { ok: false, error: 'Permanent not found on your battlefield.' };
 		}
+		if (who === 'opponent' && perm.controllerId === actorId) {
+			return { ok: false, error: 'Only an opponent may activate this ability (CR 602.2).' };
+		}
+		// --- End Track P15 ---
 		if (!allowedZones.includes('battlefield')) {
 			return {
 				ok: false,
@@ -19032,11 +20032,12 @@ function checkAbilityActivationLegalityInner(
 		ab.id,
 		ab.manaCost,
 		ab.costKeyword,
-		// --- Track P11 ---
+		// --- Track P11 & P15 ---
 		0,
 		perm,
-		ab.isManaAbility
-		// --- End Track P11 ---
+		ab.isManaAbility,
+		ab.powerUpReduction
+		// --- End Track P11 & P15 ---
 	).requirement;
 	// --- Track P7 ---
 	const permEffCard =
@@ -19111,8 +20112,20 @@ function checkAbilityActivationLegalityInner(
 		}
 	}
 	// --- End Track P12 ---
+	// --- Track P15: Craft, Reconfigure unattach, oncePerGame, beforeAttackers, & ±X loyalty ---
+	const w5AbErr = checkWave5AbilityActivation(state, actor, perm, ab.id, ab.costKeyword);
+	if (w5AbErr) {
+		return { ok: false, error: w5AbErr };
+	}
+	// --- End Track P15 ---
 	const restrictions = ab.activationRestrictions;
 	if (restrictions?.length) {
+		if (restrictions.includes('oncePerGame') && perm.usedOncePerGameAbilityIds?.includes(ab.id)) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: This ability can only be activated once each game.`
+			};
+		}
 		if (restrictions.includes('onceEachTurn') && perm.activatedAbilityIdsThisTurn?.includes(ab.id)) {
 			return {
 				ok: false,
@@ -19123,6 +20136,20 @@ function checkAbilityActivationLegalityInner(
 			return {
 				ok: false,
 				error: `${perm.card.name}: This ability can only be activated during your turn.`
+			};
+		}
+		if (
+			restrictions.includes('beforeAttackers') &&
+			!(
+				state.phase === 'upkeep' ||
+				state.phase === 'draw' ||
+				state.phase === 'main1' ||
+				state.phase === 'begin_combat'
+			)
+		) {
+			return {
+				ok: false,
+				error: `${perm.card.name}: Activate only before attackers are declared.`
 			};
 		}
 		if (
@@ -19189,7 +20216,7 @@ function checkAbilityActivationLegalityInner(
 		}
 	}
 
-	if (ab.loyaltyCost !== null) {
+	if (ab.loyaltyCost !== null || ab.loyaltySign !== undefined) {
 		if (
 			activePlayer?.playerId !== actorId ||
 			(state.phase !== 'main1' && state.phase !== 'main2') ||
@@ -19484,6 +20511,11 @@ function applyDamageToTarget(
 			// --- Track P12 ---
 			recordPlayerLifeLossWave4(pTarget, amount);
 			// --- End Track P12 ---
+			// --- Track P15: CR 702.178a Speed trigger check on opponent life loss ---
+			if (amount > 0) {
+				onPlayerLostLifeCheckSpeedTrigger(state, pTarget.playerId, amount);
+			}
+			// --- End Track P15 ---
 		}
 		if (!pTarget.protectionFromEverythingThisTurn) {
 			// --- Track P9 ---
@@ -19525,6 +20557,25 @@ function applyDamageToTarget(
 		// --- End Track P7 ---
 		if (evalPerm.typeLine.includes('Planeswalker')) {
 			permFound.inst.counters.loyalty = Math.max(0, permFound.inst.counters.loyalty - amount);
+		} else if (isPermanentBattle(state, permFound.inst)) {
+			// --- Track P15: CR 120.3h Damage dealt to a Battle removes defense counters ---
+			const prevDef = permFound.inst.counters.defense || 0;
+			const nextDef = Math.max(0, prevDef - amount);
+			const removed = prevDef - nextDef;
+			permFound.inst.counters.defense = nextDef;
+			if (removed > 0) {
+				emitEvent(state, {
+					kind: 'CounterRemoved',
+					objectId: permFound.inst.instanceId,
+					object: permFound.inst,
+					counterType: 'defense',
+					amount: removed,
+					previousCount: prevDef,
+					newCount: nextDef
+				});
+			}
+			onBattleDefenseCountersRemoved(state, permFound.inst, prevDef, nextDef);
+			// --- End Track P15 ---
 		} else {
 			permFound.inst.damageMarked += amount;
 		}
@@ -19939,6 +20990,7 @@ export function computeCombatDamageForecast(
 		controllerId: string;
 		defenderPlayerId: string;
 		defenderPlaneswalkerId: string | null;
+		defenderBattleId: string | null;
 		blockerInstanceIds: string[];
 		wasBlocked: boolean;
 	}> = [];
@@ -19956,6 +21008,7 @@ export function computeCombatDamageForecast(
 				controllerId: a.controllerId,
 				defenderPlayerId: a.defenderPlayerId,
 				defenderPlaneswalkerId: a.defenderPlaneswalkerId || null,
+				defenderBattleId: a.defenderBattleId || null,
 				blockerInstanceIds: mergedBlockers,
 				wasBlocked: Boolean(a.wasBlocked) || mergedBlockers.length > 0
 			});
@@ -19972,6 +21025,7 @@ export function computeCombatDamageForecast(
 				controllerId: activePlayer?.playerId || '',
 				defenderPlayerId: defPlayerId,
 				defenderPlaneswalkerId: defWalkerId,
+				defenderBattleId: null,
 				blockerInstanceIds: [],
 				wasBlocked: false
 			});
@@ -19995,6 +21049,18 @@ export function computeCombatDamageForecast(
 		const atkCard = atkFound.inst;
 		const defPlayer = state.players.find((p) => p.playerId === atk.defenderPlayerId);
 		const attackingPlaneswalker = Boolean(atk.defenderPlaneswalkerId);
+		const attackingBattle = Boolean(atk.defenderBattleId);
+		const defBattleFound =
+			atk.defenderBattleId && atk.defenderBattleId !== 'removed'
+				? findPermanentOnBoard(state, atk.defenderBattleId)
+				: null;
+		const defBattle =
+			defBattleFound &&
+			!defBattleFound.inst.phasedOut &&
+			isPermanentBattle(state, defBattleFound.inst) &&
+			defBattleFound.inst.protectorId === atk.defenderPlayerId
+				? defBattleFound.inst
+				: null;
 		const defWalkerFound =
 			atk.defenderPlaneswalkerId && atk.defenderPlaneswalkerId !== 'removed'
 				? findPermanentOnBoard(state, atk.defenderPlaneswalkerId)
@@ -20062,7 +21128,9 @@ export function computeCombatDamageForecast(
 				pw.loyaltyLoss += rawDmg;
 				pw.projectedLoyalty = Math.max(0, pw.currentLoyalty - pw.loyaltyLoss);
 				pw.willDie = pw.projectedLoyalty <= 0;
-			} else if (defPlayer && !attackingPlaneswalker) {
+			} else if (defBattle) {
+				damageToDefender = rawDmg;
+			} else if (defPlayer && !attackingPlaneswalker && !attackingBattle) {
 				const inc = playerIncoming[defPlayer.playerId];
 				inc.unblockedCount += 1;
 				if (atkInfect) {
@@ -20091,7 +21159,7 @@ export function computeCombatDamageForecast(
 			}
 		} else {
 			// Blocked attacker (CR 509.1h / 510.1c)
-			if (defPlayer && !defWalker) {
+			if (defPlayer && !defWalker && !defBattle) {
 				playerIncoming[defPlayer.playerId].blockedCount += 1;
 			}
 			let totalAtkDmgPool = atkPower * strikesRemaining;
@@ -20165,7 +21233,9 @@ export function computeCombatDamageForecast(
 					pw.loyaltyLoss += trampleDmg;
 					pw.projectedLoyalty = Math.max(0, pw.currentLoyalty - pw.loyaltyLoss);
 					pw.willDie = pw.projectedLoyalty <= 0;
-				} else if (defPlayer && !attackingPlaneswalker) {
+				} else if (defBattle) {
+					damageToDefender = trampleDmg;
+				} else if (defPlayer && !attackingPlaneswalker && !attackingBattle) {
 					const inc = playerIncoming[defPlayer.playerId];
 					inc.trampleThroughDamage += trampleDmg;
 					if (atkInfect) {

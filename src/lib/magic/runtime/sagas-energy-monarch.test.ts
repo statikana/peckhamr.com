@@ -299,7 +299,7 @@ describe('Track P1 â€” Group 1: Saga 3-chapter lifecycle & Read ahead (CR 715.1â
 		assert.equal(evaluatePermanent(state, knightToken).toughness, 2);
 	});
 
-	it('keeps Read ahead Sagas as keyword_not_implemented and skips CR 715.3a automatic ETB lore placement', () => {
+	it('compiles Read ahead Sagas (CR 702.155) as supported, prompts for starting chapter on ETB, and triggers only the chosen chapter', () => {
 		const readAheadSaga = makeCard({
 			name: 'Founding the Third Path',
 			manaCost: '{1}{U}',
@@ -315,19 +315,29 @@ describe('Track P1 â€” Group 1: Saga 3-chapter lifecycle & Read ahead (CR 715.1â
 			keywords: ['Read ahead']
 		});
 		const def = compileCard(readAheadSaga);
-		assert.equal(def.fullySupported, false);
+		assert.equal(def.fullySupported, true);
 		assert.equal(def.faces[0].hasReadAhead, true);
 		assert.equal(
-			def.faces[0].abilities.some(
-				(a) => a.kind === 'unsupported' && a.reason === 'keyword_not_implemented'
-			),
+			def.faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'read ahead'),
 			true
 		);
 
 		const state = createGame(2);
 		const [p1] = state.players;
 		const inst = putInZone(state, p1, readAheadSaga, 'battlefield');
-		assert.equal(inst.counters.lore ?? 0, 0, 'Read ahead Saga skips CR 715.3a non-Read-ahead 1 lore');
+		assert.equal(state.pendingPrompts.length, 1, 'Read ahead Saga prompts for starting chapter');
+		assert.equal(
+			applyGameAction(state, p1.playerId, {
+				type: 'choice',
+				promptId: state.pendingPrompts[0].id,
+				answer: { kind: 'chooseMode', indices: [1] } // Chapter II
+			}).ok,
+			true
+		);
+		assert.equal(inst.counters.lore ?? 0, 2, 'Read ahead Saga enters with chosen 2 lore counters');
+		assert.equal(p1.life, 40, 'Skipped chapter I did not trigger');
+		resolveTopOfStack(state);
+		assert.equal(p1.hand.length, 1, 'Chosen chapter II triggered and drew a card');
 	});
 });
 

@@ -82,7 +82,7 @@ export function definitionSupportReport(def: CardDefinition): CardSupportReport 
 const TRIGGER_WORD = /^(?:when|whenever|at)\b/i;
 const MANA_EFFECT = /:\s*add\b/i;
 /** "{T}: ...", "{2}{G}, Sacrifice ~: ...", "+1: ...": a cost, a colon, then an effect. */
-const ACTIVATED_LINE = /^[^"“:]*?(?:\{[^}]+\}|[+−-]\d+|\b(?:tap|untap|sacrifice|discard|exile|pay|remove)\b)[^"“:]*:\s*\S/i;
+const ACTIVATED_LINE = /^[^"“:]*?(?:\{[^}]+\}|[+−-](?:\d+|X)|\b(?:tap|untap|sacrifice|discard|exile|pay|remove)\b)[^"“:]*:\s*\S/i;
 
 function unsupportedKind(ab: Extract<CardDefinition['faces'][number]['abilities'][number], { kind: 'unsupported' }>, isSpell: boolean): UnsupportedAbilityKind {
 	switch (ab.reason) {

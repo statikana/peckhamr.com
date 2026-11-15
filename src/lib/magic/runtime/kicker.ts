@@ -262,8 +262,16 @@ export function computeKickerTracking(
 	}
 	return {
 		count,
-		tags,
-		tagCounts,
+		tags:
+			// --- Track P15 ---
+			(optionalCostCounts?.['opt:gift'] ?? 0) > 0 && !tags.includes('gift')
+				? [...tags, 'gift']
+				: tags,
+		tagCounts:
+			(optionalCostCounts?.['opt:gift'] ?? 0) > 0 && tagCounts['gift'] === undefined
+				? { ...tagCounts, gift: optionalCostCounts!['opt:gift']! }
+				: tagCounts,
+		// --- End Track P15 ---
 		...(option?.spellMods?.foretold ? { foretold: true } : {}),
 		...(option?.spellMods?.blitzed ? { blitzed: true } : {})
 	};
@@ -297,6 +305,11 @@ export function isConditionMetWithKicker(cond: Condition, info: KickerTrackingIn
 	if (cond.k === 'kicked') return evaluateKickerCondition(cond, info);
 	if (cond.k === 'foretold') return Boolean(info.foretold);
 	if (cond.k === 'blitzed') return Boolean(info.blitzed);
+	// --- Track P15 ---
+	if (cond.k === 'giftPromised') {
+		return info.tags.includes('gift') || (info.tagCounts?.['gift'] ?? 0) > 0;
+	}
+	// --- End Track P15 ---
 	if (cond.k === 'not') return !isConditionMetWithKicker(cond.of, info);
 	if (cond.k === 'and') return cond.of.every((c) => isConditionMetWithKicker(c, info));
 	if (cond.k === 'or') return cond.of.some((c) => isConditionMetWithKicker(c, info));
@@ -429,11 +442,19 @@ export function getObjectKickerInfo(
 			(stackItem.sourceKickedTags && stackItem.sourceKickedTags.length > 0) ||
 			stackItem.sourceKickedTagCounts !== undefined ||
 			stackItem.sourceForetold !== undefined ||
-			stackItem.sourceBlitzed !== undefined
+			stackItem.sourceBlitzed !== undefined ||
+			// --- Track P15 ---
+			stackItem.sourceGiftPromised !== undefined
+			// --- End Track P15 ---
 		) {
+			const baseTags = stackItem.sourceKickedTags ?? [];
+			const tags =
+				stackItem.sourceGiftPromised && !baseTags.includes('gift')
+					? [...baseTags, 'gift']
+					: baseTags;
 			return {
 				count: stackItem.sourceKickedCount ?? 0,
-				tags: stackItem.sourceKickedTags ?? [],
+				tags,
 				...(stackItem.sourceKickedTagCounts ? { tagCounts: stackItem.sourceKickedTagCounts } : {}),
 				...(stackItem.sourceForetold ? { foretold: true } : {}),
 				...(stackItem.sourceBlitzed ? { blitzed: true } : {})
@@ -444,9 +465,12 @@ export function getObjectKickerInfo(
 		for (const p of state.players) {
 			const perm: CardInstance | undefined = p.battlefield.find((c) => c.instanceId === instanceId);
 			if (perm) {
+				const baseTags = perm.kickedTags ?? [];
+				const tags =
+					perm.giftPromised && !baseTags.includes('gift') ? [...baseTags, 'gift'] : baseTags;
 				return {
 					count: perm.kickedCount ?? 0,
-					tags: perm.kickedTags ?? [],
+					tags,
 					...(perm.kickedTagCounts ? { tagCounts: perm.kickedTagCounts } : {}),
 					...(perm.foretold ? { foretold: true } : {}),
 					...(perm.blitzed ? { blitzed: true } : {})
@@ -473,11 +497,19 @@ export function getObjectKickerInfo(
 				(stackSpell.sourceKickedTags && stackSpell.sourceKickedTags.length > 0) ||
 				stackSpell.sourceKickedTagCounts !== undefined ||
 				stackSpell.sourceForetold !== undefined ||
-				stackSpell.sourceBlitzed !== undefined
+				stackSpell.sourceBlitzed !== undefined ||
+				// --- Track P15 ---
+				stackSpell.sourceGiftPromised !== undefined
+				// --- End Track P15 ---
 			) {
+				const baseTags = stackSpell.sourceKickedTags ?? [];
+				const tags =
+					stackSpell.sourceGiftPromised && !baseTags.includes('gift')
+						? [...baseTags, 'gift']
+						: baseTags;
 				return {
 					count: stackSpell.sourceKickedCount ?? 0,
-					tags: stackSpell.sourceKickedTags ?? [],
+					tags,
 					...(stackSpell.sourceKickedTagCounts ? { tagCounts: stackSpell.sourceKickedTagCounts } : {}),
 					...(stackSpell.sourceForetold ? { foretold: true } : {}),
 					...(stackSpell.sourceBlitzed ? { blitzed: true } : {})
@@ -491,11 +523,16 @@ export function getObjectKickerInfo(
 			(source.kickedTags && source.kickedTags.length > 0) ||
 			source.kickedTagCounts !== undefined ||
 			source.foretold ||
-			source.blitzed)
+			source.blitzed ||
+			// --- Track P15 ---
+			source.giftPromised)
+			// --- End Track P15 ---
 	) {
+		const baseTags = source.kickedTags ?? [];
+		const tags = source.giftPromised && !baseTags.includes('gift') ? [...baseTags, 'gift'] : baseTags;
 		return {
 			count: source.kickedCount ?? 0,
-			tags: source.kickedTags ?? [],
+			tags,
 			...(source.kickedTagCounts ? { tagCounts: source.kickedTagCounts } : {}),
 			...(source.foretold ? { foretold: true } : {}),
 			...(source.blitzed ? { blitzed: true } : {})

@@ -177,10 +177,61 @@ export const KEYWORD_COVERAGE_FILES: Record<string, readonly string[]> = {
 	training: ['runtime/keywords-wave4-p12.test.ts'],
 	'umbra armor': ['runtime/keywords-wave4-p12.test.ts'],
 	undaunted: ['runtime/keywords-wave4-p12.test.ts'],
-	'web-slinging': ['runtime/keywords-wave4-p12.test.ts']
+	'web-slinging': ['runtime/keywords-wave4-p12.test.ts'],
+	// --- Track P15 ---
+	amplify: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'artifact landwalk': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	ascend: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	assist: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'aura swap': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'choose a background': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	cipher: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	cleave: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	compleated: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	craft: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	daybound: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	demonstrate: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	"doctor's companion": ['runtime/wave5-p15-frames-keywords.test.ts'],
+	freerunning: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'friends forever': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	gift: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	gravestorm: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	impending: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	increment: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'job select': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'legendary landwalk': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'living metal': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'more than meets the eye': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	nightbound: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	paradigm: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'power-up': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	provoke: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	prowl: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	ravenous: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'read ahead': ['runtime/wave5-p15-frames-keywords.test.ts', 'runtime/sagas-energy-monarch.test.ts'],
+	reconfigure: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	ripple: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'snow forestwalk': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'snow islandwalk': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'snow landwalk': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'snow mountainwalk': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'snow plainswalk': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'snow swampwalk': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	splice: ['runtime/wave5-p15-frames-keywords.test.ts'],
+	'start your engines!': ['runtime/wave5-p15-frames-keywords.test.ts'],
+	transfigure: ['runtime/wave5-p15-frames-keywords.test.ts']
 };
 
-const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: string }> = {
+const SAMPLE_ORACLE_FOR_KEYWORD: Record<
+	string,
+	{
+		typeLine: string;
+		oracleText: string;
+		manaCost?: string;
+		loyalty?: string;
+		backFace?: ScryfallCard['backFace'];
+	}
+> = {
 	affinity: { typeLine: 'Artifact Creature — Myr', oracleText: 'Affinity for artifacts' },
 	afterlife: { typeLine: 'Creature — Human Cleric', oracleText: 'Afterlife 2' },
 	annihilator: { typeLine: 'Creature — Eldrazi', oracleText: 'Annihilator 2' },
@@ -313,7 +364,70 @@ const SAMPLE_ORACLE_FOR_KEYWORD: Record<string, { typeLine: string; oracleText: 
 	surge: { typeLine: 'Instant', oracleText: 'Draw two cards.\nSurge {1}{U}' },
 	'umbra armor': { typeLine: 'Enchantment — Aura', oracleText: 'Enchant creature\nUmbra armor' },
 	undaunted: { typeLine: 'Sorcery', oracleText: 'Undaunted\nDraw two cards.' },
-	'web-slinging': { typeLine: 'Creature — Spider Hero', oracleText: 'Web-slinging {2}{W}' }
+	'web-slinging': { typeLine: 'Creature — Spider Hero', oracleText: 'Web-slinging {2}{W}' },
+	// --- Track P15 ---
+	amplify: { typeLine: 'Creature — Beast', oracleText: 'Amplify 1' },
+	assist: { typeLine: 'Sorcery', oracleText: 'Assist\nDraw two cards.' },
+	'aura swap': { typeLine: 'Enchantment — Aura', oracleText: 'Enchant creature\nAura swap {2}{U}' },
+	'choose a background': { typeLine: 'Legendary Creature — Human', oracleText: 'Choose a Background' },
+	cipher: { typeLine: 'Sorcery', oracleText: 'Draw a card.\nCipher' },
+	cleave: { typeLine: 'Instant', oracleText: 'Cleave {1}{W}\nDestroy target [attacking] creature.' },
+	compleated: {
+		typeLine: 'Legendary Planeswalker — Jace',
+		oracleText: 'Compleated\n+1: Draw a card.',
+		manaCost: '{2}{U}{U/P}',
+		loyalty: '4'
+	},
+	craft: {
+		typeLine: 'Artifact',
+		oracleText: 'Craft with artifact {3}',
+		backFace: {
+			name: 'Guard Craft Back',
+			manaCost: '',
+			typeLine: 'Artifact Creature — Golem',
+			oracleText: 'Vigilance',
+			power: '4',
+			toughness: '4',
+			imageUrl: ''
+		}
+	},
+	demonstrate: { typeLine: 'Sorcery', oracleText: 'Demonstrate\nDraw two cards.' },
+	"doctor's companion": { typeLine: 'Legendary Creature — Human', oracleText: "Doctor's companion" },
+	freerunning: { typeLine: 'Sorcery', oracleText: 'Freerunning {1}{B}\nDraw two cards.' },
+	'friends forever': { typeLine: 'Legendary Creature — Human', oracleText: 'Friends forever' },
+	gift: { typeLine: 'Instant', oracleText: 'Gift a card\nDestroy target artifact.' },
+	gravestorm: {
+		typeLine: 'Sorcery',
+		oracleText: 'Create a 2/2 black Zombie creature token.\nGravestorm'
+	},
+	impending: { typeLine: 'Enchantment Creature — Glimmer', oracleText: 'Impending 3—{1}{W}' },
+	'job select': { typeLine: 'Artifact — Equipment', oracleText: 'Job select\nEquip {2}' },
+	'living metal': { typeLine: 'Artifact — Vehicle', oracleText: 'Living metal\nCrew 2' },
+	'more than meets the eye': {
+		typeLine: 'Legendary Artifact Creature — Robot',
+		oracleText: 'More than meets the eye {2}{R}',
+		backFace: {
+			name: 'Guard Converted Mode',
+			manaCost: '',
+			typeLine: 'Legendary Artifact — Vehicle',
+			oracleText: 'Living metal',
+			power: '4',
+			toughness: '4',
+			imageUrl: ''
+		}
+	},
+	paradigm: { typeLine: 'Sorcery', oracleText: 'Paradigm\nDraw a card.' },
+	'power-up': { typeLine: 'Creature — Construct', oracleText: 'Power-up — {2}: Draw a card.' },
+	prowl: { typeLine: 'Sorcery', oracleText: 'Prowl {1}{U}\nDraw two cards.' },
+	ravenous: { typeLine: 'Creature — Tyranid', oracleText: 'Ravenous', manaCost: '{X}{G}' },
+	'read ahead': {
+		typeLine: 'Enchantment — Saga',
+		oracleText: 'Read ahead\nI — Draw a card.\nII — You gain 2 life.'
+	},
+	reconfigure: { typeLine: 'Artifact Creature — Equipment Jellyfish', oracleText: 'Reconfigure {2}' },
+	ripple: { typeLine: 'Sorcery', oracleText: 'Ripple 4\n~ deals 2 damage to any target.' },
+	splice: { typeLine: 'Instant — Arcane', oracleText: 'Draw a card.\nSplice onto Arcane {1}{U}' },
+	transfigure: { typeLine: 'Creature — Fleshbag', oracleText: 'Transfigure {1}{B}{B}' }
 };
 
 describe('Implemented Keywords Coverage Guard', () => {
@@ -349,22 +463,30 @@ describe('Implemented Keywords Coverage Guard', () => {
 			const card: ScryfallCard = {
 				id: `guard_${kw.replace(/\s+/g, '_')}`,
 				name: `Guard ${kw}`,
-				manaCost: '{1}',
+				manaCost: sample.manaCost ?? '{1}',
 				cmc: 1,
 				typeLine: sample.typeLine,
 				oracleText: sample.oracleText,
 				colors: [],
 				colorIdentity: [],
 				keywords: [],
-				power: sample.typeLine.includes('Creature') ? '2' : undefined,
-				toughness: sample.typeLine.includes('Creature') ? '2' : undefined,
+				power:
+					sample.typeLine.includes('Creature') || sample.typeLine.includes('Vehicle')
+						? '2'
+						: undefined,
+				toughness:
+					sample.typeLine.includes('Creature') || sample.typeLine.includes('Vehicle')
+						? '2'
+						: undefined,
+				loyalty: sample.loyalty,
 				imageUrl: '',
 				artCropUrl: '',
 				legalCommander: true,
 				canBeCommander: sample.typeLine.includes('Legendary Creature'),
 				hasPartner: kw === 'partner',
-				hasChooseBackground: false,
-				isBackground: false
+				hasChooseBackground: kw === 'choose a background',
+				isBackground: false,
+				...(sample.backFace ? { backFace: sample.backFace } : {})
 			};
 			const ir = compileCard(card).faces[0];
 			assert.ok(
@@ -468,7 +590,22 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'sneak',
 			'spectacle',
 			'surge',
-			'web-slinging'
+			'web-slinging',
+			// --- Track P15 ---
+			'amplify',
+			'aura swap',
+			'cleave',
+			'craft',
+			'freerunning',
+			'gift',
+			'impending',
+			'more than meets the eye',
+			'power-up',
+			'prowl',
+			'reconfigure',
+			'ripple',
+			'splice',
+			'transfigure'
 		]);
 
 		assert.deepEqual(
@@ -495,7 +632,7 @@ describe('Implemented Keywords Coverage Guard', () => {
 			'Every non-parameterized keyword in IMPLEMENTED_KEYWORDS must have a display label in KEYWORD_LABELS'
 		);
 
-		// Verify unimplemented keywords (Banding, Cipher) do not render activeKeywords badges even if present in card.keywords
+		// Verify unimplemented keywords (Banding, Epic) do not render activeKeywords badges even if present in card.keywords
 		const d = PRECON_DECKS[0];
 		const seats: LobbySeat[] = [
 			{
@@ -522,10 +659,10 @@ describe('Implemented Keywords Coverage Guard', () => {
 			manaCost: '{2}{G}{U}',
 			cmc: 4,
 			typeLine: 'Creature — Mutant',
-			oracleText: 'Banding\nCipher',
+			oracleText: 'Banding\nEpic',
 			colors: ['G', 'U'],
 			colorIdentity: ['G', 'U'],
-			keywords: ['Banding', 'Cipher'],
+			keywords: ['Banding', 'Epic'],
 			power: '2',
 			toughness: '2',
 			imageUrl: '',

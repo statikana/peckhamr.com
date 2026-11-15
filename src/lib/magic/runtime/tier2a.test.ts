@@ -130,7 +130,7 @@ describe('Tier 2 Track A — Item 1: CR 207.2c Ability-Word Stripping', () => {
 			oracleText: 'Landfall — Whenever a land you control enters, you gain 1 life.'
 		});
 
-		// --- Track P12: Solved (CR 720), Boast (CR 702.142), and Exhaust (CR 702.177) now compile with explicit gating conditions; Max speed & Power-up remain unsupported ---
+		// --- Track P12 & P15: Solved (CR 720), Max speed (CR 702.178), Boast (CR 702.142), Exhaust (CR 702.177), and Power-up (CR 702.193) compile with explicit gating conditions/costKeywords instead of stripping as flavor words ---
 		const caseDef = compileCard(caseCard);
 		assert.equal(caseDef.fullySupported, true, 'Solved — compiled as gated Case ability (CR 720)');
 		assert.ok(
@@ -138,8 +138,13 @@ describe('Tier 2 Track A — Item 1: CR 207.2c Ability-Word Stripping', () => {
 				(a) => a.kind === 'static' && a.static.condition?.k === 'caseSolved'
 			)
 		);
-		assert.equal(compileCard(maxSpeedCard).fullySupported, false, 'Max speed — is not an ability word (CR 702.178)');
-		assert.equal(cardSupportReport(maxSpeedCard).fullySupported, false);
+		const maxSpeedDef = compileCard(maxSpeedCard);
+		assert.equal(maxSpeedDef.fullySupported, true, 'Max speed — compiled with maxSpeed condition (CR 702.178)');
+		assert.ok(
+			maxSpeedDef.faces[0].abilities.every(
+				(a) => a.kind === 'static' && a.static.condition?.k === 'maxSpeed'
+			)
+		);
 		const boastDef = compileCard(boastCard);
 		assert.equal(boastDef.fullySupported, true, 'Boast — compiled with costKeyword: boast (CR 702.142)');
 		assert.ok(
@@ -154,8 +159,18 @@ describe('Tier 2 Track A — Item 1: CR 207.2c Ability-Word Stripping', () => {
 				(a) => a.kind === 'activated' && a.costKeyword === 'exhaust'
 			)
 		);
-		assert.equal(compileCard(powerUpCard).fullySupported, false, 'Power-up — is not an ability word (CR 702.193)');
-		// --- End Track P12 ---
+		const powerUpDef = compileCard(powerUpCard);
+		assert.equal(powerUpDef.fullySupported, true, 'Power-up — compiled with costKeyword: power-up (CR 702.193)');
+		assert.ok(
+			powerUpDef.faces[0].abilities.some(
+				(a) =>
+					a.kind === 'activated' &&
+					a.costKeyword === 'power-up' &&
+					a.powerUpReduction === true &&
+					a.activationRestrictions?.includes('oncePerGame')
+			)
+		);
+		// --- End Track P12 & P15 ---
 
 		// Genuine CR 207.2c ability word still compiles as fullySupported
 		const landfallDef = compileCard(landfallCard);
@@ -214,10 +229,17 @@ describe('Tier 2 Track A — Item 2: CR 602.5b Activation Restrictions', () => {
 			power: undefined,
 			toughness: undefined
 		});
-		const unknownConditionalArtifact = card({
+		const nightConditionalArtifact = card({
 			name: 'Lunar Shrine',
 			typeLine: 'Artifact',
 			oracleText: "{1}: You gain 1 life. Activate only if it's night.",
+			power: undefined,
+			toughness: undefined
+		});
+		const unknownConditionalArtifact = card({
+			name: 'Lunar Anomaly Shrine',
+			typeLine: 'Artifact',
+			oracleText: '{1}: You gain 1 life. Activate only if an opponent controls a Contraption.',
 			power: undefined,
 			toughness: undefined
 		});
@@ -226,6 +248,7 @@ describe('Tier 2 Track A — Item 2: CR 602.5b Activation Restrictions', () => {
 		assert.equal(compileCard(onceArtifact).fullySupported, true);
 		assert.equal(compileCard(yourTurnArtifact).fullySupported, true);
 		assert.equal(compileCard(conditionalArtifact).fullySupported, true);
+		assert.equal(compileCard(nightConditionalArtifact).fullySupported, true);
 		assert.equal(
 			compileCard(unknownConditionalArtifact).fullySupported,
 			false,

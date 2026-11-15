@@ -85,6 +85,19 @@ import { scaleCumulativeUpkeepCost } from './orthogonalKeywords.ts';
 // --- Track P12 ---
 import { evaluateP12Condition, recordPlayerLifeLossWave4 } from './keywordsWave4.ts';
 // --- End Track P12 ---
+// --- Track P15 ---
+import {
+	canExternalEffectTransform,
+	evaluateP15Amount,
+	evaluateP15Condition,
+	increasePlayerSpeed,
+	isPermanentBattle,
+	onBattleDefenseCountersRemoved,
+	onPlayerLostLifeCheckSpeedTrigger,
+	setPermanentPrepared,
+	staticallyInterpretableP15
+} from './framesBattlesAndKeywordsWave5.ts';
+// --- End Track P15 ---
 import { noteLayerInputsChanged } from './layerCache.ts';
 import {
 	matchesObjectFilter,
@@ -420,7 +433,10 @@ type Bindings = Map<string, Bound[]>;
 
 // ---- Gating (compiler/interpretable.ts) ------------------------------------------------------
 
-export { INTERPRETED_VERBS, optionalPrefix, staticallyInterpretable, withoutOptional } from '../compiler/interpretable.ts';
+export { INTERPRETED_VERBS, optionalPrefix, withoutOptional } from '../compiler/interpretable.ts';
+// --- Track P15 ---
+export { staticallyInterpretableP15 as staticallyInterpretable };
+// --- End Track P15 ---
 
 function targetRefMatchesSpec(t: TargetRef, spec: TargetSpec): boolean {
 	if (spec.kind === 'player') return t.kind === 'player';
@@ -693,6 +709,22 @@ export function dealDamageToPermanent(
 	}
 	// --- End Track P11 ---
 
+	// --- Track P15 (CR 120.3h / CR 310.6 / CR 310.11b): Damage dealt to a battle removes defense counters ---
+	const targetIsBattle = isPermanentBattle(state, target);
+	let battlePrevDef = 0;
+	let battleNextDef = 0;
+	let battleRemovedDef = 0;
+	if (targetIsBattle) {
+		battlePrevDef = target.counters.defense || 0;
+		battleNextDef = Math.max(0, battlePrevDef - dmg);
+		battleRemovedDef = battlePrevDef - battleNextDef;
+		if (battleRemovedDef > 0) {
+			target.counters.defense = battleNextDef;
+			noteLayerInputsChanged(state);
+		}
+	}
+	// --- End Track P15 ---
+
 	if (evTarget.isPlaneswalker) {
 		// CR 120.3c / 306.8: Damage dealt to a planeswalker removes that many loyalty counters.
 		target.counters.loyalty = Math.max(0, (target.counters.loyalty || 0) - dmg);
@@ -720,7 +752,7 @@ export function dealDamageToPermanent(
 			}
 		}
 		// --- End Track P10 ---
-	} else if (!evTarget.isPlaneswalker) {
+	} else if (!evTarget.isPlaneswalker && !targetIsBattle) {
 		target.damageMarked += dmg;
 	}
 
@@ -732,6 +764,20 @@ export function dealDamageToPermanent(
 		amount: dmg,
 		combat
 	});
+	// --- Track P15 ---
+	if (targetIsBattle && battleRemovedDef > 0) {
+		emitEvent(state, {
+			kind: 'CounterRemoved',
+			objectId: target.instanceId,
+			object: target,
+			counterType: 'defense',
+			amount: battleRemovedDef,
+			previousCount: battlePrevDef,
+			newCount: battleNextDef
+		});
+		onBattleDefenseCountersRemoved(state, target, battlePrevDef, battleNextDef);
+	}
+	// --- End Track P15 ---
 	p.emitVfx(state, {
 		kind: 'damage',
 		...(combat ? { sourceId } : {}),
@@ -814,6 +860,9 @@ export function dealDamageToPlayer(
 			// --- Track P12 ---
 			recordPlayerLifeLossWave4(pl, dmg);
 			// --- End Track P12 ---
+			// --- Track P15 ---
+			if (dmg > 0) onPlayerLostLifeCheckSpeedTrigger(state, pl.playerId, dmg);
+			// --- End Track P15 ---
 		}
 	}
 	// --- Track P9 ---
@@ -1773,6 +1822,16 @@ class Run {
 				);
 			}
 			// --- End Track P11 ---
+			// --- Track P15 ---
+			case 'playerSpeed':
+			case 'gravestormCount':
+				return (
+					evaluateP15Amount(a, this.state, this.you.playerId, {
+						resolvePlayer: (r) => this.playerRef(r) ?? undefined,
+						gravestormOverride: this.ctx.item.gravestormCount
+					}) ?? fallback
+				);
+			// --- End Track P15 ---
 		}
 	}
 
@@ -2412,6 +2471,9 @@ class Run {
 							// --- Track P12 ---
 							recordPlayerLifeLossWave4(pl, n);
 							// --- End Track P12 ---
+							// --- Track P15 ---
+							if (n > 0) onPlayerLostLifeCheckSpeedTrigger(s, pl.playerId, n);
+							// --- End Track P15 ---
 						}
 					}
 					p.emitVfx(s, {
@@ -2754,6 +2816,11 @@ class Run {
 									previousCount: prev,
 									newCount: next
 								});
+								// --- Track P15 ---
+								if (counter === 'defense') {
+									onBattleDefenseCountersRemoved(s, inst, prev, next);
+								}
+								// --- End Track P15 ---
 								flushTriggers(s);
 							}
 						}
@@ -3507,7 +3574,11 @@ class Run {
 			case 'transform': {
 				const objs = this.objects(step.subject).filter((o) => o.zone === 'battlefield');
 				this.bind(step, objs);
-				for (const o of objs) p.transformPermanent(s, o);
+				// --- Track P15 (CR 702.145c,f): Daybound/Nightbound permanents can't transform via external effects ---
+				for (const o of objs) {
+					if (canExternalEffectTransform(s, o)) p.transformPermanent(s, o);
+				}
+				// --- End Track P15 ---
 				return;
 			}
 			case 'flip': {
@@ -4125,6 +4196,44 @@ class Run {
 			case 'rollDie':
 				return executeRollDie(this.p10Host(), step);
 			// --- End Track P10 ---
+			// --- Track P15 ---
+			case 'prepare':
+			case 'unprepare': {
+				const wantPrepared = step.verb === 'prepare';
+				const objs = this.objects(step.subject).filter(
+					(o) =>
+						o.zone === 'battlefield' &&
+						!o.phasedOut &&
+						(step.subject.k !== 'self' ||
+							this.ctx.item.sourceObjectVersion === undefined ||
+							(o.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+				);
+				this.bind(step, objs);
+				for (const o of objs) {
+					if (setPermanentPrepared(s, o, wantPrepared)) {
+						p.addLog(
+							s,
+							'rule',
+							`${o.card.name} became ${wantPrepared ? 'prepared' : 'unprepared'} (${title}).`,
+							you.playerId
+						);
+					}
+				}
+				return;
+			}
+			case 'increaseSpeed': {
+				const targets =
+					step.subject.k === 'none'
+						? step.actor
+							? this.players({ k: 'playerRef', ref: step.actor })
+							: [you]
+						: this.players(step.subject);
+				for (const pl of targets) {
+					if (!pl.lost) increasePlayerSpeed(s, pl);
+				}
+				return;
+			}
+			// --- End Track P15 ---
 			default:
 				// Not reachable: staticallyInterpretable rejects every other verb.
 				p.addLog(s, 'rule', `${title}: the "${step.verb}" step isn't supported yet and did nothing.`, you.playerId);
@@ -7001,6 +7110,44 @@ class Run {
 				);
 			}
 			// --- End Track P12 ---
+			// --- Track P15 ---
+			case 'maxSpeed':
+			case 'citysBlessing':
+			case 'giftPromised':
+			case 'isDay':
+			case 'isNight':
+			case 'isYourTurn':
+			case 'selfPrepared':
+			case 'isImpending':
+			case 'enteredWithXAtLeast': {
+				const f = this.locate(this.ctx.sourceId);
+				const liveObj =
+					f &&
+					f.zone === 'battlefield' &&
+					!f.inst.phasedOut &&
+					(this.ctx.item.sourceObjectVersion === undefined ||
+						(f.inst.objectVersion ?? 1) === this.ctx.item.sourceObjectVersion)
+						? f.inst
+						: undefined;
+				return (
+					evaluateP15Condition(c, this.state, this.you.playerId, {
+						source: liveObj,
+						giftPromised: Boolean(
+							this.ctx.item.giftKind ||
+								this.ctx.item.sourceGiftPromised ||
+								liveObj?.giftPromised
+						),
+						enteredWithX:
+							liveObj?.enteredWithX ??
+							this.ctx.item.sourceEnteredWithX ??
+							this.ctx.xValue,
+						castWithImpending: Boolean(
+							liveObj?.castWithImpending ?? this.ctx.item.sourceCastWithImpending
+						)
+					}) ?? false
+				);
+			}
+			// --- End Track P15 ---
 		}
 	}
 

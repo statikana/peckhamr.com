@@ -844,11 +844,22 @@ export function validateAndSolveDefenderBlockersP8(
 	const blockerMustBlock: boolean[] = eligibleBlockers.map((b) =>
 		hasRestriction(state, b, 'blocksEachCombat')
 	);
+	// --- Track P15: Provoke (CR 702.39a) pair-specific requirement ---
+	const blockerProvokeAi: number[] = eligibleBlockers.map((b) =>
+		b.provokeMustBlockId
+			? attackerCards.findIndex((a) => a.instanceId === b.provokeMustBlockId)
+			: -1
+	);
+	// --- End Track P15 ---
 	const attackerReqWeights = attackerCards.map((a) =>
 		countAttackerBlockingRequirementWeights(state, a)
 	);
 
-	const anyBlockerReq = blockerMustBlock.some(Boolean);
+	const anyBlockerReq =
+		blockerMustBlock.some(Boolean) ||
+		// --- Track P15 ---
+		blockerProvokeAi.some((ai) => ai >= 0);
+		// --- End Track P15 ---
 	const anyAttackerReq = attackerReqWeights.some(
 		(w) => w.mustBeBlockedWeight > 0 || w.allAbleWeight > 0
 	);
@@ -870,12 +881,16 @@ export function validateAndSolveDefenderBlockersP8(
 	): number => {
 		let score = 0;
 		for (let bi = 0; bi < eligibleBlockers.length; bi++) {
-			if (
-				blockerMustBlock[bi] &&
-				(byBlocker.get(eligibleBlockers[bi].instanceId)?.size ?? 0) > 0
-			) {
+			const bTargets = byBlocker.get(eligibleBlockers[bi].instanceId);
+			if (blockerMustBlock[bi] && (bTargets?.size ?? 0) > 0) {
 				score += 1;
 			}
+			// --- Track P15 ---
+			const provAi = blockerProvokeAi[bi];
+			if (provAi >= 0 && bTargets?.has(attackerCards[provAi].instanceId)) {
+				score += 1;
+			}
+			// --- End Track P15 ---
 		}
 		for (let ai = 0; ai < attackerCards.length; ai++) {
 			const count = byAttacker.get(attackerCards[ai].instanceId)?.length ?? 0;
@@ -893,6 +908,9 @@ export function validateAndSolveDefenderBlockersP8(
 	let theoreticalMax = 0;
 	for (let bi = 0; bi < eligibleBlockers.length; bi++) {
 		if (blockerMustBlock[bi]) theoreticalMax += 1;
+		// --- Track P15 ---
+		if (blockerProvokeAi[bi] >= 0) theoreticalMax += 1;
+		// --- End Track P15 ---
 	}
 	for (let ai = 0; ai < attackerCards.length; ai++) {
 		theoreticalMax += attackerReqWeights[ai].mustBeBlockedWeight;
@@ -922,6 +940,9 @@ export function validateAndSolveDefenderBlockersP8(
 		state,
 		eligibleBlockers,
 		blockerMustBlock,
+		// --- Track P15 ---
+		blockerProvokeAi,
+		// --- End Track P15 ---
 		blockerCantBlockAlone,
 		priorDistinctBlockerIds.size,
 		maxRemainingDistinctBlockers,
@@ -951,6 +972,9 @@ function solveMaximumBlockingRequirements(
 	state: GameState,
 	eligibleBlockers: CardInstance[],
 	blockerMustBlock: boolean[],
+	// --- Track P15 ---
+	blockerProvokeAi: number[],
+	// --- End Track P15 ---
 	blockerCantBlockAlone: boolean[],
 	priorDistinctBlockerCount: number,
 	maxRemainingDistinctBlockers: number,
@@ -989,16 +1013,22 @@ function solveMaximumBlockingRequirements(
 		);
 		// Order high-requirement attackers first so branch-and-bound finds optima immediately
 		legalTargetsForBlocker[bi].sort((a1, a2) => {
-			const w1 = attackerReqWeights[a1].allAbleWeight * 2 + attackerReqWeights[a1].mustBeBlockedWeight;
-			const w2 = attackerReqWeights[a2].allAbleWeight * 2 + attackerReqWeights[a2].mustBeBlockedWeight;
+			// --- Track P15 ---
+			const p1 = blockerProvokeAi[bi] === a1 ? 4 : 0;
+			const p2 = blockerProvokeAi[bi] === a2 ? 4 : 0;
+			// --- End Track P15 ---
+			const w1 =
+				p1 + attackerReqWeights[a1].allAbleWeight * 2 + attackerReqWeights[a1].mustBeBlockedWeight;
+			const w2 =
+				p2 + attackerReqWeights[a2].allAbleWeight * 2 + attackerReqWeights[a2].mustBeBlockedWeight;
 			return w2 - w1;
 		});
 	}
 
 	// Order blockers with requirements or scarce options first
 	const blockerOrder = Array.from({ length: numB }, (_, i) => i).sort((b1, b2) => {
-		const r1 = blockerMustBlock[b1] ? 1 : 0;
-		const r2 = blockerMustBlock[b2] ? 1 : 0;
+		const r1 = (blockerMustBlock[b1] ? 1 : 0) + (blockerProvokeAi[b1] >= 0 ? 1 : 0);
+		const r2 = (blockerMustBlock[b2] ? 1 : 0) + (blockerProvokeAi[b2] >= 0 ? 1 : 0);
 		if (r1 !== r2) return r2 - r1;
 		return legalTargetsForBlocker[b1].length - legalTargetsForBlocker[b2].length;
 	});
@@ -1011,6 +1041,9 @@ function solveMaximumBlockingRequirements(
 		let gain = 0;
 		if (targets.length > 0) {
 			if (blockerMustBlock[bi]) gain += 1;
+			// --- Track P15 ---
+			if (blockerProvokeAi[bi] >= 0 && targets.includes(blockerProvokeAi[bi])) gain += 1;
+			// --- End Track P15 ---
 			const cap = Math.min(blockerCaps[bi], targets.length);
 			// Each chosen attacker can contribute at most mustBeBlockedWeight + allAbleWeight
 			const sortedGains = targets
@@ -1114,6 +1147,9 @@ function solveMaximumBlockingRequirements(
 				let delta = attackerReqWeights[ai].allAbleWeight;
 				if (prevCount === 0) delta += attackerReqWeights[ai].mustBeBlockedWeight;
 				if (chosenForB === 0 && blockerMustBlock[bi]) delta += 1;
+				// --- Track P15 ---
+				if (blockerProvokeAi[bi] === ai) delta += 1;
+				// --- End Track P15 ---
 
 				chooseTargetsForBlocker(k + 1, chosenForB + 1, scoreWithB + delta);
 

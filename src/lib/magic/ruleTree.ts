@@ -7,8 +7,8 @@ import {
 	type ResolveObjectFacesOptions
 } from './runtime/faces.ts';
 import { displayAbilityText } from './compiler/support.ts';
-import type { ActivatedAbility, CostDef, EffectStep, ModalDef, TargetSpec, UnsupportedAbility } from './ir.ts';
-import { getKeywordSpec } from './keywords.ts';
+import type { ActivatedAbility, CostDef, EffectStep, ModalDef, SpellAbility, TargetSpec, UnsupportedAbility } from './ir.ts';
+import { buildReconfigureUnattachAbility, getKeywordSpec } from './keywords.ts';
 import { describeCost, effectiveAbilityManaCost } from './runtime/costs.ts';
 import { hasChooseAllModesOptionalCost, isCastConditionMet } from './runtime/kicker.ts';
 import { evaluateCondition as evaluateFilterCondition } from './runtime/objectFilter.ts';
@@ -254,8 +254,12 @@ export function getSpellTargetRequirement(
 		faceIndex: option?.faceIndex ?? 0,
 		fused: option?.fused,
 		// --- Track P12 ---
-		...(option?.spellMods?.bestowed ? { bestowed: true } : {})
+		...(option?.spellMods?.bestowed ? { bestowed: true } : {}),
 		// --- End Track P12 ---
+		// --- Track P15 ---
+		...(option?.spellMods?.cleaved ? { cleaved: true } : {}),
+		...((optionalCostCounts?.['opt:gift'] ?? 0) > 0 ? { giftPromised: true } : {})
+		// --- End Track P15 ---
 	};
 	const abilities = activeAbilityDefs(card, faceOpts);
 	const chars = activeCharacteristics(card, faceOpts);
@@ -321,6 +325,20 @@ export function getSpellTargetRequirement(
 		nonModalSpecs.push(AWAKEN_LAND_TARGET_SPEC);
 	}
 	// --- End Track P12 ---
+	// --- Track P15: Splice onto [subtype/type] appends spliced spell TargetSpecs (CR 702.47a,c) ---
+	if (option?.optionalAdditionalCosts && optionalCostCounts) {
+		for (const opt of option.optionalAdditionalCosts) {
+			if (!opt.spliceCard || (optionalCostCounts[opt.id] ?? 0) <= 0) continue;
+			const splicedCompiled = compileCard(opt.spliceCard);
+			const splicedSpell = splicedCompiled.faces[0]?.abilities.find(
+				(a): a is SpellAbility => a.kind === 'spell'
+			);
+			if (splicedSpell) {
+				nonModalSpecs.push(...activeSpecs(splicedSpell.targets));
+			}
+		}
+	}
+	// --- End Track P15 ---
 	return nonModalSpecs.length > 0 ? targetRequirementFromSpecs(nonModalSpecs) : NO_TARGET_REQUIREMENT;
 }
 
@@ -595,7 +613,11 @@ function buildEffectiveActivatedAbility(
 	const effectPart = colonIdx >= 0 ? fullText.slice(colonIdx + 1).trim() : fullText;
 
 	const loyaltyDef = cost.find((c): c is Extract<CostDef, { k: 'loyalty' }> => c.k === 'loyalty');
-	const loyaltyCost = loyaltyDef ? loyaltyDef.delta : null;
+	// --- Track P15: +X / -X loyalty abilities (CR 606.4) ---
+	const isLoyaltyX = Boolean(loyaltyDef?.isX);
+	const loyaltySign: '+' | '-' | undefined = isLoyaltyX ? (loyaltyDef?.sign ?? '+') : undefined;
+	const loyaltyCost = loyaltyDef && !isLoyaltyX ? loyaltyDef.delta : null;
+	// --- End Track P15 ---
 	const manaDef = cost.find((c): c is Extract<CostDef, { k: 'mana' }> => c.k === 'mana');
 	const manaCost = manaDef ? manaDef.cost : '';
 	const requiresTap = cost.some((c) => c.k === 'tapSelf');
@@ -650,23 +672,39 @@ function buildEffectiveActivatedAbility(
 	const isPureTapMana = isMana && id === 'mana_tap' && !manaBundles && !manaCombinationColors && !freezesSelfUntap;
 	const sourceSuffix = opts.grantSources && opts.grantSources.length > 0 ? ` (${opts.grantSources.join(', ')})` : '';
 	const maxEffectLen = opts.grantSources ? 60 : 45;
+	const loyaltyPrefix = isLoyaltyX
+		? `${loyaltySign}X`
+		: loyaltyCost !== null
+			? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}`
+			: null;
 	const baseLabel =
 		isPureTapMana && producesMana.length > 0
 			? `Tap: Add ${producesAmount > 1 ? `${producesAmount}x ` : ''}${producesMana.map((c) => `{${c}}`).join('/')}`
-			: loyaltyCost !== null
-				? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}: ${effectPart.slice(0, 48)}`
+			: loyaltyPrefix !== null
+				? `${loyaltyPrefix}: ${effectPart.slice(0, 48)}`
 				: `${costPart}: ${effectPart.slice(0, maxEffectLen)}`;
 	const label = opts.labelOverride ?? `${baseLabel}${sourceSuffix}`;
 	const costText =
 		opts.costTextOverride ??
-		(isPureTapMana
-			? '{T}'
-			: loyaltyCost !== null
-				? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}`
-				: costPart);
+		(isPureTapMana ? '{T}' : loyaltyPrefix !== null ? loyaltyPrefix : costPart);
 	const activationZones = ab.kind === 'activated' ? ab.activationZones : undefined;
 	const costKeyword = ab.kind === 'activated' ? ab.costKeyword : undefined;
 	const activationCondition = ab.activationCondition;
+	// --- Track P15 ---
+	const choosesX =
+		isLoyaltyX ||
+		/\{X\}/i.test(manaCost) ||
+		cost.some(
+			(c) =>
+				(c.k === 'payLife' && c.amount.k === 'x') ||
+				(c.k === 'payEnergy' && c.count.k === 'x') ||
+				(c.k === 'removeCounters' && c.count.k === 'x') ||
+				(c.k === 'discard' && c.count.k === 'x') ||
+				(c.k === 'exileFrom' && c.count.k === 'x')
+		);
+	const activatorWho = ab.kind === 'activated' ? ab.activatorWho : undefined;
+	const powerUpReduction = ab.kind === 'activated' ? ab.powerUpReduction : undefined;
+	// --- End Track P15 ---
 
 	return {
 		id,
@@ -686,6 +724,12 @@ function buildEffectiveActivatedAbility(
 		...(activationZones?.length ? { activationZones } : {}),
 		...(costKeyword ? { costKeyword } : {}),
 		...(ab.grantCondition ? { grantCondition: ab.grantCondition } : {}),
+		// --- Track P15 ---
+		...(choosesX ? { choosesX: true } : {}),
+		...(loyaltySign ? { loyaltySign } : {}),
+		...(activatorWho ? { activatorWho } : {}),
+		...(powerUpReduction ? { powerUpReduction: true } : {}),
+		// --- End Track P15 ---
 		producesMana,
 		producesAmount,
 		...(manaAmount ? { manaAmount } : {}),
@@ -869,6 +913,31 @@ function buildFaceActivatedAbilities(
 						);
 						if (effective) out.push({ ...effective, faceIndex });
 					}
+					// --- Track P15: Reconfigure also defines an unattach ability (CR 702.151a) ---
+					if (kwName === 'reconfigure') {
+						const unattachBuilt = buildReconfigureUnattachAbility(
+							ab.keyword,
+							ab.id ?? 'reconfigure_0',
+							ab.span
+						);
+						if (unattachBuilt) {
+							const unattachEff = buildEffectiveActivatedAbility(
+								unattachBuilt.ability,
+								commanderIdentity,
+								resolveOpponentLandColors,
+								{
+									displayCardName: faceName,
+									displayCard: card,
+									labelOverride: unattachBuilt.label,
+									costTextOverride: unattachBuilt.costText,
+									effectTextOverride: unattachBuilt.effectText,
+									chosenColor
+								}
+							);
+							if (unattachEff) out.push({ ...unattachEff, faceIndex });
+						}
+					}
+					// --- End Track P15 ---
 				}
 			}
 			continue;

@@ -94,6 +94,10 @@ export interface ResolveObjectFacesOptions {
 	// --- Track P12 ---
 	bestowed?: boolean;
 	// --- End Track P12 ---
+	// --- Track P15 ---
+	cleaved?: boolean;
+	giftPromised?: boolean;
+	// --- End Track P15 ---
 }
 
 export interface ResolvedObjectView {
@@ -461,13 +465,17 @@ export function resolveObjectFaces(
 			}
 			break;
 		}
-		case 'adventure': {
-			// CR 716.4: Adventure characteristics exist only while on the stack as an Adventure.
+		case 'adventure':
+		// --- Track P15 ---
+		case 'omen':
+		case 'prepare': {
+			// CR 716.4, CR 721.4, CR 723.4: Adventure/Omen/Prepare secondary characteristics exist only while on the stack.
 			const idx = zone === 'stack' ? clampIdx(requestedIdx) : 0;
 			const face = allFaces[idx];
 			view = viewFromSingleFace(layout, face, idx, faceManaValue(baseCard, face, idx, layout));
 			break;
 		}
+		// --- End Track P15 ---
 		case 'flip': {
 			// CR 710.2–3, 710.1c: flipped characteristics apply on battlefield; color & mana cost stay front.
 			const idx = zone === 'battlefield' ? clampIdx(requestedIdx) : 0;
@@ -519,7 +527,12 @@ export function resolveObjectFaces(
 		}
 	}
 
-	if (opts?.copiableState?.except) {
+	// --- Track P15 ---
+	// CR 723.3c: Casting a copy of a prepared permanent's prepare spell uses only the printed
+	// card's prepare spell characteristics, ignoring copy exceptions on the permanent.
+	const ignorePrepareCopyExcept = layout === 'prepare' && zone === 'stack' && requestedIdx === 1;
+	// --- End Track P15 ---
+	if (opts?.copiableState?.except && !ignorePrepareCopyExcept) {
 		view = applyCopyExceptions(view, opts.copiableState.except);
 	}
 
@@ -618,8 +631,12 @@ export function stackItemFaceOptions(item: StackItem): ResolveObjectFacesOptions
 		isSingleFaceCopy: item.copiableState?.isSingleFaceCopy,
 		prototyped: Boolean(item.spellMods?.prototyped || item.copiableState?.prototyped),
 		// --- Track P12 ---
-		bestowed: Boolean(item.spellMods?.bestowed)
+		bestowed: Boolean(item.spellMods?.bestowed),
 		// --- End Track P12 ---
+		// --- Track P15 ---
+		cleaved: Boolean(item.spellMods?.cleaved),
+		giftPromised: Boolean(item.giftKind || item.optionalCostCounts?.['opt:gift'])
+		// --- End Track P15 ---
 	};
 }
 
@@ -645,7 +662,22 @@ export function activeAbilityDefs(
 	card: ScryfallCard,
 	opts?: ResolveObjectFacesOptions
 ): AbilityDef[] {
-	const abilities = activeFaceDefs(card, opts).flatMap((f) => f.abilities);
+	const faceDefs = activeFaceDefs(card, opts);
+	let abilities = faceDefs.flatMap((f) => f.abilities);
+	// --- Track P15 ---
+	if (!opts?.isFaceDown && opts?.zone === 'stack' && faceDefs.length === 1) {
+		const activeFace = faceDefs[0];
+		const overrideSpell =
+			opts.cleaved && activeFace.cleavedSpellSpec
+				? activeFace.cleavedSpellSpec
+				: opts.giftPromised && activeFace.giftPromisedSpellSpec
+					? activeFace.giftPromisedSpellSpec
+					: undefined;
+		if (overrideSpell) {
+			abilities = [...abilities.filter((a) => a.kind !== 'spell'), overrideSpell];
+		}
+	}
+	// --- End Track P15 ---
 	// --- Track P12 ---
 	if (
 		!opts?.isFaceDown &&
@@ -687,6 +719,11 @@ export function activeCharacteristics(
 		...(view.power !== undefined ? { power: view.power } : {}),
 		...(view.toughness !== undefined ? { toughness: view.toughness } : {}),
 		...(view.loyalty !== undefined ? { loyalty: view.loyalty } : {}),
+		// --- Track P15 ---
+		...(view.defense !== undefined && parseStat(view.defense) !== undefined
+			? { defense: parseStat(view.defense) }
+			: {}),
+		// --- End Track P15 ---
 		...(view.ptDefinedByAbility ? { ptDefinedByAbility: true } : {})
 	};
 }

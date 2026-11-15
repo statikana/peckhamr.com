@@ -453,8 +453,31 @@ export type GameEvent =
 	// --- Track P12 ---
 	| ClassLevelGainedEvent
 	| CaseSolvedEvent
-	| BecameRenownedEvent;
+	| BecameRenownedEvent
 	// --- End Track P12 ---
+	// --- Track P15 ---
+	| DoorUnlockedEvent
+	| RoomFullyUnlockedEvent;
+	// --- End Track P15 ---
+
+// --- Track P15 ---
+/** A door (face) of a Room enchantment was unlocked on ETB or via special action (CR 709.5h). */
+export interface DoorUnlockedEvent extends EventBase {
+	kind: 'DoorUnlocked';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	faceIndex: number;
+}
+
+/** A Room enchantment now has all of its halves unlocked (CR 709.5i). */
+export interface RoomFullyUnlockedEvent extends EventBase {
+	kind: 'RoomFullyUnlocked';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+// --- End Track P15 ---
 
 // --- Track P10 ---
 export interface UnblockedAttackersEvent extends EventBase {
