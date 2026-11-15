@@ -17,8 +17,7 @@
 		PlayerGameState
 	} from '../types.ts';
 	import { computeMaxAffordableX, type CastableZone } from './targetingController.ts';
-
-	const QUICK_PICKS = [0, 1, 2, 3, 5] as const;
+	import XValueChooser from './XValueChooser.svelte';
 
 	let {
 		gameState,
@@ -154,10 +153,6 @@
 		if (!Number.isFinite(next)) return;
 		xValue = Math.max(0, Math.floor(next));
 	}
-
-	function stepX(delta: number) {
-		setClampedX(xValue + delta);
-	}
 </script>
 
 {#if minimized}
@@ -205,80 +200,18 @@
 				{/if}
 			</div>
 
-			<div class="x-stepper-row">
-				<button
-					type="button"
-					class="hud-btn step-btn"
-					data-testid="x-step-minus-5"
-					disabled={xValue <= 0}
-					onclick={() => stepX(-5)}
-				>
-					−5
-				</button>
-				<button
-					type="button"
-					class="hud-btn step-btn"
-					data-testid="x-step-minus-1"
-					disabled={xValue <= 0}
-					onclick={() => stepX(-1)}
-				>
-					−1
-				</button>
-				<input
-					type="number"
-					class="x-number-input"
-					data-testid="x-value-input"
-					min="0"
-					step="1"
-					value={xValue}
-					oninput={(e) => {
-						const parsed = parseInt(e.currentTarget.value, 10);
-						setClampedX(Number.isNaN(parsed) ? 0 : parsed);
-					}}
-				/>
-				<button
-					type="button"
-					class="hud-btn step-btn"
-					data-testid="x-step-plus-1"
-					onclick={() => stepX(1)}
-				>
-					+1
-				</button>
-				<button
-					type="button"
-					class="hud-btn step-btn"
-					data-testid="x-step-plus-5"
-					onclick={() => stepX(5)}
-				>
-					+5
-				</button>
-			</div>
-
-			<div class="x-quick-picks" role="group" aria-label="Quick X presets">
-				{#each QUICK_PICKS as preset (preset)}
-					<button
-						type="button"
-						class="hud-btn pill-btn"
-						class:active-ctrl={xValue === preset}
-						data-testid="x-quick-{preset}"
-						onclick={() => setClampedX(preset)}
-					>
-						{preset}
-					</button>
-				{/each}
-				<button
-					type="button"
-					class="hud-btn pill-btn"
-					class:active-ctrl={effectiveMaxX !== null && xValue === effectiveMaxX}
-					data-testid="x-quick-max"
-					disabled={effectiveMaxX === null}
-					onclick={() => {
-						if (effectiveMaxX !== null) setClampedX(effectiveMaxX);
-					}}
-				>
-					Max ({effectiveMaxX !== null ? effectiveMaxX : '—'})
-				</button>
-			</div>
+			<XValueChooser
+				value={xValue}
+				min={0}
+				max={null}
+				suggestedMax={effectiveMaxX}
+				badgeLabel="X"
+				testIdPrefix="x"
+				onChange={setClampedX}
+				onSubmit={() => {
+					if (legality.ok) void onConfirm(xValue);
+				}}
+			/>
 
 			{#if !legality.ok && legality.error}
 				<div class="x-legality-error" data-testid="x-legality-error">
@@ -358,44 +291,6 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 0.35rem;
-	}
-	.x-stepper-row {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 0.45rem;
-	}
-	.x-number-input {
-		width: 5.5rem;
-		text-align: center;
-		font-size: 1.1rem;
-		font-weight: 700;
-		background: var(--mp-bg);
-		color: var(--mp-text);
-		border: 1.5px solid var(--mp-border-strong);
-		border-radius: 6px;
-		padding: 0.38rem 0.5rem;
-		font-family: inherit;
-	}
-	.x-number-input:focus {
-		outline: none;
-		border-color: var(--mp-accent);
-	}
-	.step-btn {
-		min-width: 2.5rem;
-		justify-content: center;
-		font-weight: 700;
-	}
-	.x-quick-picks {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 0.4rem;
-		flex-wrap: wrap;
-	}
-	.pill-btn {
-		border-radius: 999px;
-		padding: 0.22rem 0.68rem;
 	}
 	.x-legality-error {
 		font-size: 0.78rem;

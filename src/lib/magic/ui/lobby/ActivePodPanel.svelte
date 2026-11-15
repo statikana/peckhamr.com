@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ManaSymbol from '../../ManaSymbol.svelte';
+	import { feedTailTrigger, stickyBottom } from '../stickyScroll.ts';
 	import type {
 		BotSpeed,
 		LobbyRulesConfig,
@@ -52,6 +53,7 @@
 	}: Props = $props();
 
 	let lobbyChatInput = $state('');
+	let lobbyChatForceNonce = $state(0);
 	let resizingChatCol = $state(false);
 	let resizeStartX = 0;
 	let resizeStartWidth = 330;
@@ -481,7 +483,14 @@
 				/>
 			</label>
 		</div>
-		<div class="lobby-chat-feed" style="height: {lobbyChatHeight}px;">
+		<div
+			class="lobby-chat-feed"
+			style="height: {lobbyChatHeight}px;"
+			use:stickyBottom={{
+				trigger: feedTailTrigger(chatMessages),
+				forceNonce: lobbyChatForceNonce
+			}}
+		>
 			{#each chatMessages as m (m.id)}
 				<div class="lchat-item kind-{m.kind}">
 					<strong>{m.username}:</strong>
@@ -496,6 +505,7 @@
 				if (!lobbyChatInput.trim()) return;
 				const text = lobbyChatInput.trim();
 				lobbyChatInput = '';
+				lobbyChatForceNonce += 1;
 				await onSendChat(text, 'chat');
 			}}
 		>

@@ -12,6 +12,8 @@
 		ScryfallCard
 	} from '../types.ts';
 	import GuidedResolutionBuilder from './GuidedResolutionBuilder.svelte';
+	import XValueChooser from './XValueChooser.svelte';
+	import { clampXChooserValue } from './xChooserModel.ts';
 	import {
 		ZONE_SHORT_LABELS,
 		buildOrderObjectsInitialLists,
@@ -214,15 +216,6 @@
 			next.splice(pos, 1);
 			selectedModeIndices = next;
 		}
-	}
-
-	function clampChosenNumber(val: number, min: number, max: number): number {
-		const intVal = Number.isFinite(val) ? Math.trunc(val) : min;
-		return Math.min(max, Math.max(min, intVal));
-	}
-
-	function stepChosenNumber(delta: number, min: number, max: number) {
-		selectedNumber = clampChosenNumber(selectedNumber + delta, min, max);
 	}
 
 	function shiftOrder(id: string, dir: -1 | 1) {
@@ -793,93 +786,25 @@
 					</div>
 				{/if}
 			{:else if choice.kind === 'chooseNumber'}
-				{@const halfVal = Math.floor((choice.min + choice.max) / 2)}
-				{@const clampedN = clampChosenNumber(selectedNumber, choice.min, choice.max)}
-				<div class="number-chooser-panel">
-					<div class="number-stepper-row">
-						<button
-							type="button"
-							class="hud-btn mini-btn"
-							disabled={clampedN <= choice.min}
-							onclick={() => stepChosenNumber(-5, choice.min, choice.max)}
-						>
-							-5
-						</button>
-						<button
-							type="button"
-							class="hud-btn mini-btn"
-							disabled={clampedN <= choice.min}
-							onclick={() => stepChosenNumber(-1, choice.min, choice.max)}
-						>
-							-1
-						</button>
-						<input
-							type="number"
-							class="number-input"
-							min={choice.min}
-							max={choice.max}
-							bind:value={selectedNumber}
-						/>
-						<button
-							type="button"
-							class="hud-btn mini-btn"
-							disabled={clampedN >= choice.max}
-							onclick={() => stepChosenNumber(1, choice.min, choice.max)}
-						>
-							+1
-						</button>
-						<button
-							type="button"
-							class="hud-btn mini-btn"
-							disabled={clampedN >= choice.max}
-							onclick={() => stepChosenNumber(5, choice.min, choice.max)}
-						>
-							+5
-						</button>
-					</div>
-
-					<div class="number-quick-pills">
-						<span class="range-caption">Range {choice.min}–{choice.max}:</span>
-						<button
-							type="button"
-							class="sort-pill"
-							class:active={clampedN === choice.min}
-							onclick={() => (selectedNumber = choice.min)}
-						>
-							Min ({choice.min})
-						</button>
-						{#if 1 > choice.min && 1 < choice.max}
-							<button
-								type="button"
-								class="sort-pill"
-								class:active={clampedN === 1}
-								onclick={() => (selectedNumber = 1)}
-							>
-								1
-							</button>
-						{/if}
-						{#if halfVal > choice.min && halfVal < choice.max && halfVal !== 1}
-							<button
-								type="button"
-								class="sort-pill"
-								class:active={clampedN === halfVal}
-								onclick={() => (selectedNumber = halfVal)}
-							>
-								Half ({halfVal})
-							</button>
-						{/if}
-						{#if choice.max !== choice.min}
-							<button
-								type="button"
-								class="sort-pill"
-								class:active={clampedN === choice.max}
-								onclick={() => (selectedNumber = choice.max)}
-							>
-								Max ({choice.max})
-							</button>
-						{/if}
-					</div>
-				</div>
+				{@const clampedN = clampXChooserValue(selectedNumber, choice.min, choice.max)}
+				<XValueChooser
+					value={clampedN}
+					min={choice.min}
+					max={choice.max}
+					badgeLabel={choice.reason.includes('X') ? 'X' : '#'}
+					rangeCaption={`Range ${choice.min}–${choice.max}`}
+					testIdPrefix="choice-num"
+					onChange={(next) => (selectedNumber = next)}
+					onSubmit={() =>
+						onGameAction({
+							type: 'choice',
+							promptId: prompt.id,
+							answer: {
+								kind: 'chooseNumber',
+								n: clampXChooserValue(selectedNumber, choice.min, choice.max)
+							}
+						})}
+				/>
 
 				<div class="modal-actions">
 					<button
@@ -891,7 +816,7 @@
 								promptId: prompt.id,
 								answer: {
 									kind: 'chooseNumber',
-									n: clampChosenNumber(selectedNumber, choice.min, choice.max)
+									n: clampXChooserValue(selectedNumber, choice.min, choice.max)
 								}
 							})}
 					>
@@ -1558,45 +1483,6 @@
 		text-align: center;
 		font-weight: 600;
 		font-size: 0.85rem;
-	}
-	.number-chooser-panel {
-		display: flex;
-		flex-direction: column;
-		gap: 0.55rem;
-		padding: 0.6rem;
-		background: var(--mp-bg, #19181a);
-		border: 1px solid var(--mp-border-strong, #524c58);
-		border-radius: 8px;
-	}
-	.number-stepper-row {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 0.4rem;
-		flex-wrap: wrap;
-	}
-	.number-input {
-		width: 6.5rem;
-		text-align: center;
-		font-size: 1rem;
-		font-weight: 800;
-		background: var(--mp-bg-elevated, #221f22);
-		color: var(--mp-accent, #ffd866);
-		border: 1.5px solid var(--mp-border-strong, #524c58);
-		border-radius: 6px;
-		padding: 0.38rem 0.5rem;
-		font-family: inherit;
-	}
-	.number-quick-pills {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 0.35rem;
-		flex-wrap: wrap;
-	}
-	.range-caption {
-		font-size: 0.68rem;
-		color: var(--mp-text-muted, #939293);
 	}
 	.scry-section {
 		display: flex;

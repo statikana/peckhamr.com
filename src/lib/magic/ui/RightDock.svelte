@@ -12,6 +12,7 @@
 	} from '../types.ts';
 	import CardInspector from './CardInspector.svelte';
 	import { FACE_DOWN_ART_URI } from './promptViewModel.ts';
+	import { feedTailTrigger, stickyBottom } from './stickyScroll.ts';
 
 	const EMOTES = ['Good Game', 'Nice Play', 'Thinking...', 'Oops', 'Countered', 'Let It Resolve'];
 
@@ -69,6 +70,7 @@
 
 	let dockTab = $state<'chat' | 'log'>('chat');
 	let chatInput = $state('');
+	let chatForceNonce = $state(0);
 
 	function stackItemDisplay(item: StackItem): {
 		name: string;
@@ -99,7 +101,13 @@
 		const msg = chatInput.trim();
 		if (!msg) return;
 		chatInput = '';
+		chatForceNonce += 1;
 		await onSendChat(msg, 'chat');
+	}
+
+	async function sendEmote(em: string) {
+		chatForceNonce += 1;
+		await onSendChat(em, 'emote');
 	}
 </script>
 
@@ -233,42 +241,57 @@
 			</button>
 		</div>
 
-		{#if dockTab === 'chat'}
-			<div class="chat-feed">
-				{#each chatMessages as m (m.id)}
-					<div class="chat-msg kind-{m.kind}">
-						<span class="cm-user">{m.username}:</span>
-						<span class="cm-text">{m.message}</span>
-					</div>
-				{/each}
-			</div>
-			<div class="emote-row">
-				{#each EMOTES as em (em)}
-					<button type="button" class="emote-btn" onclick={() => onSendChat(em, 'emote')}>
-						{em}
-					</button>
-				{/each}
-			</div>
-			<form
-				class="chat-form"
-				onsubmit={(e) => {
-					e.preventDefault();
-					submitChat();
-				}}
-			>
-				<input type="text" placeholder="Message pod..." bind:value={chatInput} />
-				<button type="submit">Send</button>
-			</form>
-		{:else}
-			<div class="chat-feed">
-				{#each [...gameState.log].reverse() as entry (entry.id)}
-					<div class="log-entry kind-{entry.kind}">
-						<span class="le-turn">[T{entry.turn}]</span>
-						<span>{entry.text}</span>
-					</div>
-				{/each}
-			</div>
-		{/if}
+		{#key dockTab}
+			{#if dockTab === 'chat'}
+				<div
+					class="chat-feed"
+					use:stickyBottom={{
+						trigger: feedTailTrigger(chatMessages),
+						forceNonce: chatForceNonce,
+						resetKey: 'chat'
+					}}
+				>
+					{#each chatMessages as m (m.id)}
+						<div class="chat-msg kind-{m.kind}">
+							<span class="cm-user">{m.username}:</span>
+							<span class="cm-text">{m.message}</span>
+						</div>
+					{/each}
+				</div>
+				<div class="emote-row">
+					{#each EMOTES as em (em)}
+						<button type="button" class="emote-btn" onclick={() => sendEmote(em)}>
+							{em}
+						</button>
+					{/each}
+				</div>
+				<form
+					class="chat-form"
+					onsubmit={(e) => {
+						e.preventDefault();
+						submitChat();
+					}}
+				>
+					<input type="text" placeholder="Message pod..." bind:value={chatInput} />
+					<button type="submit">Send</button>
+				</form>
+			{:else}
+				<div
+					class="chat-feed"
+					use:stickyBottom={{
+						trigger: feedTailTrigger(gameState.log),
+						resetKey: 'log'
+					}}
+				>
+					{#each gameState.log as entry (entry.id)}
+						<div class="log-entry kind-{entry.kind}">
+							<span class="le-turn">[T{entry.turn}]</span>
+							<span>{entry.text}</span>
+						</div>
+					{/each}
+				</div>
+			{/if}
+		{/key}
 	</div>
 </aside>
 
@@ -415,6 +438,7 @@
 	}
 	.chat-feed {
 		flex: 1;
+		min-height: 0;
 		padding: 0.5rem;
 		overflow-y: auto;
 		display: flex;
