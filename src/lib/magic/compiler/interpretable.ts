@@ -83,7 +83,10 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	'bolster',
 	'adapt',
 	// --- Track P6 ---
-	'removeCounters'
+	'removeCounters',
+	'extraCombatPhase',
+	'moveCounters',
+	'reveal'
 ]);
 
 export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
@@ -155,19 +158,24 @@ function stepSupported(step: EffectStep): boolean {
 		if (step.optional && !s.statedQuality && !s.filter.named) return false;
 	}
 	if (step.verb === 'addMana' && !step.params?.mana && !step.params?.manaChoice) return false;
+	if (step.verb === 'extraCombatPhase' || step.verb === 'moveCounters') return true;
 	if (step.verb === 'dig') {
 		const d = step.params?.dig;
-		if (!d || !d.keepTo || !d.rest) return false;
+		if (!d) return false;
+		if (d.partitions && d.partitions.length > 0) return true;
+		if (!d.keepTo || !d.rest) return false;
 		if (!d.keepAllMatching && (typeof d.keep !== 'number' || d.keep < 0)) return false;
 	}
 	if (
 		step.subject.k === 'libraryTop' &&
 		step.verb !== 'exile' &&
 		step.verb !== 'manifest' &&
-		step.verb !== 'cloak'
+		step.verb !== 'cloak' &&
+		step.verb !== 'reveal'
 	) {
 		return false;
 	}
+	if (step.verb === 'reveal') return true;
 	if (step.verb === 'amass' && !step.params?.amassSubtype) return false;
 	if (step.verb === 'grantPlayFromExile' && !step.params?.playFromExile) return false;
 	if (step.verb === 'revealAndDiscard') {

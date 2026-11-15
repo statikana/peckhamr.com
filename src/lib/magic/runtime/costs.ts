@@ -677,6 +677,7 @@ export interface CostContext {
 	baseMana: ManaCostRequirement | null;
 	/** Object IDs already committed to another payment (e.g. CastCostAid) that cannot be reused (CR 118.10). */
 	reservedObjectIds?: ReadonlySet<string>;
+	spendCtx?: { capturedColorsSpent?: ManaColor[] };
 	canPayMana: (req: ManaCostRequirement, reservedIds?: ReadonlySet<string>) => boolean;
 	payMana: (req: ManaCostRequirement) => boolean;
 }

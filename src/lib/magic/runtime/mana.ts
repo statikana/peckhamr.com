@@ -87,16 +87,25 @@ function spendGenericFromRestrictedPool(pool: ManaPool, remGeneric: number): num
 	return remGeneric;
 }
 
+const FIVE_COLORS: ManaColor[] = ['W', 'U', 'B', 'R', 'G'];
+
 /**
  * Deducts `req` from `player`, preferring eligible restricted mana first so unrestricted mana
- * remains available for nonartifact spells.
+ * remains available for nonartifact spells. Returns the distinct colors of mana spent (CR 105.4).
  */
 export function deductManaForSpendContext(
 	player: PlayerGameState,
 	req: ManaCostRequirement,
 	spendCtx?: ManaSpendContext,
 	onPayLife?: (life: number) => void
-): void {
+): ManaColor[] {
+	const beforePool = { ...player.manaPool };
+	const beforeRestricted: Record<string, ManaPool> = {};
+	if (player.restrictedMana) {
+		for (const [key, pool] of Object.entries(player.restrictedMana) as Array<[ManaRestriction, ManaPool | undefined]>) {
+			if (pool) beforeRestricted[key] = { ...pool };
+		}
+	}
 	const combined = combinedManaPoolForSpend(player, spendCtx);
 	const resolved = resolveFlexibleManaRequirement(combined, req);
 	if (resolved.lifePaid > 0 && onPayLife) {
@@ -134,4 +143,23 @@ export function deductManaForSpendContext(
 			totalCmc: remGeneric
 		});
 	}
+
+	const spentColors: ManaColor[] = [];
+	for (const c of FIVE_COLORS) {
+		let spent = beforePool[c] - player.manaPool[c];
+		if (player.restrictedMana) {
+			for (const [key, pool] of Object.entries(player.restrictedMana) as Array<[ManaRestriction, ManaPool | undefined]>) {
+				if (pool && beforeRestricted[key]) {
+					spent += beforeRestricted[key][c] - pool[c];
+				}
+			}
+		}
+		if (spent > 0) {
+			spentColors.push(c);
+		}
+	}
+	if (spendCtx) {
+		spendCtx.capturedColorsSpent = spentColors;
+	}
+	return spentColors;
 }

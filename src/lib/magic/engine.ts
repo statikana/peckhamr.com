@@ -75,6 +75,7 @@ import {
 	getAttackTaxGeneric,
 	getAttackTaxSources,
 	hasRestriction,
+	matchesPlayerFilter,
 	playerHasHexproofFrom as replacePlayerHasHexproofFrom,
 	playerHasNoMaxHandSize,
 	playerHasShroud as replacePlayerHasShroud,
@@ -287,6 +288,7 @@ import {
 	type MagicLobby,
 	type ManaColor,
 	type ManaPool,
+	type ManaRider,
 	type ManaSpendContext,
 	type PendingCostPayment,
 	type PendingPrompt,
@@ -573,6 +575,31 @@ function checkIfAllKeptMulligan(state: GameState): void {
 	if (anyMulliganPrompts) return;
 
 	if (state.players.every((p) => p.hasKeptHand)) {
+		for (const p of state.players) {
+			const pregameBattlefieldCards = p.hand.filter((c) => {
+				const abilities = activeAbilityDefs(effectiveCardForObject(c));
+				return abilities.some(
+					(a) => a.kind === 'static' && a.static.k === 'pregameAction' && a.static.action === 'beginOnBattlefield'
+				);
+			});
+			for (const inst of pregameBattlefieldCards) {
+				inst.defaultControllerId = p.playerId;
+				inst.controllerId = p.playerId;
+				moveObject(state, inst, 'battlefield', {
+					from: { player: p, zone: 'hand' },
+					toPlayer: p,
+					controllerId: p.playerId,
+					newTimestamp: true,
+					bumpVersion: true
+				});
+				addLog(
+					state,
+					'rule',
+					`${p.username} began the game with ${inst.card.name} on the battlefield (CR 103.6a).`,
+					p.playerId
+				);
+			}
+		}
 		state.status = 'active';
 		state.turnNumber = 1;
 		state.turnSerial = 1;
@@ -1420,6 +1447,29 @@ function getCastOptionsInner(
 	});
 }
 
+function hasGlobalSpendManaAsAnyColor(state: GameState, player: PlayerGameState): boolean {
+	for (const p of state.players) {
+		for (const perm of p.battlefield) {
+			if (perm.phasedOut || evaluatePermanent(state, perm).losesAllAbilities) continue;
+			for (const ab of activeAbilityDefs(
+				effectiveCardForObject(perm),
+				instanceFaceOptions(perm, 'battlefield')
+			)) {
+				if (
+					ab.kind === 'static' &&
+					ab.static.k === 'ruleModifier' &&
+					ab.static.rule === 'spendManaAsAnyColor'
+				) {
+					if (matchesPlayerFilter(ab.static.who, perm.controllerId, player.playerId, state)) {
+						return true;
+					}
+				}
+			}
+		}
+	}
+	return false;
+}
+
 function getSpellCostRequirementForOption(
 	player: PlayerGameState,
 	inst: CardInstance,
@@ -1429,11 +1479,12 @@ function getSpellCostRequirementForOption(
 	optionalCostCounts?: Record<string, number>
 ): ManaCostRequirement {
 	const applyAnyColorPermission = (req: ManaCostRequirement): ManaCostRequirement => {
-		if (
+		const fromExile =
 			inst.zone === 'exile' &&
 			inst.playableFromExileBy?.playerId === player.playerId &&
-			inst.playableFromExileBy.spendManaAsAnyColor
-		) {
+			inst.playableFromExileBy.spendManaAsAnyColor;
+		const fromGlobal = hasGlobalSpendManaAsAnyColor(state, player);
+		if (fromExile || fromGlobal) {
 			const coloredTotal =
 				req.colored.W + req.colored.U + req.colored.B + req.colored.R + req.colored.G;
 			if (coloredTotal > 0) {
@@ -1635,6 +1686,7 @@ function costContext(
 		isSpell,
 		baseMana,
 		reservedObjectIds,
+		spendCtx,
 		canPayMana: canPayManaOverride
 			? (req, reservedIds) => canPayManaOverride(req, combineReserved(reservedIds))
 			: (req, reservedIds) =>
@@ -1704,6 +1756,7 @@ function finalizeCastSpell(
 		descriptions?: string[];
 		aidDescriptions?: string[];
 		additionalIncomplete?: boolean;
+		manaColorsSpent?: ManaColor[];
 	}
 ): void {
 	const actorId = actor.playerId;
@@ -1760,6 +1813,7 @@ function finalizeCastSpell(
 		inst.faceDownLabel = undefined;
 	}
 	inst.prototyped = effectiveSpellMods?.prototyped ? true : undefined;
+	inst.manaColorsSpent = opts.manaColorsSpent ? [...opts.manaColorsSpent] : undefined;
 	moveObject(state, inst, 'stack', {
 		from: { player: sourcePlayer, zone: sourceZone },
 		newTimestamp: true,
@@ -1790,6 +1844,7 @@ function finalizeCastSpell(
 			controllerId: actorId,
 			kind: 'spell',
 			title: spellDisplayName,
+			...(opts.manaColorsSpent ? { manaColorsSpent: [...opts.manaColorsSpent] } : {}),
 			...(opts.faceIndex !== undefined ? { faceIndex: opts.faceIndex } : {}),
 			...(opts.fused ? { fused: true } : {}),
 			...(castFaceDownSpec
@@ -1811,6 +1866,57 @@ function finalizeCastSpell(
 	);
 
 	state.stack.push(stackItem);
+
+	if (actor.manaRiders && actor.manaRiders.length > 0) {
+		const matchingRiders: ManaRider[] = [];
+		const remainingRiders: ManaRider[] = [];
+		for (const rider of actor.manaRiders) {
+			const matches = rider.condition?.sharesCreatureTypeWithCommander
+				? matchesObjectFilter(
+						inst,
+						{ types: ['Creature'], sharesTypeWithCommander: true },
+						{
+							state,
+							controllerId: actorId
+						}
+					)
+				: false;
+			if (matches) {
+				matchingRiders.push(rider);
+			} else {
+				remainingRiders.push(rider);
+			}
+		}
+		actor.manaRiders = remainingRiders;
+		for (const rider of matchingRiders) {
+			const scryAmount = rider.scryAmount ?? 1;
+			const riderCard = rider.sourceCard ?? inst.card;
+			const riderStackItem: StackItem = withStackItemText(
+				{
+					id: uid('stk', state),
+					sourceInstanceId: rider.sourceInstanceId ?? inst.instanceId,
+					card: riderCard,
+					ownerId: actorId,
+					controllerId: actorId,
+					kind: 'triggered',
+					title: `${riderCard.name} (Scry ${scryAmount})`,
+					targets: [],
+					requiresGuidedResolution: false,
+					createdAt: Date.now(),
+					xValue: 0,
+					delayedEffect: { kind: 'scry', amount: scryAmount }
+				},
+				riderCard
+			);
+			state.stack.push(riderStackItem);
+			addLog(
+				state,
+				'trigger',
+				`${riderCard.name} triggered: Scry ${scryAmount}.`,
+				actorId
+			);
+		}
+	}
 	state.passedPriorityPlayerIds = [];
 	state.priorityUpdatedAt = Date.now();
 
@@ -2056,6 +2162,9 @@ function executeOrResumePendingCostPayment(
 		}
 		payTapAndManaCostParts(ctx, pcp.parts, pcp.manaPaid ?? null, pcp.descriptions, pcp.aidDescriptions);
 		pcp.tapsAndManaDone = true;
+		if (ctx.spendCtx?.capturedColorsSpent) {
+			pcp.manaColorsSpent = ctx.spendCtx.capturedColorsSpent;
+		}
 	}
 	const paid = executeCostPaymentParts(
 		ctx,
@@ -2096,7 +2205,8 @@ function executeOrResumePendingCostPayment(
 				exSourceName: pcp.exSourceName,
 				descriptions: pcp.descriptions,
 				aidDescriptions: pcp.aidDescriptions,
-				additionalIncomplete: pcp.additionalIncomplete
+				additionalIncomplete: pcp.additionalIncomplete,
+				manaColorsSpent: pcp.manaColorsSpent
 			});
 		}
 	} else if (pcp.kind === 'activate_ability') {
@@ -2700,8 +2810,48 @@ function resolveActivatedManaAbility(
 		for (const col of chosenBundle) {
 			addManaToPlayerPool(player, col, 1, ab?.manaRestriction);
 		}
+		const abilityDef = activeAbilityDefs(
+			effectiveCardForObject(perm),
+			instanceFaceOptions(perm, 'battlefield')
+		).find((a) => a.kind === 'activated' && (ab?.id ? a.id === ab.id : a.isMana));
+		if (abilityDef && abilityDef.kind === 'activated') {
+			for (const eff of abilityDef.effect) {
+				if (eff.verb === 'addMana' && eff.delayed) {
+					for (const col of chosenBundle) {
+						(player.manaRiders ??= []).push({
+							id: uid('rider', state),
+							color: col,
+							sourceInstanceId: perm.instanceId,
+							sourceCard: effectiveCardForObject(perm),
+							condition: { sharesCreatureTypeWithCommander: true },
+							scryAmount: 1
+						});
+					}
+				}
+			}
+		}
 	} else if (chosenColor && amount > 0) {
 		addManaToPlayerPool(player, chosenColor, amount, ab?.manaRestriction);
+		const abilityDef = activeAbilityDefs(
+			effectiveCardForObject(perm),
+			instanceFaceOptions(perm, 'battlefield')
+		).find((a) => a.kind === 'activated' && (ab?.id ? a.id === ab.id : a.isMana));
+		if (abilityDef && abilityDef.kind === 'activated') {
+			for (const eff of abilityDef.effect) {
+				if (eff.verb === 'addMana' && eff.delayed) {
+					for (let i = 0; i < amount; i++) {
+						(player.manaRiders ??= []).push({
+							id: uid('rider', state),
+							color: chosenColor,
+							sourceInstanceId: perm.instanceId,
+							sourceCard: effectiveCardForObject(perm),
+							condition: { sharesCreatureTypeWithCommander: true },
+							scryAmount: 1
+						});
+					}
+				}
+			}
+		}
 	}
 	if (tappedForMana) {
 		// CR 605.1b, 605.4a: triggered mana abilities ("Whenever you tap a land for mana") resolve immediately.
@@ -3356,6 +3506,7 @@ export function emptyAllPlayersManaPools(state: GameState): void {
 	for (const p of state.players) {
 		p.manaPool = createEmptyManaPool();
 		p.restrictedMana = {};
+		p.manaRiders = [];
 	}
 }
 
@@ -4558,7 +4709,7 @@ function applyGameActionInner(
 				castOption,
 				hasOptCounts ? normalizedOptCounts : undefined
 			);
-			let chosenModes = action.modes;
+			let chosenModes = action.modes ?? (action as { chosenModes?: number[] }).chosenModes;
 			let targetsBySpec: TargetRef[][] | undefined;
 			if (compiledModal) {
 				const modalVal = validateModalChoice(
@@ -4732,6 +4883,24 @@ function applyGameActionInner(
 				...(castOption.mandatoryAdditionalCosts ?? []),
 				...extraNonManaDefs
 			];
+			for (const p of state.players) {
+				if (p.lost) continue;
+				for (const perm of p.battlefield) {
+					if (perm.phasedOut || evaluatePermanent(state, perm).losesAllAbilities) continue;
+					if (!targets.some((t) => t.id === perm.instanceId)) continue;
+					const pCard = perm.copiableCard ?? perm.card;
+					const abilities = activeAbilityDefs(pCard, instanceFaceOptions(perm, 'battlefield'));
+					for (const ab of abilities) {
+						if (ab.kind !== 'static' || ab.static.k !== 'costModifier') continue;
+						const mod = ab.static;
+						if (mod.affects.k !== 'spell' || !mod.affects.filter.targetsSelf) continue;
+						if (!matchesPlayerFilter(mod.who, perm.controllerId, actor.playerId, state)) continue;
+						if (mod.delta.additionalCosts) {
+							combinedCostDefs.push(...mod.delta.additionalCosts);
+						}
+					}
+				}
+			}
 			const paidReturnToHand = hasReturnToHandOptionalCost(castOption, normalizedOptCounts);
 			const paidChooseAllModes = hasChooseAllModesOptionalCost(
 				castOption,
@@ -4832,7 +5001,8 @@ function applyGameActionInner(
 				fused: castOption.fused,
 				spellMods: effectiveSpellMods,
 				...(hasOptCounts ? { optionalCostCounts: normalizedOptCounts } : {}),
-				additionalIncomplete: Boolean(additional && !additional.complete)
+				additionalIncomplete: Boolean(additional && !additional.complete),
+				manaColorsSpent: spendCtx.capturedColorsSpent
 			});
 			return { ok: true };
 		}
@@ -8462,17 +8632,29 @@ function validateModalChoice(
 		else if (modal.min === 0 && targets.length === 0) chosenModes = [];
 	}
 
+	let effectiveMax = modal.max;
+	if (modal.conditionalChooseAll) {
+		const ctx: FilterContext = {
+			state,
+			controllerId: actorId,
+			source: sourceInst
+		};
+		if (evaluateCondition(modal.conditionalChooseAll, ctx)) {
+			effectiveMax = modal.modes.length;
+		}
+	}
+
 	if (
 		!chooseAllModes &&
 		(!Array.isArray(chosenModes) ||
 			chosenModes.length < modal.min ||
-			chosenModes.length > modal.max ||
+			chosenModes.length > effectiveMax ||
 			(!modal.allowRepeat && new Set(chosenModes).size !== chosenModes.length) ||
 			chosenModes.some((m) => !Number.isInteger(m) || m < 0 || m >= modal.modes.length))
 	) {
 		return {
 			ok: false,
-			error: `Choose ${modal.min}–${modal.max} mode(s) for ${sourceCard.name}.`
+			error: `Choose ${modal.min}–${effectiveMax} mode(s) for ${sourceCard.name}.`
 		};
 	}
 	if (!Array.isArray(chosenModes)) {
@@ -9584,6 +9766,11 @@ function resolveDelayedTriggerEffect(
 			drawCards(state, pl, eff.amount, true);
 			addLog(state, 'rule', `${pl.username} drew ${eff.amount} card(s).`, controller.playerId);
 		}
+		return;
+	}
+	if (eff.kind === 'scry') {
+		initiateLibraryScryOrSurveil(state, controller, item, eff.amount, 'scry', false);
+		return;
 	}
 }
 
@@ -10117,6 +10304,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			perm.commanderCastCount = castCount;
 			perm.summoningSick = true;
 			perm.enteredWithX = item.xValue;
+			perm.manaColorsSpent = item.manaColorsSpent ? [...item.manaColorsSpent] : undefined;
 			const isPrototypedSpell = Boolean(
 				item.spellMods?.prototyped || item.copiableState?.prototyped
 			);
@@ -12154,8 +12342,15 @@ export function advancePhaseOrStep(state: GameState): void {
 				state.combat.declaredBlockersPlayerIds = [];
 				state.combat.blockersDeclared = false;
 				state.combat.dealtFirstStrikeDamageIds = [];
-				beginPhase(state, 'main2', activePlayer);
-				emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
+				if ((state.additionalCombatPhases ?? 0) > 0) {
+					state.additionalCombatPhases!--;
+					beginPhase(state, 'begin_combat', activePlayer);
+					emitVfx(state, { kind: 'phase_change', label: 'Combat — Beginning of Additional Combat' });
+					addLog(state, 'rule', `${activePlayer.username} begins an additional combat phase.`);
+				} else {
+					beginPhase(state, 'main2', activePlayer);
+					emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
+				}
 			}
 			break;
 
@@ -12187,8 +12382,15 @@ export function advancePhaseOrStep(state: GameState): void {
 			state.combat.declaredBlockersPlayerIds = [];
 			state.combat.blockersDeclared = false;
 			state.combat.dealtFirstStrikeDamageIds = [];
-			beginPhase(state, 'main2', activePlayer);
-			emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
+			if ((state.additionalCombatPhases ?? 0) > 0) {
+				state.additionalCombatPhases!--;
+				beginPhase(state, 'begin_combat', activePlayer);
+				emitVfx(state, { kind: 'phase_change', label: 'Combat — Beginning of Additional Combat' });
+				addLog(state, 'rule', `${activePlayer.username} begins an additional combat phase.`);
+			} else {
+				beginPhase(state, 'main2', activePlayer);
+				emitVfx(state, { kind: 'phase_change', label: 'Postcombat Main Phase 2' });
+			}
 			break;
 
 		case 'main2':

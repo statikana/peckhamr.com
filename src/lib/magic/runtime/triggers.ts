@@ -681,7 +681,7 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 	// CR 603.4: an intervening-if condition must be true when the event happens.
 	if (
 		ability.condition &&
-		!evaluateCondition(state, ability.condition, source.controllerId, source.obj.instanceId, undefined, source)
+		!evaluateCondition(state, ability.condition, source.controllerId, source.obj.instanceId, undefined, source, extras.eventObject)
 	) {
 		return;
 	}
@@ -2169,21 +2169,22 @@ export function evaluateCondition(
 	controllerId: string,
 	sourceInstanceId: string,
 	stackItem?: StackItem,
-	source?: Source
+	source?: Source,
+	eventObject?: CardInstance
 ): boolean {
 	const controller = state.players.find((p) => p.playerId === controllerId);
 	if (!controller) return false;
 	switch (cond.k) {
 		case 'and':
 			return cond.of.every((c) =>
-				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source)
+				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source, eventObject)
 			);
 		case 'or':
 			return cond.of.some((c) =>
-				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source)
+				evaluateCondition(state, c, controllerId, sourceInstanceId, stackItem, source, eventObject)
 			);
 		case 'not':
-			return !evaluateCondition(state, cond.of, controllerId, sourceInstanceId, stackItem, source);
+			return !evaluateCondition(state, cond.of, controllerId, sourceInstanceId, stackItem, source, eventObject);
 		case 'kicked':
 			return evaluateKickerCondition(
 				cond,
@@ -2253,6 +2254,48 @@ export function evaluateCondition(
 			const n = above.filter((c) => filterMatches(cond.filter, printedSubject(c, c.card, c.ownerId), viewer)).length;
 			return n >= cond.count;
 		}
+		case 'evolveCompare': {
+			const srcPerm = state.players
+				.flatMap((p) => p.battlefield)
+				.find((p) => p.instanceId === sourceInstanceId && !p.phasedOut);
+			if (!srcPerm) return false;
+			const srcEval = evaluatePermanent(state, srcPerm);
+			if (!srcEval.isCreature) return false;
+
+			let enterPower: number | undefined;
+			let enterToughness: number | undefined;
+
+			if (eventObject) {
+				const enterPerm = state.players
+					.flatMap((p) => p.battlefield)
+					.find((p) => p.instanceId === eventObject.instanceId && !p.phasedOut);
+				if (enterPerm) {
+					const enterEval = evaluatePermanent(state, enterPerm);
+					enterPower = enterEval.power;
+					enterToughness = enterEval.toughness;
+				} else {
+					enterPower = eventObject.lastKnownPower;
+					enterToughness = eventObject.lastKnownToughness;
+				}
+			} else if (stackItem?.eventObjectId) {
+				const enterPerm = state.players
+					.flatMap((p) => p.battlefield)
+					.find((p) => p.instanceId === stackItem.eventObjectId && !p.phasedOut);
+				if (enterPerm) {
+					const enterEval = evaluatePermanent(state, enterPerm);
+					enterPower = enterEval.power;
+					enterToughness = enterEval.toughness;
+				} else if (stackItem.eventLki) {
+					enterPower = stackItem.eventLki.power;
+					enterToughness = stackItem.eventLki.toughness;
+				}
+			}
+
+			if (enterPower === undefined || enterToughness === undefined) return false;
+			return enterPower > srcEval.power || enterToughness > srcEval.toughness;
+		}
+		case 'matchesFilter':
+			return false;
 		case 'compare': {
 			const l = amount(state, cond.left, controllerId, sourceInstanceId, stackItem, source);
 			const r = amount(state, cond.right, controllerId, sourceInstanceId, stackItem, source);

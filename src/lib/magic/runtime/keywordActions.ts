@@ -58,7 +58,7 @@ export interface KeywordActionHost {
 	locate(id: string): {
 		inst: CardInstance;
 		holder: PlayerGameState;
-		zone: 'battlefield' | 'graveyard' | 'exile' | 'hand' | 'library';
+		zone: 'battlefield' | 'graveyard' | 'exile' | 'hand' | 'library' | 'command';
 	} | null;
 	bind(step: EffectStep, objs: CardInstance[]): void;
 	answered(

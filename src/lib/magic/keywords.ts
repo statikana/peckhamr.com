@@ -1467,7 +1467,49 @@ const REGISTRY_ENTRIES: Array<[string, KeywordSpec]> = [
 			}
 		}
 	],
-	unimplemented('evolve', '702.100'),
+	[
+		'evolve',
+		{
+			name: 'evolve',
+			cr: '702.100',
+			parameterKind: 'none',
+			displayLabel: 'Evolve',
+			grantable: true,
+			status: 'implemented',
+			implementation: {
+				kind: 'trigger',
+				events: ['zoneChange'],
+				buildTriggers: (_kw, abilityIndex, span) => [
+					{
+						abilityIndex,
+						trigger: {
+							event: 'zoneChange',
+							filter: {
+								object: { types: ['Creature'], controller: 'you', other: true },
+								to: 'battlefield'
+							}
+						},
+						condition: { k: 'evolveCompare' },
+						effectSupported: true,
+						text: 'Evolve',
+						effect: {
+							steps: [
+								{
+									verb: 'putCounters',
+									subject: { k: 'self' },
+									amount: { k: 'const', n: 1 },
+									params: { counter: '+1/+1' },
+									span
+								}
+							],
+							targets: [],
+							unparsed: []
+						}
+					}
+				]
+			}
+		}
+	],
 	unimplemented('extort', '702.101'),
 	unimplemented('fabricate', '702.123', 'number'),
 	// --- Track P6 ---

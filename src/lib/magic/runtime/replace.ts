@@ -152,7 +152,7 @@ function resolvePlayer(
 		: playerOrId;
 }
 
-function matchesPlayerFilter(
+export function matchesPlayerFilter(
 	who: PlayerFilter,
 	sourceControllerId: string,
 	targetPlayerId: string,

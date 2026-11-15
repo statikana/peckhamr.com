@@ -111,7 +111,8 @@ const COUNTER_WORDS: Record<string, CounterType> = {
 
 /** Sentences that carry no effect of their own. */
 const NEUTRAL_SENTENCES: RegExp[] = [
-	/^then shuffle\.?$/i
+	/^then shuffle\.?$/i,
+	/^you may play the exiled cards? this turn\.?$/i
 ];
 
 /** Activation and cast restrictions; enforced by the cast/activation legality checks, not effects. */
@@ -564,6 +565,14 @@ function playerPhrase(p: Parser, text: string): Selector | null {
 		const ref = p.itRef();
 		if (!ref) return null;
 		return { k: 'playerRef', ref: of[1] === 'controller' ? { k: 'controllerOf', of: ref } : { k: 'ownerOf', of: ref } };
+	}
+	const ownerOfTarget = t.match(/^(?:the )?owner of target (.+)$/);
+	if (ownerOfTarget) {
+		const filter = objectFilter(ownerOfTarget[1]);
+		if (!filter) return null;
+		const index = p.addTarget({ kind: 'object', filter: { ...filter, zone: 'battlefield' }, min: 1, max: 1 });
+		p.setLastTarget({ k: 'target', index });
+		return { k: 'playerRef', ref: { k: 'ownerOf', of: { k: 'target', index } } };
 	}
 	if (t === 'the player whose turn it is') return { k: 'playerRef', ref: { k: 'activePlayer' } };
 	if ((t === 'that player' || t === 'the player' || t === 'that opponent') && p.context === 'triggered') {
@@ -1075,6 +1084,15 @@ function objectPredicate(p: Parser, subject: ObjectRes, vp: string, span: Span):
 		p.push({ verb: 'pump', subject: subject.selector, amount: pt.power, params: { toughness: pt.toughness, ...params }, span }, true);
 		return true;
 	}
+	const getThenGain = text.match(/^gets? (\S+) and gains? (.+)$/);
+	if (getThenGain && eot) {
+		const pt = ptChange(getThenGain[1]);
+		const kws = keywordList(getThenGain[2]);
+		if (!pt || !kws) return false;
+		p.push({ verb: 'pump', subject: subject.selector, amount: pt.power, params: { toughness: pt.toughness, ...params }, span }, true);
+		p.push({ verb: 'grant', subject: subject.selector, params: { keywords: kws, ...params }, span }, true);
+		return true;
+	}
 	const get = text.match(/^gets? (\S+)$/);
 	if (get && eot) {
 		const pt = ptChange(get[1]);
@@ -1444,6 +1462,58 @@ function playerPredicate(p: Parser, subject: Selector, vp: string, span: Span, f
 	}
 	const opt = optional ? { optional } : {};
 	p.lastPlayer = subject;
+
+	const moveC = text.match(/^moves? (any number of|\S+) (\S+) counters from (~|it|this creature) onto (.+)$/i);
+	if (moveC) {
+		const counter = COUNTER_WORDS[moveC[2].toLowerCase()];
+		const toFilter = objectFilter(moveC[4]);
+		if (counter) {
+			p.push(
+				{
+					verb: 'moveCounters',
+					subject: { k: 'self' },
+					...(optional ? { optional } : {}),
+					params: { counter, ...(toFilter ? { toFilter } : {}) },
+					span
+				},
+				false
+			);
+			return true;
+		}
+	}
+	const shuffleIntoLib = text.match(/^shuffles? (.+?) into (?:their|your|its owner's) library$/i);
+	if (shuffleIntoLib) {
+		const actor = singlePlayer(subject);
+		if (!actor) return false;
+		const it = p.itRef();
+		if (!it) return false;
+		p.push(
+			{
+				verb: 'move',
+				subject: refSelector(it),
+				...(actor.k !== 'you' ? { actor } : {}),
+				params: { to: 'library', mayShuffle: true },
+				span
+			},
+			true
+		);
+		return true;
+	}
+	const revTop = text.match(/^reveals? the top card of (?:their|your) library$/i);
+	if (revTop) {
+		const actor = singlePlayer(subject);
+		if (!actor) return false;
+		p.push(
+			{
+				verb: 'reveal',
+				subject: { k: 'libraryTop', ...(actor.k !== 'you' ? { player: actor } : {}) },
+				bindAs: 'chaosRevealed',
+				span
+			},
+			true
+		);
+		return true;
+	}
 
 	let m = text.match(/^draws? (?:(up to) )?(\S+) cards?$/);
 	if (m) {
@@ -2480,6 +2550,10 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 		p.push({ verb: 'regenerate', subject: obj.selector, span }, true);
 		return true;
 	}
+	if (/^(?:after this phase, )?there is an additional combat phase$/i.test(t)) {
+		p.push({ verb: 'extraCombatPhase', subject: { k: 'none' }, span }, false);
+		return true;
+	}
 	if (/^take an extra turn after this one$/.test(t)) return playerPredicate(p, YOU, t, span, true);
 	return false;
 }
@@ -2809,7 +2883,13 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 	}
 	m = t.match(/^\{([WUBRGC])\} for each (.+)$/);
 	if (m) {
-		const amount = /^card in target opponent's hand$/.test(m[2]) ? null : numberOf(m[2].replace(/^(\S+)/, (w) => w));
+		if (/^cards? in target opponent's hand$/i.test(m[2])) {
+			const targetIdx = p.addTarget({ kind: 'player', player: { relation: 'opponent' }, filter: {}, min: 1, max: 1 });
+			const of: Amount = { k: 'cardsIn', zone: 'hand', of: { k: 'target', index: targetIdx } };
+			p.push({ verb: 'addMana', subject: { k: 'none' }, amount: of, params: { mana: [m[1] as ManaColor] }, span }, false);
+			return true;
+		}
+		const amount = numberOf(m[2].replace(/^(\S+)/, (w) => w));
 		const each = m[2].match(/^(\S+) (you control|on the battlefield)$/);
 		let of: Amount | null = amount;
 		if (each) {
@@ -2832,7 +2912,7 @@ function addMana(p: Parser, text: string, span: Span): ClauseResult {
 
 // Words that start a new clause after " and " / ", then ".
 const CLAUSE_START =
-	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|(?:that|the exiled) (?:card|creature|permanent|spell)'s (?:controller|owner)|that player|they|it (?=deals|fights?|gets?|gains?|loses?|explores?|connives?|adapts?|phases?|becomes?|doesn't|does not)|that creature |those creatures |that permanent |those permanents |the amassed [Aa]rmy |enchanted |equipped |until (?:end of turn|(?:the )?end of your next turn|your next end step), |for as long as |draw|draws|lose|loses|gain|gains|get|gets|become|becomes|put|exile|exert|exerts|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|tap|untap|fight|fights|transform|transforms|convert|converts|flip|flips|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates|amass|amasses|incubate|incubates|populate|populates|manifest|manifests|cloak|cloaks|bolster|bolsters|monstrosity|support|adapt|adapts)\b/;
+	/^(?:you|each opponent|each player|target player|target opponent|its controller|its owner|(?:that|the exiled) (?:card|creature|permanent|spell)'s (?:controller|owner)|that player|they|it (?=deals|fights?|gets?|gains?|loses?|explores?|connives?|adapts?|phases?|becomes?|doesn't|does not)|that creature |those creatures |that permanent |those permanents |the amassed [Aa]rmy |enchanted |equipped |until (?:end of turn|(?:the )?end of your next turn|your next end step), |for as long as |draw|draws|lose|loses|gain|gains|get|gets|become|becomes|put|exile|exert|exerts|destroy|return|create|creates|search|scry|surveil|surveils|investigate|investigates|mill|mills|sacrifice|deal|deals|add|take|takes|phase|phases|attach|counter|proliferate|switch|look|reveal|reveals|shuffle|shuffles|tap|untap|fight|fights|transform|transforms|convert|converts|flip|flips|discard|discards|connive|connives|explore|explores|goad|goads|regenerate|regenerates|amass|amasses|incubate|incubates|populate|populates|manifest|manifests|cloak|cloaks|bolster|bolsters|monstrosity|support|adapt|adapts|after|there)\b/;
 
 /** Splits a sentence into clauses at ", then " and at " and " before a new verb or subject. */
 function splitClauses(text: string, offset: number): Clause[] {
@@ -2982,6 +3062,11 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 	if (tryOwnerLibraryMoveClause(p, t, c.span)) return true;
 
 	// Player subjects.
+	const ownerMatch = t.match(/^((?:the )?owner of target .+?)\s+((?:shuffles?|reveals?|puts?|draws?|discards?|creates?|gains?|loses?|mills?|scrys?|surveils?|sacrifices?)\b.*)$/i);
+	if (ownerMatch) {
+		const subject = playerPhrase(p, ownerMatch[1]);
+		if (subject && playerPredicate(p, subject, ownerMatch[2], c.span)) return true;
+	}
 	const ps = t.match(
 		/^(you|each opponent|each player|target player|target opponent|its controller|its owner|that player|they|the player whose turn it is|(?:that card's|that creature's|that permanent's|that spell's|the exiled card's|the exiled creature's|the exiled permanent's) (?:controller|owner)) (.+)$/
 	);
@@ -2992,7 +3077,7 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 	// A continued predicate with the previous player as subject ("... and loses 2 life").
 	if (
 		p.lastPlayer &&
-		/^(?:draws?|loses?|gains?|gets?|becomes?|mills?|creates?|investigates?|surveils?|discards?|goads?|amass(?:es)?|incubates?|populates?|manifests?|cloaks?|bolsters?)\b/.test(
+		/^(?:draws?|loses?|gains?|gets?|becomes?|mills?|creates?|investigates?|surveils?|discards?|goads?|amass(?:es)?|incubates?|populates?|manifests?|cloaks?|bolsters?|reveals?)\b/.test(
 			t
 		)
 	) {
@@ -3160,6 +3245,48 @@ function sentence(p: Parser, text: string, span: Span): boolean {
 		const prev = p.steps[p.steps.length - 1];
 		if (prev?.verb !== 'addMana') return fail();
 		prev.params = { ...prev.params, manaRestriction: 'artifactSpellOrNonSpell' };
+		return true;
+	}
+
+	const ifPerm = t.match(/^if (?:it's|it is) a permanent card, (they|you|that player) puts? it onto the battlefield$/i);
+	if (ifPerm) {
+		const actorSel = playerPhrase(p, ifPerm[1]);
+		const actor = actorSel ? singlePlayer(actorSel) : null;
+		p.push(
+			{
+				verb: 'move',
+				subject: { k: 'binding', name: 'chaosRevealed' },
+				...(actor && actor.k !== 'you' ? { actor } : {}),
+				params: { to: 'battlefield' },
+				condition: {
+					k: 'matchesFilter',
+					target: { k: 'binding', name: 'chaosRevealed' },
+					filter: { notTypes: ['Instant', 'Sorcery'] }
+				},
+				span
+			},
+			false
+		);
+		return true;
+	}
+
+	const ancScry = t.match(/^when that mana is spent to cast a creature spell that shares a creature type with your commander, scry (\S+)$/i);
+	if (ancScry) {
+		const prev = p.steps[p.steps.length - 1];
+		if (prev?.verb !== 'addMana') return fail();
+		const amt = count(ancScry[1]) ?? n(1);
+		prev.delayed = {
+			trigger: {
+				event: 'cast',
+				filter: {
+					object: {
+						types: ['Creature'],
+						sharesTypeWithCommander: true
+					}
+				}
+			},
+			effect: [{ verb: 'scry', subject: { k: 'none' }, amount: amt, span }]
+		};
 		return true;
 	}
 
@@ -3621,6 +3748,25 @@ function tryDigFollowUp(p: Parser, text: string): boolean {
 	if (!pd) return false;
 	const t = text.trim();
 
+	if (/^put one of them into your hand, put one of them on the bottom of your library, and exile one of them$/i.test(t)) {
+		pd.draft = {
+			...pd.draft,
+			keep: 1,
+			upTo: false,
+			keepTo: 'hand',
+			rest: 'libraryBottom',
+			partitions: [
+				{ count: 1, to: 'hand' },
+				{ count: 1, to: 'libraryBottom' },
+				{ count: 1, to: 'exile', playableThisTurn: true }
+			]
+		};
+		pd.hasKeep = true;
+		pd.hasRest = true;
+		commitPendingDig(p, pd);
+		return true;
+	}
+
 	if (!pd.hasKeep) {
 		const combined = t.match(
 			/^(.+?)(?:,\s*|\s+)(?:and|then)\s+(?:put\s+)?(?:the rest|the other(?:s| cards)?)\s+(.+)$/i
@@ -3833,6 +3979,12 @@ export function parseModal(
 		allowRepeat = true;
 		rest = rest.replace(repeatRe, ' ').trim();
 	}
+	let conditionalChooseAll: Condition | undefined;
+	const chooseBothRe = /\s*(?:\.|—)?\s*if you control a commander as you cast (?:this spell|~), you may choose both instead\.?\s*/i;
+	if (chooseBothRe.test(rest)) {
+		conditionalChooseAll = { k: 'controlCommander' };
+		rest = rest.replace(chooseBothRe, ' ').trim();
+	}
 	rest = rest.replace(/[—.]+$/g, '').trim();
 
 	let oncePerTurnUnique = false;
@@ -3919,6 +4071,7 @@ export function parseModal(
 		...(allowRepeat ? { allowRepeat: true } : {}),
 		...(oncePerTurnUnique ? { oncePerTurnUnique: true } : {}),
 		...(upTo ? { upTo: true } : {}),
+		...(conditionalChooseAll ? { conditionalChooseAll } : {}),
 		modes
 	};
 	return { steps: [], targets: [], modal, unparsed };
@@ -3947,7 +4100,7 @@ export function parseSpellFace(norm: NormalizedFace, include: (line: NormalizedL
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
 		if (
-			/^choose\b.*(?:—|you may choose the same mode more than once)/i.test(line.text) &&
+			/^choose\b/i.test(line.text) &&
 			(lines[i + 1]?.text.startsWith('•') || /—$/i.test(line.text))
 		) {
 			const bullets: Array<{ text: string; start: number; end: number }> = [];

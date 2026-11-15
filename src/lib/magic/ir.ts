@@ -237,6 +237,8 @@ export interface ModalDef {
 	oncePerTurnUnique?: boolean;
 	/** "Choose up to N" — explicitly marked up-to (min = 0). */
 	upTo?: boolean;
+	/** "If you control a commander as you cast this spell, you may choose both." (CR 700.2) */
+	conditionalChooseAll?: Condition;
 	modes: Array<{ targets: TargetSpec[]; effect: EffectStep[]; span: Span }>;
 }
 
@@ -329,6 +331,10 @@ export interface ObjectFilter {
 	// --- Track P5 ---
 	/** CR 701.37b: true iff the permanent is monstrous. */
 	monstrous?: boolean;
+	/** CR 903.3 / Path of Ancestry: shares a creature type with a commander you control/own. */
+	sharesTypeWithCommander?: boolean;
+	/** "Spells your opponents cast that target ~" (Terror of the Peaks). */
+	targetsSelf?: boolean;
 }
 
 export interface Compare {
@@ -406,7 +412,9 @@ export type Amount =
 	| { k: 'energyCount'; player: PlayerRef }
 	// --- Track P6 ---
 	| { k: 'countersOn'; counter: CounterType; of: Ref }
-	| { k: 'tappedCostPower' };
+	| { k: 'tappedCostPower' }
+	/** Converge: number of distinct colors of mana spent to cast this spell (CR 608.2b / 400.7d). */
+	| { k: 'colorsOfManaSpentToCast' };
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -524,7 +532,10 @@ export type Verb =
 	| 'bolster'
 	| 'adapt'
 	// --- Track P6 ---
-	| 'removeCounters';
+	| 'removeCounters'
+	| 'extraCombatPhase'
+	| 'moveCounters'
+	| 'reveal';
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -572,6 +583,8 @@ export interface EffectParams {
 	cantHaveOrGain?: boolean;
 	duration?: Duration;
 	counter?: CounterType;
+	/** moveCounters: filter for recipient creature(s) ("onto other creatures"). */
+	toFilter?: ObjectFilter;
 	token?: TokenSpec;
 	tapped?: boolean;
 	mayShuffle?: boolean;
@@ -618,6 +631,12 @@ export interface EffectParams {
 		rest: 'libraryBottom' | 'graveyard';
 		restRandom?: boolean;
 		restOrder?: 'any' | 'random';
+		/** Ordered multi-destination partition (e.g. Expressive Iteration: 1 hand, 1 bottom, 1 exile playable this turn). */
+		partitions?: Array<{
+			count: number;
+			to: 'hand' | 'libraryBottom' | 'exile' | 'graveyard';
+			playableThisTurn?: boolean;
+		}>;
 	};
 	/** move to battlefield: enters transformed with its back face up (CR 712.14a / 712.11a). */
 	enteredTransformed?: boolean;
@@ -899,7 +918,11 @@ export type Condition =
 	| { k: 'exertedThisTurn' }
 	// --- Track P5 ---
 	/** CR 701.37b: true when this permanent is monstrous. */
-	| { k: 'monstrous' };
+	| { k: 'monstrous' }
+	/** CR 702.100a: entering creature's power > self's power OR entering creature's toughness > self's toughness. */
+	| { k: 'evolveCompare' }
+	/** Checks whether `target` (or event/bound object) matches `filter` (e.g. Chaos Warp "if it's a permanent card"). */
+	| { k: 'matchesFilter'; target?: Ref; filter: ObjectFilter };
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -945,6 +968,8 @@ export interface CostDelta {
 	per?: Amount;
 	/** Alias used by the static grammar ("costs {1} less for each creature on the battlefield"). */
 	times?: Amount;
+	/** Non-mana additional costs imposed by a cost-increasing static (e.g. Terror of the Peaks: pay 3 life). */
+	additionalCosts?: CostDef[];
 }
 
 export type SpellOrAbilityFilter =
@@ -969,7 +994,8 @@ export type RuleModKind =
 	/** "During your turn, your opponents can't cast spells". */
 	| 'opponentsCantCastDuringYourTurn'
 	| 'lifeTotalCantChange'
-	| 'extraLandPlays';
+	| 'extraLandPlays'
+	| 'allOffBattlefieldAndSpellsColorless';
 
 export type RestrictionKind =
 	| 'cantAttack'
@@ -1026,6 +1052,12 @@ export type StaticDef =
 			counter?: CounterType;
 			/** triggers: the event that must cause the trigger ("an artifact or creature entering"). */
 			cause?: EventPattern;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 103.6: "If ~ is in your opening hand, you may begin the game with it on the battlefield." */
+			k: 'pregameAction';
+			action: 'beginOnBattlefield';
 			condition?: Condition;
 	  };
 
