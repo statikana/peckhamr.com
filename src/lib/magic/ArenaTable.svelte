@@ -1637,6 +1637,7 @@
 
 	<HudBar
 		{gameState} viewer={me} {lobbyCode} {ropeRemainingSec} waitingOnPlayerIds={boardVM.waitingOnPlayerIds}
+		globalRuleLocks={boardVM.globalRuleLocks}
 		{theme} {shortcutsDisabled} {onLeaveMatch} onResetLayout={resetLayoutPrefs} {onToggleTheme}
 		onGameAction={dispatchGameAction} onPrimaryAction={handlePrimaryArenaButton} onPassTurn={handlePassToEndOfTurn}
 	/>

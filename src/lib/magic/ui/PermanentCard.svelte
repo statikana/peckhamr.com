@@ -72,6 +72,8 @@
 				return 'green';
 			case 'minus':
 				return 'red';
+			case 'keyword':
+				return 'keyword';
 			case 'loyalty':
 				return 'purple';
 			case 'defense':
@@ -91,6 +93,18 @@
 				return 'neutral';
 		}
 	}
+
+	const frozenTooltip = $derived(
+		view.frozenBySourceNames.length > 0
+			? `Doesn't untap while locked by ${view.frozenBySourceNames.join(', ')}`
+			: "Doesn't untap during controller's next untap step"
+	);
+
+	const cantBlockAttackersTooltip = $derived(
+		view.cantBlockAttackerNames.length > 0
+			? `Can't block this turn: ${view.cantBlockAttackerNames.join(', ')}`
+			: `Can't block ${view.cantBlockAttackerCount} creature(s) this turn`
+	);
 </script>
 
 <button
@@ -365,9 +379,63 @@
 				<span
 					class="badge cyan"
 					data-testid="frozen-badge"
-					title="Doesn't untap during controller's next untap step"
+					title={frozenTooltip}
 				>
 					❄
+				</span>
+			{/if}
+			{#if view.assimilatedBySourceName !== null}
+				<span
+					class="badge purple"
+					data-testid="assimilated-badge"
+					title="Assimilated by {view.assimilatedBySourceName} (CR 607.2)"
+				>
+					🧬
+				</span>
+			{/if}
+			{#if view.mustAttackThisTurn}
+				<span
+					class="badge red"
+					data-testid="must-attack-badge"
+					title="Must attack this turn if able (CR 508.1d)"
+				>
+					⚔!
+				</span>
+			{/if}
+			{#if view.mustBlockThisTurn}
+				<span
+					class="badge amber"
+					data-testid="must-block-badge"
+					title="Must block this turn if able (CR 509.1c)"
+				>
+					🛡!
+				</span>
+			{/if}
+			{#if view.mustBeBlockedThisTurn}
+				<span
+					class="badge gold"
+					data-testid="must-be-blocked-badge"
+					title="Must be blocked this turn if able (CR 509.1c)"
+				>
+					🎯!
+				</span>
+			{/if}
+			{#if view.assignsNoCombatDamageThisTurn}
+				<span
+					class="badge neutral"
+					data-testid="no-combat-dmg-badge"
+					title="Assigns no combat damage this turn (CR 510.1)"
+				>
+					0⚔
+				</span>
+			{/if}
+			{#if view.cantBlockAttackerCount > 0}
+				<span
+					class="badge red"
+					data-testid="cant-block-attacker-badge"
+					title={cantBlockAttackersTooltip}
+				>
+					🚫🛡
 				</span>
 			{/if}
 			{#if view.isMonstrous}
@@ -383,7 +451,7 @@
 				<span class="badge amber" title="Active mount bonus this turn">🐎</span>
 			{/if}
 			{#each view.countersList as ctr (ctr.type)}
-				<span class="badge {counterToneClass(ctr)}" title="{ctr.type}: {ctr.count}">
+				<span class="badge {counterToneClass(ctr)}" data-testid="counter-badge" title={ctr.description}>
 					{ctr.shortLabel}
 				</span>
 			{/each}
@@ -642,9 +710,63 @@
 					<span
 						class="badge cyan"
 						data-testid="frozen-badge"
-						title="Doesn't untap during controller's next untap step"
+						title={frozenTooltip}
 					>
 						❄ {isCompact ? 'FRZ' : 'Frozen'}
+					</span>
+				{/if}
+				{#if view.assimilatedBySourceName !== null}
+					<span
+						class="badge purple"
+						data-testid="assimilated-badge"
+						title="Assimilated by {view.assimilatedBySourceName} (CR 607.2)"
+					>
+						🧬 {isCompact ? 'ASSIM' : 'Assimilated'}
+					</span>
+				{/if}
+				{#if view.mustAttackThisTurn}
+					<span
+						class="badge red"
+						data-testid="must-attack-badge"
+						title="Must attack this turn if able (CR 508.1d)"
+					>
+						⚔ {isCompact ? 'ATK!' : 'Must Atk'}
+					</span>
+				{/if}
+				{#if view.mustBlockThisTurn}
+					<span
+						class="badge amber"
+						data-testid="must-block-badge"
+						title="Must block this turn if able (CR 509.1c)"
+					>
+						🛡 {isCompact ? 'BLK!' : 'Must Blk'}
+					</span>
+				{/if}
+				{#if view.mustBeBlockedThisTurn}
+					<span
+						class="badge gold"
+						data-testid="must-be-blocked-badge"
+						title="Must be blocked this turn if able (CR 509.1c)"
+					>
+						🎯 {isCompact ? 'LURE' : 'Must Block'}
+					</span>
+				{/if}
+				{#if view.assignsNoCombatDamageThisTurn}
+					<span
+						class="badge neutral"
+						data-testid="no-combat-dmg-badge"
+						title="Assigns no combat damage this turn (CR 510.1)"
+					>
+						0⚔ {isCompact ? '0DMG' : 'No Dmg'}
+					</span>
+				{/if}
+				{#if view.cantBlockAttackerCount > 0}
+					<span
+						class="badge red"
+						data-testid="cant-block-attacker-badge"
+						title={cantBlockAttackersTooltip}
+					>
+						🚫 {isCompact ? 'BLK' : `No Blk ×${view.cantBlockAttackerCount}`}
 					</span>
 				{/if}
 				{#if view.isMonstrous}
@@ -666,7 +788,7 @@
 					<span class="tapped-icon"><ManaSymbol symbol="T" size={isCompact ? 14 : 15} /></span>
 				{/if}
 				{#each view.countersList as ctr (ctr.type)}
-					<span class="badge {counterToneClass(ctr)}" title="{ctr.type} counters: {ctr.count}">
+					<span class="badge {counterToneClass(ctr)}" data-testid="counter-badge" title={ctr.description}>
 						{isCompact ? ctr.shortLabel : ctr.label}
 					</span>
 				{/each}
@@ -900,6 +1022,10 @@
 	.badge.cyan {
 		background: #78dce8;
 		color: #19181a;
+	}
+	.badge.keyword {
+		background: #38bdf8;
+		color: #0f172a;
 	}
 	.badge.green {
 		background: #a9dc76;

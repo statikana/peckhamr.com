@@ -12,6 +12,7 @@
 		buildBoardViewModel,
 		DUNGEON_ART_URI,
 		EMBLEM_ART_URI,
+		extractCounterBadges,
 		formatPermanentChosenDescriptor,
 		resolveExileHauntingTargetName
 	} from './boardViewModel.ts';
@@ -145,7 +146,7 @@
 	const inspectorChosenDescriptor = $derived.by(() => {
 		if (inspectedPermView) return inspectedPermView.chosenDescriptor;
 		if (!inspectedInstance || inspectedInstance.isFaceDown) return null;
-		return formatPermanentChosenDescriptor(inspectedInstance);
+		return formatPermanentChosenDescriptor(inspectedInstance, gameState?.players);
 	});
 	const inspectorIsStolen = $derived(
 		inspectedPermView
@@ -168,6 +169,39 @@
 		inspectedPermView
 			? inspectedPermView.isFrozen
 			: Boolean(inspectedInstance?.doesntUntapNextUntapStep)
+	);
+	const inspectorFrozenByNames = $derived(inspectedPermView?.frozenBySourceNames ?? []);
+	const inspectorAssimilatedByName = $derived(inspectedPermView?.assimilatedBySourceName ?? null);
+	const inspectorMustAttack = $derived(
+		inspectedPermView
+			? inspectedPermView.mustAttackThisTurn
+			: Boolean(inspectedInstance?.mustAttackThisTurn)
+	);
+	const inspectorMustBlock = $derived(
+		inspectedPermView
+			? inspectedPermView.mustBlockThisTurn
+			: Boolean(inspectedInstance?.mustBlockThisTurn)
+	);
+	const inspectorMustBeBlocked = $derived(
+		inspectedPermView
+			? inspectedPermView.mustBeBlockedThisTurn
+			: Boolean(inspectedInstance?.mustBeBlockedThisTurn)
+	);
+	const inspectorNoCombatDamage = $derived(
+		inspectedPermView
+			? inspectedPermView.assignsNoCombatDamageThisTurn
+			: Boolean(inspectedInstance?.assignsNoCombatDamageThisTurn)
+	);
+	const inspectorCantBlockCount = $derived(
+		inspectedPermView
+			? inspectedPermView.cantBlockAttackerCount
+			: (inspectedInstance?.cantBlockAttackerIdsThisTurn?.length ?? 0)
+	);
+	const inspectorCantBlockNames = $derived(inspectedPermView?.cantBlockAttackerNames ?? []);
+	const inspectorCountersList = $derived(
+		inspectedPermView
+			? inspectedPermView.countersList
+			: extractCounterBadges(inspectedInstance?.counters)
 	);
 	const inspectorIsMonstrous = $derived(
 		inspectedPermView ? inspectedPermView.isMonstrous : Boolean(inspectedInstance?.isMonstrous)
@@ -198,6 +232,12 @@
 					inspectorChosenDescriptor !== null ||
 					inspectorIsStolen ||
 					inspectorIsFrozen ||
+					inspectorAssimilatedByName !== null ||
+					inspectorMustAttack ||
+					inspectorMustBlock ||
+					inspectorMustBeBlocked ||
+					inspectorNoCombatDamage ||
+					inspectorCantBlockCount > 0 ||
 					inspectorIsMonstrous)
 		)
 	);
@@ -351,7 +391,41 @@
 						{/if}
 						{#if inspectorIsFrozen}
 							<span class="inspector-tag cyan" data-testid="inspector-frozen">
-								❄ Won't Untap
+								❄ Won't Untap{inspectorFrozenByNames.length > 0
+									? ` (${inspectorFrozenByNames.join(', ')})`
+									: ''}
+							</span>
+						{/if}
+						{#if inspectorAssimilatedByName !== null}
+							<span class="inspector-tag purple" data-testid="inspector-assimilated">
+								🧬 Assimilated: {inspectorAssimilatedByName}
+							</span>
+						{/if}
+						{#if inspectorMustAttack}
+							<span class="inspector-tag red" data-testid="inspector-must-attack">
+								⚔ Must Attack
+							</span>
+						{/if}
+						{#if inspectorMustBlock}
+							<span class="inspector-tag gold" data-testid="inspector-must-block">
+								🛡 Must Block
+							</span>
+						{/if}
+						{#if inspectorMustBeBlocked}
+							<span class="inspector-tag gold" data-testid="inspector-must-be-blocked">
+								🎯 Must Be Blocked
+							</span>
+						{/if}
+						{#if inspectorNoCombatDamage}
+							<span class="inspector-tag" data-testid="inspector-no-combat-dmg">
+								0⚔ No Combat Damage
+							</span>
+						{/if}
+						{#if inspectorCantBlockCount > 0}
+							<span class="inspector-tag red" data-testid="inspector-cant-block-attacker">
+								🚫 Can't Block: {inspectorCantBlockNames.length > 0
+									? inspectorCantBlockNames.join(', ')
+									: `${inspectorCantBlockCount} creature(s)`}
 							</span>
 						{/if}
 						{#if inspectorIsMonstrous}
@@ -359,6 +433,19 @@
 								🦖 Monstrous
 							</span>
 						{/if}
+					</div>
+				{/if}
+				{#if inspectorCountersList.length > 0}
+					<div class="alt-kw-section compact" data-testid="inspector-counters-breakdown">
+						<div class="alt-kw-title">COUNTERS (CR 122.1)</div>
+						<div class="alt-kw-list">
+							{#each inspectorCountersList as ctr (ctr.type)}
+								<div class="alt-kw-row">
+									<span class="kw-name">{ctr.label}</span>
+									<span class="kw-source granted">{ctr.description}</span>
+								</div>
+							{/each}
+						</div>
 					</div>
 				{/if}
 				{#if inspectorMergedNames.length > 1}

@@ -6,6 +6,7 @@
 		type GameState,
 		type PlayerGameState
 	} from '../types.ts';
+	import type { RuleLockBadge } from './boardViewModel.ts';
 
 	interface Props {
 		gameState: GameState;
@@ -13,6 +14,7 @@
 		lobbyCode: string;
 		ropeRemainingSec?: number | null;
 		waitingOnPlayerIds?: string[];
+		globalRuleLocks?: RuleLockBadge[];
 		theme?: 'dark' | 'light';
 		shortcutsDisabled?: boolean;
 		onLeaveMatch: () => void;
@@ -29,6 +31,7 @@
 		lobbyCode,
 		ropeRemainingSec = null,
 		waitingOnPlayerIds,
+		globalRuleLocks = [],
 		theme = 'dark',
 		shortcutsDisabled = false,
 		onLeaveMatch,
@@ -41,6 +44,11 @@
 
 	const activePlayer = $derived(gameState.players[gameState.activePlayerIndex]);
 	const priorityPlayer = $derived(gameState.players[gameState.priorityPlayerIndex]);
+	const monarchPlayer = $derived(
+		gameState.monarchPlayerId
+			? gameState.players.find((p) => p.playerId === gameState.monarchPlayerId)
+			: undefined
+	);
 	const hasPriority = $derived(
 		Boolean(viewer && priorityPlayer?.playerId === viewer.playerId)
 	);
@@ -153,6 +161,24 @@
 				{gameState.dayNight === 'day' ? '☀️ DAY' : '🌙 NIGHT'}
 			</span>
 		{/if}
+		{#if monarchPlayer}
+			<span
+				class="hud-monarch-pill"
+				data-testid="hud-monarch-pill"
+				title="{monarchPlayer.username} is the Monarch (CR 724: draws at end step; combat damage steals Monarch)"
+			>
+				👑 {monarchPlayer.playerId === viewer?.playerId ? 'YOU' : monarchPlayer.username}
+			</span>
+		{/if}
+		{#each globalRuleLocks as lock (`${lock.id}:${lock.sourceName ?? ''}`)}
+			<span
+				class="hud-lock-pill {lock.tone}"
+				data-testid="hud-rule-lock-pill"
+				title={lock.description}
+			>
+				⚖️ {lock.label}
+			</span>
+		{/each}
 		<span class="active-pill">
 			Active: <strong>{activePlayer?.username}</strong>
 		</span>
@@ -295,6 +321,46 @@
 		border-color: var(--mp-purple);
 		color: var(--mp-purple);
 		background: rgba(171, 157, 242, 0.15);
+	}
+	.hud-monarch-pill,
+	.hud-lock-pill {
+		font-size: 0.68rem;
+		font-weight: 700;
+		padding: 0.16rem 0.44rem;
+		border-radius: 4px;
+		background: var(--mp-bg);
+		border: 1px solid var(--mp-border);
+	}
+	.hud-monarch-pill,
+	.hud-lock-pill.gold {
+		border-color: #ffd866;
+		color: #ffd866;
+		background: rgba(255, 216, 102, 0.14);
+	}
+	.hud-lock-pill.amber {
+		border-color: #f59e0b;
+		color: #ffd866;
+		background: rgba(245, 158, 11, 0.14);
+	}
+	.hud-lock-pill.red {
+		border-color: var(--mp-red);
+		color: var(--mp-red);
+		background: rgba(255, 97, 136, 0.14);
+	}
+	.hud-lock-pill.cyan {
+		border-color: var(--mp-cyan);
+		color: var(--mp-cyan);
+		background: rgba(120, 220, 232, 0.12);
+	}
+	.hud-lock-pill.purple {
+		border-color: var(--mp-purple);
+		color: var(--mp-purple);
+		background: rgba(171, 157, 242, 0.14);
+	}
+	.hud-lock-pill.green {
+		border-color: var(--mp-green);
+		color: var(--mp-green);
+		background: rgba(169, 220, 118, 0.12);
 	}
 	.priority-pill.mine {
 		border-color: var(--mp-accent);
