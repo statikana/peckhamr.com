@@ -141,6 +141,9 @@ import {
 	type Wave6RuntimeTrigger
 } from './keywordsWave6.ts';
 // --- End Track P18a ---
+// --- Track P17a ---
+import { applyPendingExileReplacementCounters } from './staticsWave6.ts';
+// --- End Track P17a ---
 
 /**
  * How a pending trigger is executed. 'stack': a StackItem put on the stack the next time a player
@@ -769,6 +772,12 @@ export function withSimultaneousZoneBatch<T>(state: GameState, fn: () => T): T {
 	}
 }
 // --- End Track P13 ---
+
+// --- Track P17a ---
+export function getActiveSimultaneousZoneBatchToken(state: GameState): object | null {
+	return channels.get(state)?.zoneBatchTriggeredKeys ?? null;
+}
+// --- End Track P17a ---
 
 /**
  * Runs `fn` with trigger placement deferred: triggers that fire inside it wait until it returns, so
@@ -3255,11 +3264,22 @@ function matchCardDrawn(state: GameState, ev: Extract<GameEvent, { kind: 'CardDr
 				return true;
 			});
 			if (alt) {
+				// --- Track P17a ---
+				const times =
+					source.zone === 'battlefield'
+						? triggerMultiplier(state, source.obj, source.controllerId, {
+								event: 'drawCard',
+								playerId: ev.playerId,
+								object: ev.object
+							})
+						: 1;
+				// --- End Track P17a ---
 				record(state, source, ability, 'drawCard', {
 					label: 'Draw Trigger',
 					eventObject: ev.object,
 					eventPlayer: ev.playerId,
-					amount: 1
+					amount: 1,
+					times
 				});
 			}
 		}
@@ -3528,6 +3548,11 @@ function matchTappedForMana(state: GameState, ev: Extract<GameEvent, { kind: 'Ta
 
 function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneChange' }>): void {
 	const obj = ev.object;
+	// --- Track P17a ---
+	if (ev.to === 'exile') {
+		applyPendingExileReplacementCounters(obj);
+	}
+	// --- End Track P17a ---
 	if (ev.to === 'battlefield' && obj.phasedOut) return;
 	const batchLki = ev.from === 'battlefield' ? channel(state).simultaneousLki : undefined;
 	const objBatchInfo = batchLki?.get(obj);
@@ -3897,7 +3922,19 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 							object: obj,
 							from: ev.from,
 							to: ev.to,
-							lki: ev.lki
+							lki:
+								ev.lki ??
+								(objBatchInfo
+									? {
+											card: objBatchInfo.card,
+											controllerId: objBatchInfo.controllerId,
+											typeLine: objBatchInfo.typeLine,
+											hasAllCreatureTypes: Boolean(objBatchInfo.hasAllCreatureTypes),
+											isToken: obj.isToken,
+											tapped: objBatchInfo.tapped,
+											lostAllAbilities: objBatchInfo.lostAllAbilities
+										}
+									: undefined)
 						})
 					: 1;
 			const eventLki = enters
@@ -4416,6 +4453,54 @@ function matchCast(state: GameState, casterId: string, spell: CardInstance, isCo
 				);
 			}
 		}
+		// --- Track P17a: CR 613.1f / 702.85c statically granted spell-cast trigger keywords (Cascade, Storm, Gravestorm) ---
+		if (stackSpell?.grantedSpellKeywords && stackSpell.grantedSpellKeywords.length > 0) {
+			const stackSource: Source = {
+				obj: spell,
+				card: spell.card,
+				faceIndex: stackSpell.faceIndex,
+				controllerId: casterId,
+				zone: 'stack'
+			};
+			for (const kwName of stackSpell.grantedSpellKeywords) {
+				const spec = getKeywordSpec(kwName);
+				if (
+					!spec ||
+					spec.status !== 'implemented' ||
+					spec.implementation?.kind !== 'trigger' ||
+					!spec.implementation.events.includes('cast')
+				) {
+					continue;
+				}
+				const built = spec.implementation.buildTriggers(
+					{ name: kwName },
+					-1,
+					{ start: 0, end: 0 }
+				);
+				for (const rt of built) {
+					const matchesSelfCast = alternatives(rt.trigger).some(
+						(a) => a.event === 'cast' && a.filter.object === 'self'
+					);
+					if (!matchesSelfCast) continue;
+					const isStormKw = kwName === 'storm';
+					const isGravestormKw = kwName === 'gravestorm';
+					record(state, stackSource, rt, 'cast', {
+						label: isStormKw
+							? 'Storm'
+							: isGravestormKw
+								? 'Gravestorm'
+								: spec.displayLabel || 'On Cast',
+						times: 1,
+						eventObject: spell,
+						eventPlayer: casterId,
+						...(triggerEventStackItem ? { triggerEventStackItem } : {}),
+						...(isStormKw ? { stormCount } : {}),
+						...(isGravestormKw ? { gravestormCount } : {})
+					});
+				}
+			}
+		}
+		// --- End Track P17a ---
 	}
 }
 
@@ -5008,11 +5093,24 @@ function matchDamage(state: GameState, ev: Extract<GameEvent, { kind: 'DamageDea
 					return objectMatches(a.filter, dealerSubject, source);
 				});
 				if (!alt) continue;
+				// --- Track P17a ---
+				const times =
+					source.zone === 'battlefield'
+						? triggerMultiplier(state, source.obj, source.controllerId, {
+								event: 'dealsDamage',
+								object: dealerSubject.obj,
+								combat: ev.combat,
+								targetKind: ev.targetKind,
+								targetIsPlaneswalker: Boolean(damagedEval?.isPlaneswalker)
+							})
+						: 1;
+				// --- End Track P17a ---
 				record(state, source, ability, 'dealsDamage', {
 					label: ev.combat ? 'Combat Damage Trigger' : 'Damage Trigger',
 					eventObject: damaged ? damaged.obj : dealerSubject.obj,
 					eventPlayerId: ev.targetKind === 'player' ? ev.targetId : undefined,
-					amount: ev.amount
+					amount: ev.amount,
+					times
 				});
 			}
 		}
@@ -5122,11 +5220,23 @@ function matchCombatDamageBatchPlayer(
 				return true;
 			});
 			if (!alt) continue;
+			// --- Track P17a ---
+			const times =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, {
+							event: 'combatDamageBatchPlayer',
+							attackers: ev.attackers,
+							combat: true,
+							targetKind: 'player'
+						})
+					: 1;
+			// --- End Track P17a ---
 			record(state, source, ability, 'combatDamageBatchPlayer', {
 				label: 'Combat Damage Trigger',
 				eventPlayerId: ev.damagedPlayerId,
 				eventPlayer: ev.damagedPlayerId,
-				amount: matchedCount
+				amount: matchedCount,
+				times
 			});
 		}
 	}

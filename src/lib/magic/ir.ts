@@ -2032,7 +2032,12 @@ export type LayerMod =
 				| 'controlledAttachments';
 			// --- End Track P14 ---
 	  }
-	| { k: 'removeAllAbilities' }
+	| {
+			k: 'removeAllAbilities';
+			// --- Track P17a ---
+			keepManaAbilities?: boolean;
+			// --- End Track P17a ---
+	  }
 	| { k: 'addTypes'; types: string[]; subtypes?: string[] }
 	| { k: 'setTypes'; types: string[]; subtypes?: string[] }
 	| { k: 'switchPT' }
@@ -2074,8 +2079,12 @@ export type LayerMod =
 	| { k: 'setBaseToughness'; toughness: Amount }
 	// --- Track P14 ---
 	/** CR 613.1d, 205.1a, 700.5: Layer 4 type removal ("~ isn't a creature", "Enchanted permanent isn't a creature"). */
-	| { k: 'removeTypes'; types: string[] };
+	| { k: 'removeTypes'; types: string[] }
 	// --- End Track P14 ---
+	// --- Track P17a ---
+	/** CR 613.1e, 105.4: Layer 5 additive color from `source.chosenColor` ("is the chosen color in addition to its other colors"). */
+	| { k: 'addChosenColor' };
+	// --- End Track P17a ---
 
 export interface CostDelta {
 	/** 'setZero' makes the cost {0}; 'reduce'/'increase' change the generic component. */
@@ -2151,8 +2160,20 @@ export type RuleModKind =
 	| 'maxHandSizeDelta'
 	| 'setMaxHandSize'
 	| 'skipDrawStep'
-	| 'cantCastChosenName';
+	| 'cantCastChosenName'
 	// --- End Track P11 ---
+	// --- Track P17a ---
+	| 'blockTax'
+	| 'filteredSpellCapPerTurn'
+	| 'cantCastMatchingSpells'
+	| 'cantDrawCards'
+	| 'cantDrawExtraCards'
+	| 'cantSearchLibraries'
+	| 'cantPayLifeOrSacrificeForCosts'
+	| 'legendRuleExempt'
+	| 'flagbearer'
+	| 'untapStepCap';
+	// --- End Track P17a ---
 
 export type RestrictionKind =
 	| 'cantAttack'
@@ -2165,7 +2186,12 @@ export type RestrictionKind =
 	| 'doesntUntap'
 	| 'cantCrewVehicles'
 	// --- Track P3 ---
-	| 'cantHaveCounters';
+	| 'cantHaveCounters'
+	// --- Track P17a ---
+	| 'attacksOrBlocksEachCombat'
+	| 'cantAttackYou'
+	| 'cantAttackYouOrPlaneswalkers';
+	// --- End Track P17a ---
 
 // --- Track P8 ---
 export type CombatRuleSpec =
@@ -2199,8 +2225,19 @@ export type CombatRuleSpec =
 	/** "[affected] can't block creatures with power less than [affected]'s power." */
 	| { kind: 'cantBlockPowerLessThanSelf' }
 	/** CR 701.15: "Enchanted creature is goaded." (goaded by the static source's controller). */
-	| { kind: 'isGoaded' };
+	| { kind: 'isGoaded' }
 	// --- End Track P14 ---
+	// --- Track P17a ---
+	| { kind: 'additionalBlockCountDynamic'; amount: Amount }
+	| { kind: 'ignoreLandwalk'; keyword: string }
+	| { kind: 'canBlockAsThoughReach'; filter?: ObjectFilter }
+	| {
+			kind: 'crewSaddlePowerMod';
+			appliesTo: 'crew' | 'saddle' | 'both';
+			delta?: number;
+			useToughness?: boolean;
+	  };
+	// --- End Track P17a ---
 
 export type StaticDef =
 	| {
@@ -2248,6 +2285,16 @@ export type StaticDef =
 			counter?: CounterType;
 			/** triggers: the event that must cause the trigger ("an artifact or creature entering"). */
 			cause?: EventPattern;
+			// --- Track P17a ---
+			round?: 'down' | 'up';
+			appliesToPlayers?: boolean;
+			whoPlaces?: 'you' | 'opponents' | 'any';
+			whoCreates?: 'you' | 'all';
+			extraToken?: TokenSpec;
+			extraTokenCount?: 'one' | 'matching';
+			causeOr?: EventPattern[];
+			triggerSourceAttachedTo?: boolean;
+			// --- End Track P17a ---
 			condition?: Condition;
 	  }
 	| {
@@ -2275,6 +2322,9 @@ export type StaticDef =
 			/** CR 401.5: "You may look at the top card of your library any time" / "Play with the top card of your library revealed." */
 			k: 'topOfLibraryVisibility';
 			mode: 'look' | 'reveal';
+			// --- Track P17a ---
+			players?: 'you' | 'all';
+			// --- End Track P17a ---
 			condition?: Condition;
 	  }
 	| {
@@ -2324,6 +2374,11 @@ export type StaticDef =
 			requireZonePermission?: boolean;
 			payLifeEqualToSpellMV?: boolean;
 			// --- End Track P17b ---
+			// --- Track P17a ---
+			payLifeEqualToManaValue?: boolean;
+			slotMode?: 'unlimited' | 'oncePerTurn';
+			entersWithCounters?: Partial<Record<CounterType, number>>;
+			// --- End Track P17a ---
 			condition?: Condition;
 	  }
 	| {
@@ -2408,8 +2463,51 @@ export type StaticDef =
 			k: 'loyaltyActivationsPerTurn';
 			max: number;
 			condition?: Condition;
-	  };
+	  }
 	// --- End Track P18b ---
+	// --- Track P17a ---
+	| {
+			/** CR 400.2 / 402: "Your opponents play with their hands revealed" / "Players play with their hands revealed." */
+			k: 'handVisibility';
+			players: 'opponents' | 'all' | 'you';
+			condition?: Condition;
+	  }
+	| {
+			/** CR 106.4 / 500.4: Unspent mana retention or color conversion across step/phase transitions. */
+			k: 'retainUnspentMana';
+			players: 'you' | 'all';
+			colors: ManaColor[] | 'all';
+			convertTo?: ManaColor;
+			condition?: Condition;
+	  }
+	| {
+			/** CR 502.3: "Untap all [affected] you control during each other player's untap step." */
+			k: 'untapDuringOtherUntapSteps';
+			affected: ObjectFilter | 'attachedTo' | 'self';
+			condition?: Condition;
+	  }
+	| {
+			/** CR 613.1d–e / 113.6: Off-battlefield creature subtype or color continuous grants (e.g. Maskwood Nexus, Arcane Adaptation, Painter's Servant). */
+			k: 'offBattlefieldCharacteristics';
+			zones: Array<'hand' | 'graveyard' | 'library' | 'exile' | 'command' | 'stack'>;
+			filter?: ObjectFilter;
+			who: 'you' | 'all';
+			addAllCreatureTypes?: boolean;
+			addChosenSubType?: boolean;
+			addTypes?: string[];
+			addSubtypes?: string[];
+			addChosenColor?: boolean;
+			addColors?: ManaColor[];
+			condition?: Condition;
+	  }
+	| {
+			/** CR 613.1f / 113.6: Grants spell keywords (e.g. convoke, delve, improvise, cascade, rebound) to matching spells you cast/control. */
+			k: 'spellGrantKeyword';
+			filter: ObjectFilter;
+			keywords: string[];
+			condition?: Condition;
+	  };
+	// --- End Track P17a ---
 
 // --- Track P18b ---
 export type CompanionDeckConditionId =
@@ -2490,6 +2588,16 @@ export interface ReplacementDef {
 				/** CR 614.1c / 614.12c: "As ~ enters, choose <wordA> or <wordB>." (Sieges, Mirrodin Besieged, etc.) */
 				chooseAnchorWord?: [string, string];
 				// --- End Track P18b ---
+				// --- Track P17a ---
+				/** CR 614.1a: "instead exile it with a <counter> counter on it". */
+				exileWithCounter?: CounterType;
+				/** CR 121.2 / 614.1a: Draw replacement scaling ("draw two cards instead", optionally skipping first draw in draw step). */
+				drawMod?: {
+					factor?: number;
+					delta?: number;
+					skipFirstInYourDrawStep?: boolean;
+				};
+				// --- End Track P17a ---
 		  };
 	/** CR 614.15 / 616.1a: true when this is a self-replacement effect applied before other replacements. */
 	selfReplacement?: boolean;

@@ -43,6 +43,9 @@ import {
 } from '../types.ts';
 export { createEmptyCounterMap };
 import { activeAbilityDefs, instanceFaceOptions, resolveObjectFaces } from './faces.ts';
+// --- Track P17a ---
+import { isP17aWave6AltCastVariant } from './staticsWave6.ts';
+// --- End Track P17a ---
 import { activeTimedLayer1aForPermanent } from './layerCache.ts';
 import { evaluatePermanent, permanentHasLostAllAbilities } from './layers.ts';
 import {
@@ -737,6 +740,11 @@ export function collectStaticAltCastOptions(
 		const ab = selfAbilities[i];
 		if (ab.kind !== 'static' || ab.static.k !== 'altCastPermission') continue;
 		if (ab.static.affects !== 'self') continue;
+		// --- Track P17a ---
+		if (isP17aWave6AltCastVariant(ab.static)) {
+			continue;
+		}
+		// --- End Track P17a ---
 		// --- Track P14 ---
 		if (ab.static.allowedZones) {
 			if (!ab.static.allowedZones.includes(fromZone)) continue;
@@ -845,6 +853,11 @@ export function collectStaticAltCastOptions(
 		state,
 		(sourcePerm, controllerId, sourceName, st) => {
 			if (st.k !== 'altCastPermission' || st.affects === 'self') return;
+			// --- Track P17a ---
+			if (isP17aWave6AltCastVariant(st)) {
+				return;
+			}
+			// --- End Track P17a ---
 			// --- Track P17b ---
 			if (!st.anyPlayer && controllerId !== actor.playerId) return;
 			if (

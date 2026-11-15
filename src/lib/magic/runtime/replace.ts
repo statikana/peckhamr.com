@@ -72,6 +72,14 @@ import {
 	peekPreLeaveGrantedReplacements
 } from './staticsDynamicAndCosts.ts';
 // --- End Track P11 ---
+// --- Track P17a ---
+import {
+	applyCounterReplacementStep,
+	checkWave6SpellCastLocks,
+	hasSelfConditionalFlashGrant,
+	recordPendingExileReplacementCounter
+} from './staticsWave6.ts';
+// --- End Track P17a ---
 
 // ---- Condition & Amount Evaluation ----------------------------------------------------------
 
@@ -504,6 +512,11 @@ export function checkGlobalCastPermissionsAndRestrictions(
 			}
 		}
 	}
+	// --- Track P17a: Conditional self-flash ("You may cast ~ as though it had flash if ...") ---
+	if (!allowedAsThoughFlash && spellInst && hasSelfConditionalFlashGrant(state, actor.playerId, spellInst)) {
+		allowedAsThoughFlash = true;
+	}
+	// --- End Track P17a ---
 
 	// 2. Check global & opponent Stax restrictions ("Can't beats Can" — CR 101.2)
 	for (const mod of mods) {
@@ -563,6 +576,19 @@ export function checkGlobalCastPermissionsAndRestrictions(
 			}
 		}
 	}
+
+	// --- Track P17a: Wave 6 filtered spell caps & matching spell locks ---
+	const w6CastLock = checkWave6SpellCastLocks(state, actor, spellInst, fromZone);
+	if (!w6CastLock.ok) {
+		return {
+			allowedAsThoughFlash,
+			grantsFlash: allowedAsThoughFlash,
+			blocked: true,
+			ok: false,
+			error: w6CastLock.error
+		};
+	}
+	// --- End Track P17a ---
 
 	return {
 		allowedAsThoughFlash,
@@ -703,6 +729,14 @@ function matchesRestrictionKind(defKind: RestrictionKind, queried: RestrictionKi
 	if (defKind === 'cantAttackOrBlock' && (queried === 'cantAttack' || queried === 'cantBlock')) {
 		return true;
 	}
+	// --- Track P17a ---
+	if (
+		defKind === 'attacksOrBlocksEachCombat' &&
+		(queried === 'attacksEachCombat' || queried === 'blocksEachCombat')
+	) {
+		return true;
+	}
+	// --- End Track P17a ---
 	return false;
 }
 
@@ -1153,6 +1187,9 @@ export interface ZoneChangeReplacementResolution {
 	dest: ZoneType;
 	shuffle: boolean;
 	replacedBy?: string;
+	// --- Track P17a ---
+	exileWithCounter?: CounterType;
+	// --- End Track P17a ---
 	pendingOptions?: ActiveReplacement[];
 	appliedIds: string[];
 	chooserId: string;
@@ -1180,6 +1217,9 @@ export function resolveZoneChangeReplacements(
 	let currentDest = desiredDest;
 	let shuffle = false;
 	let replacedBy: string | undefined;
+	// --- Track P17a ---
+	let exileWithCounter: CounterType | undefined;
+	// --- End Track P17a ---
 	let nextChoiceId = chosenId;
 
 	for (let iter = 0; iter < 16; iter++) {
@@ -1210,6 +1250,7 @@ export function resolveZoneChangeReplacements(
 					dest: currentDest,
 					shuffle,
 					replacedBy,
+					...(exileWithCounter ? { exileWithCounter } : {}),
 					pendingOptions: tierReps,
 					appliedIds: [...appliedIds],
 					chooserId
@@ -1223,6 +1264,12 @@ export function resolveZoneChangeReplacements(
 			currentDest = w.to;
 			shuffle = Boolean(w.shuffleIntoLibrary);
 			replacedBy = picked.sourceName;
+			// --- Track P17a ---
+			if (w.to === 'exile' && w.exileWithCounter) {
+				exileWithCounter = w.exileWithCounter;
+				recordPendingExileReplacementCounter(obj, w.exileWithCounter);
+			}
+			// --- End Track P17a ---
 		}
 	}
 
@@ -1230,6 +1277,9 @@ export function resolveZoneChangeReplacements(
 		dest: currentDest,
 		shuffle,
 		replacedBy,
+		// --- Track P17a ---
+		...(exileWithCounter ? { exileWithCounter } : {}),
+		// --- End Track P17a ---
 		appliedIds: [...appliedIds],
 		chooserId
 	};
@@ -1515,6 +1565,9 @@ export interface ActiveCounterReplacement {
 	controllerId: string;
 	factor: number;
 	delta: number;
+	// --- Track P17a ---
+	round?: 'down' | 'up';
+	// --- End Track P17a ---
 }
 
 /**
@@ -1525,9 +1578,15 @@ export function applicableCounterReplacements(
 	state: GameState,
 	perm: CardInstance,
 	counterType: CounterType,
-	alreadyApplied: ReadonlySet<string> = new Set()
+	alreadyApplied: ReadonlySet<string> = new Set(),
+	placerPlayerId?: string
 ): ActiveCounterReplacement[] {
 	const out: ActiveCounterReplacement[] = [];
+	const effectivePlacer =
+		placerPlayerId ??
+		(state.stack.length > 0 ? state.stack[state.stack.length - 1]?.controllerId : undefined) ??
+		perm.controllerId ??
+		perm.ownerId;
 	for (const { perm: source, card, controllerId } of activeStaticSources(state)) {
 		const abilities = activeAbilityDefs(
 			card,
@@ -1547,6 +1606,10 @@ export function applicableCounterReplacements(
 			const def = ability.static;
 			if (!isBattlefieldActiveZone(def, source)) continue;
 			if (def.counter !== undefined && def.counter !== counterType) continue;
+			// --- Track P17a ---
+			if (def.whoPlaces === 'you' && effectivePlacer !== controllerId) continue;
+			if (def.whoPlaces === 'opponents' && effectivePlacer === controllerId) continue;
+			// --- End Track P17a ---
 			if (!evalReplaceCondition(def.condition, { state, controllerId, source })) continue;
 			if (
 				def.filter &&
@@ -1571,7 +1634,8 @@ export function applicableCounterReplacements(
 				sourceName: card.name,
 				controllerId,
 				factor,
-				delta
+				delta,
+				...(def.round ? { round: def.round } : {})
 			});
 		}
 	}
@@ -1591,6 +1655,10 @@ export function applicableCounterReplacements(
 					if (alreadyApplied.has(id)) continue;
 					if (!isBattlefieldActiveZone(def)) continue;
 					if (def.counter !== undefined && def.counter !== counterType) continue;
+					// --- Track P17a ---
+					if (def.whoPlaces === 'you' && effectivePlacer !== ev.controllerId) continue;
+					if (def.whoPlaces === 'opponents' && effectivePlacer === ev.controllerId) continue;
+					// --- End Track P17a ---
 					if (!evalReplaceCondition(def.condition, { state, controllerId: ev.controllerId, source })) {
 						continue;
 					}
@@ -1617,7 +1685,8 @@ export function applicableCounterReplacements(
 						sourceName: ev.effectiveName,
 						controllerId: ev.controllerId,
 						factor,
-						delta
+						delta,
+						...(def.round ? { round: def.round } : {})
 					});
 				}
 			}
@@ -1646,7 +1715,8 @@ export function resolveCounterReplacements(
 	counterType: CounterType,
 	initialAmount: number,
 	alreadyApplied: ReadonlySet<string> = new Set(),
-	chosenId?: string
+	chosenId?: string,
+	placerPlayerId?: string
 ): CounterReplacementResolution {
 	const appliedIds = new Set(alreadyApplied);
 	const chooserId = perm.controllerId || perm.ownerId;
@@ -1655,7 +1725,7 @@ export function resolveCounterReplacements(
 	let nextChoiceId = chosenId;
 
 	for (let iter = 0; iter < 16 && amount > 0; iter++) {
-		const reps = applicableCounterReplacements(state, perm, counterType, appliedIds);
+		const reps = applicableCounterReplacements(state, perm, counterType, appliedIds, placerPlayerId);
 		if (reps.length === 0) break;
 
 		let picked: ActiveCounterReplacement | undefined;
@@ -1680,7 +1750,9 @@ export function resolveCounterReplacements(
 		}
 
 		appliedIds.add(picked.id);
-		amount = (amount + picked.delta) * picked.factor;
+		// --- Track P17a ---
+		amount = applyCounterReplacementStep(amount, picked.factor, picked.delta, picked.round);
+		// --- End Track P17a ---
 	}
 
 	return {
@@ -1727,6 +1799,14 @@ export function tokenMultiplier(state: GameState, recipientPlayerId: string): nu
 			}
 			const def = ability.static;
 			if (!isBattlefieldActiveZone(def, source)) continue;
+			// --- Track P17a ---
+			if (def.extraToken || (def.delta ?? 0) !== 0) continue;
+			if (def.whoCreates === 'you' && controllerId !== recipientPlayerId) continue;
+			if (def.filter) {
+				const nonCtrlKeys = Object.keys(def.filter).filter((k) => k !== 'controller');
+				if (nonCtrlKeys.length > 0) continue;
+			}
+			// --- End Track P17a ---
 			if (!evalReplaceCondition(def.condition, { state, controllerId, source })) continue;
 			if (def.filter?.controller === 'you' && controllerId !== recipientPlayerId) continue;
 			if (def.filter?.controller === 'opponent' && controllerId === recipientPlayerId) continue;
@@ -1747,7 +1827,123 @@ export interface TriggerMultiplierCause {
 	from?: ZoneType | null;
 	to?: ZoneType;
 	attackers?: CardInstance[];
+	// --- Track P17a ---
+	playerId?: string;
+	combat?: boolean;
+	targetKind?: 'player' | 'permanent';
+	targetIsPlaneswalker?: boolean;
+	// --- End Track P17a ---
 }
+
+// --- Track P17a ---
+function matchesSingleTriggerCausePattern(
+	state: GameState,
+	source: CardInstance,
+	controllerId: string,
+	pattern: EventPattern,
+	cause: TriggerMultiplierCause
+): boolean {
+	const isCombatDamageAlias =
+		pattern.event === 'dealsDamage' &&
+		cause.event === 'combatDamageBatchPlayer' &&
+		Boolean(pattern.filter?.combat);
+	if (pattern.event !== cause.event && !isCombatDamageAlias) return false;
+	const cf = pattern.filter;
+	if (!cf) return true;
+
+	if (cause.event === 'cast') {
+		if (cause.isCopy && !cf.orCopy) return false;
+		if (
+			cf.player &&
+			cause.casterId !== undefined &&
+			!matchesPlayerFilter(cf.player, controllerId, cause.casterId, state)
+		) {
+			return false;
+		}
+		if (cf.object && typeof cf.object === 'object') {
+			if (!cause.spell) return false;
+			const spellView: CardInstance =
+				cause.casterId && cause.spell.controllerId !== cause.casterId
+					? { ...cause.spell, controllerId: cause.casterId }
+					: cause.spell;
+			if (!matchesObjectFilter(spellView, cf.object, { state, controllerId, source })) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	if (cause.event === 'zoneChange') {
+		if (cf.from !== undefined && cf.from !== cause.from) return false;
+		if (cf.to !== undefined && cf.to !== cause.to) return false;
+		if (cf.object && typeof cf.object === 'object') {
+			if (!cause.object) return false;
+			const objView: CardInstance = cause.lki
+				? {
+						...cause.object,
+						card: {
+							...cause.lki.card,
+							typeLine: cause.lki.typeLine
+						},
+						controllerId: cause.lki.controllerId,
+						isToken: cause.lki.isToken,
+						tapped: cause.lki.tapped
+					}
+				: cause.object;
+			if (!matchesObjectFilter(objView, cf.object, { state, controllerId, source })) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	if (cause.event === 'attacks' || isCombatDamageAlias) {
+		if (cf.object && typeof cf.object === 'object') {
+			const atkList = cause.attackers ?? (cause.object ? [cause.object] : []);
+			if (
+				!atkList.some((atk) =>
+					matchesObjectFilter(atk, cf.object as ObjectFilter, { state, controllerId, source })
+				)
+			) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	if (cause.event === 'dealsDamage') {
+		if (cf.combat && !cause.combat) return false;
+		if (cf.damageTo === 'player' && cause.targetKind !== 'player') return false;
+		if (
+			cf.damageTo === 'playerOrPlaneswalker' &&
+			cause.targetKind !== 'player' &&
+			!cause.targetIsPlaneswalker
+		) {
+			return false;
+		}
+		if (cf.object && typeof cf.object === 'object') {
+			if (!cause.object) return false;
+			if (!matchesObjectFilter(cause.object, cf.object, { state, controllerId, source })) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	if (cause.event === 'drawCard') {
+		if (
+			cf.player &&
+			cause.playerId !== undefined &&
+			!matchesPlayerFilter(cf.player, controllerId, cause.playerId, state)
+		) {
+			return false;
+		}
+		return true;
+	}
+
+	return true;
+}
+// --- End Track P17a ---
 
 /**
  * Computes the trigger count for a triggered ability of battlefield permanent `triggeredPerm`
@@ -1761,9 +1957,22 @@ export function triggerMultiplier(
 ): number {
 	let times = 1;
 	const permView: CardInstance =
-		triggeredPerm.controllerId === triggeredControllerId
-			? triggeredPerm
-			: { ...triggeredPerm, controllerId: triggeredControllerId };
+		triggeredPerm.zone !== 'battlefield' &&
+		cause.object?.instanceId === triggeredPerm.instanceId &&
+		cause.lki
+			? {
+					...triggeredPerm,
+					card: {
+						...cause.lki.card,
+						typeLine: cause.lki.typeLine
+					},
+					controllerId: triggeredControllerId,
+					isToken: cause.lki.isToken,
+					tapped: cause.lki.tapped
+				}
+			: triggeredPerm.controllerId === triggeredControllerId
+				? triggeredPerm
+				: { ...triggeredPerm, controllerId: triggeredControllerId };
 
 	for (const { perm: source, card, controllerId } of activeStaticSources(state)) {
 		for (const ability of activeAbilityDefs(
@@ -1780,6 +1989,11 @@ export function triggerMultiplier(
 			const def = ability.static;
 			if (!isBattlefieldActiveZone(def, source)) continue;
 			if (!evalReplaceCondition(def.condition, { state, controllerId, source })) continue;
+			// --- Track P17a ---
+			if (def.triggerSourceAttachedTo && source.attachedToId !== triggeredPerm.instanceId) {
+				continue;
+			}
+			// --- End Track P17a ---
 			if (
 				def.filter &&
 				!matchesObjectFilter(permView, def.filter, {
@@ -1790,78 +2004,20 @@ export function triggerMultiplier(
 			) {
 				continue;
 			}
-			if (def.cause) {
-				if (def.cause.event !== cause.event) continue;
-				const cf = def.cause.filter;
-				if (cause.event === 'cast') {
-					if (cause.isCopy && !cf?.orCopy) continue;
-					if (
-						cf?.player &&
-						cause.casterId !== undefined &&
-						!matchesPlayerFilter(cf.player, controllerId, cause.casterId, state)
-					) {
-						continue;
-					}
-					if (cf?.object && typeof cf.object === 'object') {
-						if (!cause.spell) continue;
-						const spellView: CardInstance =
-							cause.casterId && cause.spell.controllerId !== cause.casterId
-								? { ...cause.spell, controllerId: cause.casterId }
-								: cause.spell;
-						if (
-							!matchesObjectFilter(spellView, cf.object, {
-								state,
-								controllerId,
-								source
-							})
-						) {
-							continue;
-						}
-					}
-				} else if (cause.event === 'zoneChange') {
-					if (cf?.from !== undefined && cf.from !== cause.from) continue;
-					if (cf?.to !== undefined && cf.to !== cause.to) continue;
-					if (cf?.object && typeof cf.object === 'object') {
-						if (!cause.object) continue;
-						const objView: CardInstance = cause.lki
-							? {
-									...cause.object,
-									card: {
-										...cause.lki.card,
-										typeLine: cause.lki.typeLine
-									},
-									controllerId: cause.lki.controllerId,
-									isToken: cause.lki.isToken,
-									tapped: cause.lki.tapped
-								}
-							: cause.object;
-						if (
-							!matchesObjectFilter(objView, cf.object, {
-								state,
-								controllerId,
-								source
-							})
-						) {
-							continue;
-						}
-					}
-				} else if (cause.event === 'attacks') {
-					if (cf?.object && typeof cf.object === 'object') {
-						const atkList = cause.attackers ?? (cause.object ? [cause.object] : []);
-						if (
-							!atkList.some((atk) =>
-								matchesObjectFilter(atk, cf.object as ObjectFilter, {
-									state,
-									controllerId,
-									source
-								})
-							)
-						) {
-							continue;
-						}
-					}
-				}
+			// --- Track P17a ---
+			const causes = def.causeOr ?? (def.cause ? [def.cause] : undefined);
+			if (
+				causes &&
+				!causes.some((pat) =>
+					matchesSingleTriggerCausePattern(state, source, controllerId, pat, cause)
+				)
+			) {
+				continue;
 			}
+			if (def.factor <= 0) {
+				return 0;
+			}
+			// --- End Track P17a ---
 			// CR 603.2d: Each "triggers an additional time" effect adds (def.factor - 1) additional triggers.
 			times += Math.max(0, def.factor - 1);
 		}

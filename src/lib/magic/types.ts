@@ -1289,6 +1289,10 @@ export interface CastOption {
 	/** CR 702.48a: Offering quality label (e.g. "Fox", "Artifact"). */
 	offeringQuality?: string;
 	// --- End Track P18b ---
+	// --- Track P17a ---
+	/** CR 118.9: Static alternative cost that pays life equal to the spell's mana value rather than its mana cost. */
+	payLifeEqualToManaValue?: boolean;
+	// --- End Track P17a ---
 }
 
 // --- Track P3 ---
@@ -1594,6 +1598,10 @@ export interface StackItem {
 		yes?: boolean;
 	};
 	// --- End Track P18a ---
+	// --- Track P17a ---
+	/** CR 613.1f / 113.6: Spell keywords statically granted to this spell on cast (e.g. cascade, rebound, storm, gravestorm). */
+	grantedSpellKeywords?: string[];
+	// --- End Track P17a ---
 }
 
 // --- Track P10 ---
@@ -2371,6 +2379,10 @@ export interface PlayerGameState {
 	/** CR 116.2g / 702.139a: true once this player has taken the `{3}` special action to put their companion into hand. */
 	companionMovedToHand?: boolean;
 	// --- End Track P18b ---
+	// --- Track P17a ---
+	/** CR 121.2 / CR 504.1: true once this player has drawn their first card during their draw step this turn. */
+	drewFirstCardInDrawStepThisTurn?: boolean;
+	// --- End Track P17a ---
 }
 
 export interface ManaRider {

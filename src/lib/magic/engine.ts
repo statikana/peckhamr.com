@@ -65,9 +65,26 @@ export function getEffectiveActivatedAbilities(
 	commanderIdentity: ManaColor[] = []
 ): EffectiveActivatedAbility[] {
 	// Read-only: one layer-cache validation for all of this permanent's ability lookups (Phase 6c).
-	return withStableLayerInputs(state, () =>
-		getEffectiveActivatedAbilitiesRaw(state, actor, perm, commanderIdentity)
-	).map((ab) =>
+	return withStableLayerInputs(state, () => {
+		const raw = getEffectiveActivatedAbilitiesRaw(state, actor, perm, commanderIdentity);
+		// --- Track P17a: CR 613.1f keepManaAbilities ("lose all abilities except mana abilities") ---
+		if (
+			perm.zone === 'battlefield' &&
+			!perm.isFaceDown &&
+			permanentHasLostAllAbilities(perm, state).lost &&
+			permanentRetainsInnateManaAbilities(perm, state)
+		) {
+			const innateMana = getCardActivatedAbilities(
+				perm.copiableCard ?? perm.card,
+				commanderIdentity,
+				undefined,
+				instanceFaceOptions(perm, 'battlefield')
+			).filter((a) => a.isManaAbility && !raw.some((r) => r.id === a.id));
+			raw.push(...innateMana);
+		}
+		// --- End Track P17a ---
+		return raw;
+	}).map((ab) =>
 		ab.id.startsWith('equip_') && ab.manaCost === '{0}' && !ab.costText.includes('{0}')
 			? { ...ab, costText: 'Equip {0}' }
 			: ab
@@ -109,6 +126,32 @@ import {
 	markHandCardRevealedToAll
 	// --- End Track P12 ---
 } from './runtime/staticsLayersAndRestrictions.ts';
+// --- Track P17a ---
+import { permanentRetainsInnateManaAbilities } from './runtime/layers.ts';
+import {
+	adjustCostDefsForCrewSaddleVirtualPower,
+	canBlockAttackerAsThoughReach,
+	checkDefenderScopedAttackRestriction,
+	checkWave6CostPaymentLocks,
+	collectOtherPlayerUntapStepPermanents,
+	collectWave6StaticAltCastOptions,
+	computeDeclareAttackersTaxSummary,
+	createTokenWithWave6Replacements,
+	emptyPlayerManaPoolWave6,
+	evaluateLibrarySearchLock,
+	evaluateSingleDrawWave6,
+	getActiveUntapStepCaps,
+	getGrantedSpellKeywordsForSpell,
+	getRequiredFlagbearerIdsForActor,
+	isLandwalkIgnoredForAttacker,
+	isPermanentExemptFromLegendRule,
+	isPlayerHandRevealedToViewer,
+	isPlayerTopLibraryRevealedByGlobalStatic,
+	scalePlayerCountersPlaced,
+	validateDefenderBlockersWithWave6,
+	validateFlagbearerTargets
+} from './runtime/staticsWave6.ts';
+// --- End Track P17a ---
 import {
 	allocateTimestamp,
 	attachObject,
@@ -435,6 +478,9 @@ import {
 	peekPendingTriggers,
 	registerTriggerHost,
 	stackTriggerConditionHolds,
+	// --- Track P17a ---
+	withSimultaneousZoneBatch,
+	// --- End Track P17a ---
 	withTriggersDeferred,
 	type PendingTrigger
 } from './runtime/triggers.ts';
@@ -950,9 +996,19 @@ function buildCastPaymentAids(
 	if (!actor || isFaceDown) return undefined;
 	const effectiveCard = effectiveCardForObject(inst);
 	const abilities = activeAbilityDefs(effectiveCard, { zone: 'stack', faceIndex, fused });
+	// --- Track P17a ---
+	const staticGrantedSpellKws = getGrantedSpellKeywordsForSpell(
+		state,
+		actor.playerId,
+		inst,
+		faceIndex,
+		fused
+	);
+	// --- End Track P17a ---
 	const hasKw = (kw: string): boolean =>
 		abilities.some((a) => a.kind === 'keyword' && a.keyword.name === kw) ||
-		Boolean(inst.grantedKeywords?.some((k) => k.toLowerCase() === kw));
+		Boolean(inst.grantedKeywords?.some((k) => k.toLowerCase() === kw)) ||
+		staticGrantedSpellKws.includes(kw);
 
 	const aids: CastCostAid[] = [];
 	if (hasKw('convoke')) {
@@ -1445,17 +1501,34 @@ function enumerateCandidateCastOptions(
 			// --- Track P11: Self & external static alternative cast permissions (CR 118.9) ---
 			// --- Track P14: Allow allowedZones static alt-casts & propagate Wave 5 zone slots ---
 			if (actor && !isLandOnlyFace) {
-				const staticAltOpts = collectStaticAltCastOptions(
-					state,
-					actor,
-					inst,
-					fromZone,
-					isMultiFace ? fi : undefined,
-					targetInfo.requiresTarget,
-					hasZonePermission
-				);
+				const staticAltOpts = [
+					...collectStaticAltCastOptions(
+						state,
+						actor,
+						inst,
+						fromZone,
+						isMultiFace ? fi : undefined,
+						targetInfo.requiresTarget,
+						hasZonePermission
+					),
+					// --- Track P17a ---
+					...collectWave6StaticAltCastOptions(
+						state,
+						actor,
+						inst,
+						fi,
+						false,
+						true,
+						targetInfo.requiresTarget,
+						spellChoosesX(card, { kind: 'printed' }, undefined, fi, false),
+						hasZonePermission
+					)
+					// --- End Track P17a ---
+				];
 				for (const sOpt of staticAltOpts) {
-					const isFreeAlt = sOpt.baseCost.kind === 'alternative' && sOpt.baseCost.manaCost === '{0}';
+					const isFreeAlt =
+						sOpt.baseCost.kind === 'free' ||
+						(sOpt.baseCost.kind === 'alternative' && sOpt.baseCost.manaCost === '{0}');
 					const altCostSummary =
 						sOpt.baseCost.kind === 'alternative' && sOpt.baseCost.costDefs?.length
 							? describeTurnUpCost(
@@ -2375,10 +2448,32 @@ export function chooseBotAbilityCostPayment(
 	const allAbDefs =
 		extraAbDefs.length > 0 ? [...abilityCost.defs, ...extraAbDefs] : abilityCost.defs;
 	// --- End Track P17b ---
-	return (
-		chooseCostPayment(costContext(state, player, perm, 0, false, abilityMana), allAbDefs) ??
-		undefined
+	// --- Track P17a: CR 118.3, 702.122a, 702.171a cost locks & Crew/Saddle virtual power ---
+	const lockRes = checkWave6CostPaymentLocks(
+		state,
+		player.playerId,
+		allAbDefs,
+		undefined,
+		ab.isManaAbility,
+		perm
 	);
+	if (!lockRes.ok) return undefined;
+	const crewAdjusted = adjustCostDefsForCrewSaddleVirtualPower(
+		state,
+		player,
+		perm,
+		allAbDefs
+	);
+	const chosen = chooseCostPayment(
+		costContext(state, player, perm, 0, false, abilityMana),
+		crewAdjusted.defs
+	);
+	if (!chosen) return undefined;
+	if (crewAdjusted.chosenObjects && !chosen.objects) {
+		return { ...chosen, objects: crewAdjusted.chosenObjects };
+	}
+	return chosen;
+	// --- End Track P17a ---
 }
 
 /** Builds a ManaSpendContext for casting `inst` with the selected face/fuse/face-down mode. */
@@ -2749,6 +2844,11 @@ function finalizeCastSpell(
 		inst.commanderCastCount = prevCastCount + 1;
 		actor.commanderCastCounts[inst.instanceId] = inst.commanderCastCount;
 	}
+	// --- Track P17a: Snapshot static spell keyword grants BEFORE incrementing spellsCastThisTurn ---
+	const castGrantedSpellKws = isPreparationCopy
+		? []
+		: getGrantedSpellKeywordsForSpell(state, actorId, inst, stackFaceIdx, stackFused);
+	// --- End Track P17a ---
 	actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
 	// --- Track P15: Day/Night active-player spell count (CR 732.5) ---
 	if (state.players[state.activePlayerIndex]?.playerId === actorId) {
@@ -2820,6 +2920,9 @@ function finalizeCastSpell(
 			...(resolvedGiftRecipientId ? { giftRecipientId: resolvedGiftRecipientId } : {}),
 			...(splicedEntries.length > 0 ? { splicedCards: splicedEntries.map((e) => e.card) } : {}),
 			// --- End Track P15 ---
+			// --- Track P17a ---
+			...(castGrantedSpellKws.length > 0 ? { grantedSpellKeywords: castGrantedSpellKws } : {}),
+			// --- End Track P17a ---
 			...(optionalCostCounts ? { optionalCostCounts } : {}),
 			commanderCastCount: isPreparationCopy ? 0 : inst.commanderCastCount,
 			requiresGuidedResolution: false,
@@ -5094,47 +5197,62 @@ function drawSingleCardWithoutDredge(
 	player: PlayerGameState,
 	deferSba = false
 ): 'drawn' | 'stopped' {
-	if (player.library.length === 0) {
-		const replaced = replaceEmptyLibraryDraw(state, player);
-		if (replaced.replaced) {
-			if (replaced.winsGame) {
-				winTheGame(
-					state,
-					player,
-					`${replaced.sourceName ?? 'Replacement Effect'} (drew from an empty library)`
-				);
+	// --- Track P17a: CR 121.2, 614.1a Draw locks & single-draw replacement multipliers ---
+	let drawsToExecute = 1;
+	if (state.status !== 'mulligan') {
+		const wave6Draw = evaluateSingleDrawWave6(state, player);
+		if (wave6Draw.markFirstDrawStepDraw) {
+			player.drewFirstCardInDrawStepThisTurn = true;
+		}
+		if (wave6Draw.drawCount <= 0) {
+			return 'drawn';
+		}
+		drawsToExecute = Math.min(wave6Draw.drawCount, 64);
+	}
+	for (let drawIter = 0; drawIter < drawsToExecute; drawIter++) {
+		if (player.library.length === 0) {
+			const replaced = replaceEmptyLibraryDraw(state, player);
+			if (replaced.replaced) {
+				if (replaced.winsGame) {
+					winTheGame(
+						state,
+						player,
+						`${replaced.sourceName ?? 'Replacement Effect'} (drew from an empty library)`
+					);
+				}
+				return 'stopped';
+			}
+			player.attemptedEmptyLibraryDraw = true;
+			if (!deferSba) {
+				checkStateBasedActions(state);
 			}
 			return 'stopped';
 		}
-		player.attemptedEmptyLibraryDraw = true;
-		if (!deferSba) {
-			checkStateBasedActions(state);
-		}
-		return 'stopped';
-	}
-	const drawnCard = player.library[0];
-	moveObject(state, drawnCard, 'hand', {
-		from: { player, zone: 'library' },
-		toPlayer: player,
-		commanderRedirect: true,
-		newTimestamp: true,
-		bumpVersion: true
-	});
-	if (state.status !== 'mulligan' && drawnCard.zone === 'hand') {
-		const drawnPlayers = state.playersDrawnThisTurn ?? (state.playersDrawnThisTurn = []);
-		if (!drawnPlayers.includes(player.playerId)) {
-			drawnPlayers.push(player.playerId);
-		}
-		player.cardsDrawnThisTurn = (player.cardsDrawnThisTurn ?? 0) + 1;
-		noteDrawnCardForMiracle(state, player, drawnCard);
-		emitEvent(state, {
-			kind: 'CardDrawn',
-			playerId: player.playerId,
-			objectId: drawnCard.instanceId,
-			object: drawnCard
+		const drawnCard = player.library[0];
+		moveObject(state, drawnCard, 'hand', {
+			from: { player, zone: 'library' },
+			toPlayer: player,
+			commanderRedirect: true,
+			newTimestamp: true,
+			bumpVersion: true
 		});
+		if (state.status !== 'mulligan' && drawnCard.zone === 'hand') {
+			const drawnPlayers = state.playersDrawnThisTurn ?? (state.playersDrawnThisTurn = []);
+			if (!drawnPlayers.includes(player.playerId)) {
+				drawnPlayers.push(player.playerId);
+			}
+			player.cardsDrawnThisTurn = (player.cardsDrawnThisTurn ?? 0) + 1;
+			noteDrawnCardForMiracle(state, player, drawnCard);
+			emitEvent(state, {
+				kind: 'CardDrawn',
+				playerId: player.playerId,
+				objectId: drawnCard.instanceId,
+				object: drawnCard
+			});
+		}
 	}
 	return 'drawn';
+	// --- End Track P17a ---
 }
 // --- End Track P12 ---
 
@@ -5172,9 +5290,9 @@ export function emptyAllPlayersManaPools(state: GameState): void {
 		const origR = p.manaPool.R;
 		const keepR = preservedFirebendingRedMana(state, p);
 		// --- End Track P12 ---
-		// --- Track P10 ---
-		emptyPlayerManaPoolForStepEnd(p);
-		// --- End Track P10 ---
+		// --- Track P10 + Track P17a ---
+		emptyPlayerManaPoolWave6(state, p, keepR);
+		// --- End Track P10 + Track P17a ---
 		// --- Track P12 ---
 		if (keepR > 0) {
 			p.manaPool.R = Math.min(origR, p.manaPool.R + keepR);
@@ -5455,10 +5573,37 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 	const untappedPerms: CardInstance[] = [];
 	const humanOptionalCandidates: CardInstance[] = [];
 	// --- End Track P10 + P11 ---
+	// --- Track P17a: CR 502.3 untap-step caps (e.g. Winter Orb, Static Orb) ---
+	const untapCaps = getActiveUntapStepCaps(state, activePlayer.playerId);
+	const untapCapUsed = untapCaps.map(() => 0);
+	const canUntapUnderCaps = (perm: CardInstance): boolean => {
+		for (let ci = 0; ci < untapCaps.length; ci++) {
+			const cap = untapCaps[ci]!;
+			if (
+				!cap.filter ||
+				matchesObjectFilter(perm, cap.filter, { state, controllerId: activePlayer.playerId })
+			) {
+				if (untapCapUsed[ci]! >= cap.max) return false;
+			}
+		}
+		return true;
+	};
+	const recordUntappedUnderCaps = (perm: CardInstance): void => {
+		for (let ci = 0; ci < untapCaps.length; ci++) {
+			const cap = untapCaps[ci]!;
+			if (
+				!cap.filter ||
+				matchesObjectFilter(perm, cap.filter, { state, controllerId: activePlayer.playerId })
+			) {
+				untapCapUsed[ci]! += 1;
+			}
+		}
+	};
+	// --- End Track P17a ---
 	for (const perm of activePlayer.battlefield) {
 		if (perm.phasedOut) continue;
 		const frozenNextUntap = consumeNextUntapFreeze(perm);
-		if (!frozenNextUntap && perm.tapped && !keptTapped.has(perm.instanceId)) {
+		if (!frozenNextUntap && perm.tapped && !keptTapped.has(perm.instanceId) && canUntapUnderCaps(perm)) {
 			if (mayChooseNotToUntapIds.has(perm.instanceId)) {
 				if (activePlayer.isBot) {
 					if (!botPrefersKeepingTapped(state, perm)) {
@@ -5467,6 +5612,7 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 						} else {
 							perm.tapped = false;
 							untappedPerms.push(perm);
+							recordUntappedUnderCaps(perm);
 						}
 					}
 				} else {
@@ -5479,6 +5625,7 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 				// --- Track P10 ---
 				untappedPerms.push(perm);
 				// --- End Track P10 ---
+				recordUntappedUnderCaps(perm);
 			}
 		}
 		perm.summoningSick = false;
@@ -5489,6 +5636,17 @@ function executeUntapTurnBasedActions(state: GameState, activePlayer: PlayerGame
 		perm.activatedAbilityIdsThisTurn = undefined;
 		perm.usedModalModesThisTurn = undefined;
 	}
+	// --- Track P17a: CR 502.3 untap during each other player's untap step (e.g. Seedborn Muse, Murkfiend Liege) ---
+	for (const otherPerm of collectOtherPlayerUntapStepPermanents(state, activePlayer.playerId)) {
+		if (!otherPerm.tapped || otherPerm.phasedOut) continue;
+		if (otherPerm.counters.stun > 0) {
+			otherPerm.counters.stun -= 1;
+		} else {
+			otherPerm.tapped = false;
+			untappedPerms.push(otherPerm);
+		}
+	}
+	// --- End Track P17a ---
 	// --- Track P10 ---
 	if (untappedPerms.length > 0) {
 		noteLayerInputsChanged(state);
@@ -5613,6 +5771,9 @@ export function runBeginningOfTurn(state: GameState): void {
 		delete p.committedCrimeThisTurn;
 		delete p.cardLeftGraveyardThisTurn;
 		// --- End Track P16b ---
+		// --- Track P17a ---
+		p.drewFirstCardInDrawStepThisTurn = false;
+		// --- End Track P17a ---
 	}
 	state.playersDrawnThisTurn = [];
 	state.triggeredOnceThisTurn = undefined;
@@ -7346,6 +7507,18 @@ function applyGameActionInner(
 							// --- End Track P18a ---
 						}
 					: castOption.spellMods;
+			// --- Track P17a: CR 118.3, 601.2h static cost-payment locks (life / sacrifice) ---
+			const spellCostLock = checkWave6CostPaymentLocks(
+				state,
+				actorId,
+				combinedCostDefs,
+				action.costPayment?.phyrexianLifeCount,
+				false
+			);
+			if (!spellCostLock.ok) {
+				return { ok: false, error: spellCostLock.error! };
+			}
+			// --- End Track P17a ---
 			if (
 				combinedCostDefs.length > 0 ||
 				tapAidParts.length > 0 ||
@@ -7741,7 +7914,30 @@ function applyGameActionInner(
 				action.costPayment?.phyrexianLifeCount,
 				abilitySpendCtx
 			);
-			const abilityPlan = planCosts(abilityCtx, allAbilityCostDefs, action.costPayment);
+			// --- Track P17a: CR 118.3, 702.122a, 702.171a cost locks & Crew/Saddle virtual power ---
+			const abCostLock = checkWave6CostPaymentLocks(
+				state,
+				actorId,
+				allAbilityCostDefs,
+				action.costPayment?.phyrexianLifeCount,
+				ab.isManaAbility,
+				perm
+			);
+			if (!abCostLock.ok) return { ok: false, error: abCostLock.error! };
+			const crewAdjusted = adjustCostDefsForCrewSaddleVirtualPower(
+				state,
+				actor,
+				perm,
+				allAbilityCostDefs,
+				action.costPayment?.objects
+			);
+			const effectiveAbilityCostPayment =
+				crewAdjusted.chosenObjects !== action.costPayment?.objects &&
+				crewAdjusted.chosenObjects !== undefined
+					? { ...(action.costPayment ?? {}), objects: crewAdjusted.chosenObjects }
+					: action.costPayment;
+			const abilityPlan = planCosts(abilityCtx, crewAdjusted.defs, effectiveAbilityCostPayment);
+			// --- End Track P17a ---
 			if (!abilityPlan.ok) return { ok: false, error: abilityPlan.error };
 			if (abilityPlan.question) return askCostChoice(state, actor, action, abilityPlan.question, perm.card.name);
 			const preCostEval = perm.zone === 'battlefield' ? evaluatePermanent(state, perm) : null;
@@ -7837,6 +8033,17 @@ function applyGameActionInner(
 			if (!validated.ok) {
 				return { ok: false, error: validated.error };
 			}
+			// --- Track P17a: CR 509.1d pay block tax ---
+			if (
+				validated.combinedBlockTaxManaCost &&
+				!payManaWithAutoTap(actor, parseManaCost(validated.combinedBlockTaxManaCost), state)
+			) {
+				return {
+					ok: false,
+					error: `Strict Rules Violation: Blocking requires paying ${validated.combinedBlockTaxManaCost}, and you have insufficient mana (CR 509.1d).`
+				};
+			}
+			// --- End Track P17a ---
 
 			let allDeclared = false;
 			withTriggersDeferred(state, () => {
@@ -8145,7 +8352,14 @@ function chooseBotRequiredAttackAssignments(
 			if (!mustAttack) continue;
 
 			let candidateDefenders = taxFreeOpponents.filter(
-				(p) => getStaticAttackRestrictionReason(state, c, p.playerId) === null
+				(p) =>
+					getStaticAttackRestrictionReason(state, c, p.playerId) === null &&
+					// --- Track P17a ---
+					!checkDefenderScopedAttackRestriction(state, c, p.playerId).restricted &&
+					!computeDeclareAttackersTaxSummary(state, bot.playerId, [
+						{ attackerId: c.instanceId, defenderPlayerId: p.playerId }
+					]).hasTax
+					// --- End Track P17a ---
 			);
 			if (candidateDefenders.length === 0) continue;
 			if (isGoaded) {
@@ -8246,7 +8460,14 @@ export function chooseBotAttackAssignments(
 	const assignments = [...requiredAssignments];
 	for (const atk of optionalAttackers) {
 		const legalOpponents = opponents.filter(
-			(p) => getStaticAttackRestrictionReason(state, atk, p.playerId) === null
+			(p) =>
+				getStaticAttackRestrictionReason(state, atk, p.playerId) === null &&
+				// --- Track P17a ---
+				!checkDefenderScopedAttackRestriction(state, atk, p.playerId).restricted &&
+				!computeDeclareAttackersTaxSummary(state, bot.playerId, [
+					{ attackerId: atk.instanceId, defenderPlayerId: p.playerId }
+				]).hasTax
+				// --- End Track P17a ---
 		);
 		if (legalOpponents.length === 0) continue;
 		const idx = assignments.length;
@@ -8398,6 +8619,21 @@ function performDeclareAttackers(
 		if (staticAtkErr) {
 			return { ok: false, error: staticAtkErr };
 		}
+		// --- Track P17a: CR 508.1c defender-scoped attack restrictions ("can't attack you [or planeswalkers you control]") ---
+		const defScopedRestr = checkDefenderScopedAttackRestriction(
+			state,
+			creature,
+			defender.playerId,
+			assign.defenderPlaneswalkerId ?? undefined,
+			assign.defenderBattleId ?? undefined
+		);
+		if (defScopedRestr.restricted) {
+			return {
+				ok: false,
+				error: `Strict Rules Violation: ${creature.card.name} cannot attack ${defender.username}${assign.defenderPlaneswalkerId ? "'s planeswalker" : ''} (${defScopedRestr.sourceName ?? 'static restriction'}, CR 508.1c).`
+			};
+		}
+		// --- End Track P17a ---
 
 		// CR 508.1b: Validate defenderPlaneswalkerId if provided
 		if (assign.defenderPlaneswalkerId) {
@@ -8518,9 +8754,19 @@ function performDeclareAttackers(
 	}
 	// --- End Track P18a ---
 
-	// Pay attack tax if applicable
-	if (totalPropagandaTaxGeneric > 0) {
-		const taxReq = parseManaCost(`{${totalPropagandaTaxGeneric}}`);
+	// --- Track P17a: CR 508.1d Pay declare-attackers tax (player, planeswalker, dynamic Amount, colored/Phyrexian) ---
+	const atkTaxSummary = computeDeclareAttackersTaxSummary(
+		state,
+		actorId,
+		assignments.map((a) => ({
+			attackerId: a.attackerInstanceId,
+			defenderPlayerId: a.defenderPlayerId,
+			defenderPlaneswalkerId: a.defenderPlaneswalkerId ?? undefined,
+			defenderBattleId: a.defenderBattleId ?? undefined
+		}))
+	);
+	if (atkTaxSummary.hasTax) {
+		const taxReq = parseManaCost(atkTaxSummary.combinedManaCost);
 		if (!payManaWithAutoTap(actor, taxReq, state)) {
 			const taxSources = Array.from(
 				new Set(
@@ -8531,10 +8777,19 @@ function performDeclareAttackers(
 			);
 			return {
 				ok: false,
-				error: `Strict Rules Violation: Attacking requires paying {${totalPropagandaTaxGeneric}} for ${taxSources.join(' / ') || 'attack tax'}, and you have insufficient mana.`
+				error: `Strict Rules Violation: Attacking requires paying ${atkTaxSummary.combinedManaCost} for ${taxSources.join(' / ') || 'attack tax'}, and you have insufficient mana.`
+			};
+		}
+	} else if (totalPropagandaTaxGeneric > 0) {
+		const taxReq = parseManaCost(`{${totalPropagandaTaxGeneric}}`);
+		if (!payManaWithAutoTap(actor, taxReq, state)) {
+			return {
+				ok: false,
+				error: `Strict Rules Violation: Attacking requires paying {${totalPropagandaTaxGeneric}}, and you have insufficient mana.`
 			};
 		}
 	}
+	// --- End Track P17a ---
 
 	// CR 508.1f: attackers tap as they're declared, all at once, so vigilance is read from the
 	// board before any of them taps (tapping one between checks invalidated the layer cache
@@ -8730,7 +8985,10 @@ function getBlockerRestrictionReason(
 	if (
 		hasKeyword(attacker, 'Flying', state) &&
 		!hasKeyword(blocker, 'Flying', state) &&
-		!hasKeyword(blocker, 'Reach', state)
+		!hasKeyword(blocker, 'Reach', state) &&
+		// --- Track P17a ---
+		!canBlockAttackerAsThoughReach(state, blocker, attacker)
+		// --- End Track P17a ---
 	) {
 		return `Strict Rules Violation: ${blocker.card.name} cannot block ${attacker.card.name} (has Flying; blocker needs Flying or Reach).`;
 	}
@@ -8772,6 +9030,9 @@ function getBlockerRestrictionReason(
 	if (defendingPlayer) {
 		const defPermanents = defendingPlayer.battlefield.filter((perm) => !perm.phasedOut);
 		for (const kw of evalAttackerLandwalk.activeKeywords) {
+			// --- Track P17a: CR 702.14c landwalk neutralization ---
+			if (isLandwalkIgnoredForAttacker(state, attacker, kw)) continue;
+			// --- End Track P17a ---
 			const spec = getKeywordSpec(kw);
 			if (
 				spec?.status === 'implemented' &&
@@ -8906,18 +9167,26 @@ function validateDefenderBlockerAssignments(
 	actor: PlayerGameState,
 	assignments: Array<{ blockerInstanceId: string; attackerInstanceId: string }>
 ):
-	| { ok: true; blockerCountsByAttacker: Map<string, string[]> }
+	| { ok: true; blockerCountsByAttacker: Map<string, string[]>; combinedBlockTaxManaCost?: string }
 	| { ok: false; error: string } {
-	// --- Track P8 (CR 509.1a–c; includes Track P7 timed combat restrictions) ---
-	const res = validateAndSolveDefenderBlockersP8(
+	// --- Track P8 + Track P17a (CR 509.1a–d) ---
+	const res = validateDefenderBlockersWithWave6(
 		state,
 		actor,
 		assignments,
-		getBlockerRestrictionReason
+		getBlockerRestrictionReason,
+		(combinedCost) => canPayOrAutoTap(actor, parseManaCost(combinedCost), state)
 	);
 	return res.ok
-		? { ok: true, blockerCountsByAttacker: res.blockerCountsByAttacker }
+		? {
+				ok: true,
+				blockerCountsByAttacker: res.blockerCountsByAttacker,
+				...(res.combinedBlockTaxManaCost
+					? { combinedBlockTaxManaCost: res.combinedBlockTaxManaCost }
+					: {})
+			}
 		: { ok: false, error: res.error };
+	// --- End Track P8 + Track P17a ---
 }
 
 function applyValidatedDefenderBlockers(
@@ -9067,6 +9336,11 @@ function advanceBotBlockerDeclarations(state: GameState): boolean {
 					solved.bestLegalAssignment
 				);
 				if (optValidated.ok) {
+					// --- Track P17a ---
+					if (optValidated.combinedBlockTaxManaCost) {
+						payManaWithAutoTap(defPlayer, parseManaCost(optValidated.combinedBlockTaxManaCost), state);
+					}
+					// --- End Track P17a ---
 					applyValidatedDefenderBlockers(
 						state,
 						defPlayer,
@@ -9079,6 +9353,11 @@ function advanceBotBlockerDeclarations(state: GameState): boolean {
 				}
 			}
 		} else {
+			// --- Track P17a ---
+			if (validated.combinedBlockTaxManaCost) {
+				payManaWithAutoTap(defPlayer, parseManaCost(validated.combinedBlockTaxManaCost), state);
+			}
+			// --- End Track P17a ---
 			applyValidatedDefenderBlockers(
 				state,
 				defPlayer,
@@ -9132,6 +9411,16 @@ function findMandatoryAttackerViolation(
 				// --- Track P8 (CR 508.1c–d): Check defender-specific restrictions, cantAttackAlone, and global caps ---
 				const legalDefender = taxFreeOpponents.find((p) => {
 					if (getStaticAttackRestrictionReason(state, perm, p.playerId) !== null) return false;
+					// --- Track P17a ---
+					if (checkDefenderScopedAttackRestriction(state, perm, p.playerId).restricted) return false;
+					if (
+						computeDeclareAttackersTaxSummary(state, actor.playerId, [
+							{ attackerId: perm.instanceId, defenderPlayerId: p.playerId }
+						]).hasTax
+					) {
+						return false;
+					}
+					// --- End Track P17a ---
 					if (currentAssignments.length > 0) {
 						return (
 							getGlobalAttackCapError(state, [
@@ -12194,6 +12483,22 @@ function validateModalChoice(
 		}
 		targetsBySpec.push(slice);
 	}
+	// --- Track P17a: CR 115.1 Flagbearer targeting requirement on modal choices ---
+	if (getRequiredFlagbearerIdsForActor(state, actorId).size > 0) {
+		const flagEntries: Array<{ spec: TargetSpec; chosen: TargetRef[]; legalCandidates: TargetRef[] }> = [];
+		for (let i = 0; i < allSpecs.length; i++) {
+			const entry = allSpecs[i]!;
+			if (!entry.active) continue;
+			flagEntries.push({
+				spec: entry.spec,
+				chosen: targetsBySpec[i] ?? [],
+				legalCandidates: specTargetCandidates(state, actorId, sourceCard, sourceInst, entry.spec)
+			});
+		}
+		const fbCheck = validateFlagbearerTargets(state, actorId, flagEntries);
+		if (!fbCheck.ok) return { ok: false, error: fbCheck.error! };
+	}
+	// --- End Track P17a ---
 	return { ok: true, chosenModes, targetsBySpec };
 }
 
@@ -14473,6 +14778,13 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				applyAltCastEnterCountersWave6(state, perm, item.spellMods.altCastEnterCounters);
 			}
 			// --- End Track P17b ---
+			// --- Track P17a: CR 614.1c static alt-cast entersWithCounters ---
+			if (item.spellMods?.entersWithCounters) {
+				for (const [cKey, cAmt] of Object.entries(item.spellMods.entersWithCounters)) {
+					if (cAmt > 0) addCountersToPermanent(state, perm, cKey as CounterType, cAmt);
+				}
+			}
+			// --- End Track P17a ---
 			// --- Track P12: CR 702.190b Sneak enters tapped and attacking if in combat ---
 			if (item.spellMods?.sneaked && state.combat.active) {
 				perm.tapped = true;
@@ -14582,12 +14894,40 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			) {
 				// --- Track P15: CR 702.99a Cipher exiled & encoded onto controlled creature ---
 			} else if (
-				// --- Track P9 ---
+				// --- Track P9 + Track P17a ---
 				item.castFromZone === 'hand' &&
 				!item.spellMods?.returnToHandOnResolve &&
 				!item.spellMods?.exileOnLeaveStack &&
-				cardHasRebound(item.card, item.faceIndex ?? 0)
-				// --- End Track P9 ---
+				(cardHasRebound(item.card, item.faceIndex ?? 0) ||
+					Boolean(item.grantedSpellKeywords?.includes('rebound')) ||
+					getGrantedSpellKeywordsForSpell(
+						state,
+						controller.playerId,
+						{
+							instanceId: item.sourceInstanceId,
+							card: item.card,
+							ownerId: item.ownerId ?? controller.playerId,
+							controllerId: controller.playerId,
+							zone: 'stack',
+							tapped: false,
+							summoningSick: false,
+							counters: {} as Record<CounterType, number>,
+							isToken: false,
+							damageMarked: 0,
+							deathtouchDamageMarked: false,
+							attachedToId: null,
+							tempPowerMod: 0,
+							tempToughnessMod: 0,
+							grantedKeywords: [],
+							usedLoyaltyThisTurn: false,
+							isCommander: false,
+							commanderCastCount: item.commanderCastCount ?? 0,
+							transformed: false
+						},
+						item.faceIndex ?? 0,
+						Boolean(item.fused)
+					).includes('rebound'))
+				// --- End Track P9 + Track P17a ---
 			) {
 				moveStackSpellToZone(state, item, 'exile');
 				const exiledInst = cardOwner.exile.find((c) => c.instanceId === item.sourceInstanceId);
@@ -15679,7 +16019,10 @@ registerEffectPorts({
 		}
 	},
 	counterSpell: counterStackItemByEffect,
-	createToken: createTokenOnBoard,
+	// --- Track P17a ---
+	createToken: (state, controller, spec) =>
+		createTokenWithWave6Replacements(state, controller, spec, createTokenOnBoard)[0]!,
+	// --- End Track P17a ---
 	copyPermanentAsToken,
 	triggerOnEtb: (state) => flushTriggers(state),
 	triggerOnAttach: (state, _controller, attached, to) => {
@@ -15736,9 +16079,13 @@ registerWave3Host({
 	createTokens: (state, controller, spec, count) => {
 		const out: CardInstance[] = [];
 		const total = Math.max(0, count) * tokenMultiplier(state, controller.playerId);
-		for (let i = 0; i < total; i++) {
-			out.push(createTokenOnBoard(state, controller, spec));
-		}
+		// --- Track P17a ---
+		withSimultaneousZoneBatch(state, () => {
+			for (let i = 0; i < total; i++) {
+				out.push(...createTokenWithWave6Replacements(state, controller, spec, createTokenOnBoard));
+			}
+		});
+		// --- End Track P17a ---
 		return out;
 	},
 	addCountersToPermanent: (state, perm, counterType, amount) => {
@@ -15802,19 +16149,28 @@ registerWave4Host({
 	createTokens: (state, controller, spec, count) => {
 		const out: CardInstance[] = [];
 		const total = Math.max(0, count) * tokenMultiplier(state, controller.playerId);
-		for (let i = 0; i < total; i++) {
-			out.push(
-				createTokenOnBoard(state, controller, {
-					name: spec.name,
-					power: spec.power,
-					toughness: spec.toughness,
-					colors: [...spec.colors],
-					typeLine: spec.typeLine,
-					keywords: [...spec.keywords],
-					tapped: spec.tapped
-				})
-			);
-		}
+		// --- Track P17a ---
+		withSimultaneousZoneBatch(state, () => {
+			for (let i = 0; i < total; i++) {
+				out.push(
+					...createTokenWithWave6Replacements(
+						state,
+						controller,
+						{
+							name: spec.name,
+							power: spec.power,
+							toughness: spec.toughness,
+							colors: [...spec.colors],
+							typeLine: spec.typeLine,
+							keywords: [...spec.keywords],
+							tapped: spec.tapped
+						},
+						createTokenOnBoard
+					)
+				);
+			}
+		});
+		// --- End Track P17a ---
 		return out;
 	},
 	copyPermanentAsToken,
@@ -15854,9 +16210,13 @@ registerWave5Host({
 	createTokens: (state, controller, spec, count) => {
 		const out: CardInstance[] = [];
 		const total = Math.max(0, count) * tokenMultiplier(state, controller.playerId);
-		for (let i = 0; i < total; i++) {
-			out.push(createTokenOnBoard(state, controller, spec));
-		}
+		// --- Track P17a ---
+		withSimultaneousZoneBatch(state, () => {
+			for (let i = 0; i < total; i++) {
+				out.push(...createTokenWithWave6Replacements(state, controller, spec, createTokenOnBoard));
+			}
+		});
+		// --- End Track P17a ---
 		return out;
 	},
 	copyPermanentAsToken,
@@ -16470,12 +16830,30 @@ function initiateLibrarySearch(
 	searchSpec: LibrarySearchSpec,
 	item: StackItem
 ): void {
+	// --- Track P17a: CR 701.19, 101.2 library search locks ("can't search libraries" / "top N cards instead") ---
+	const searchLock = evaluateLibrarySearchLock(state, searchingPlayer.playerId);
+	if (searchLock.cantSearch) {
+		addLog(
+			state,
+			'rule',
+			`${searchingPlayer.username} cannot search libraries (${searchLock.sourceName ?? 'static restriction'}).`,
+			searchingPlayer.playerId
+		);
+		return;
+	}
+	const searchablePool =
+		searchLock.topN !== undefined
+			? searchingPlayer.library.slice(0, Math.max(0, searchLock.topN))
+			: searchingPlayer.library;
+	const searchableIds =
+		searchLock.topN !== undefined ? new Set(searchablePool.map((c) => c.instanceId)) : null;
+	// --- End Track P17a ---
 	const interceptor = getLibrarySearchInterceptor(state, searchingPlayer.playerId);
 	const decisionPlayer = interceptor
 		? state.players.find((p) => p.playerId === interceptor.controllerId) || searchingPlayer
 		: searchingPlayer;
 
-	const matchingCards = searchingPlayer.library.filter((c) =>
+	const matchingCards = searchablePool.filter((c) =>
 		matchesLibrarySearchSpec(
 			c.card,
 			searchSpec,
@@ -16483,17 +16861,19 @@ function initiateLibrarySearch(
 		)
 	);
 	const canFailToFind =
-		searchSpec.statedQuality || searchSpec.upTo || matchingCards.length === 0;
+		searchSpec.statedQuality || searchSpec.upTo || matchingCards.length === 0 || searchableIds !== null;
 
 	if (decisionPlayer.isBot) {
 		const topCardsToPlace: CardInstance[] = [];
 		for (const dest of searchSpec.destinations) {
-			const idx = searchingPlayer.library.findIndex((c) =>
-				matchesLibrarySearchSpec(
-					c.card,
-					searchSpec,
-					resolveObjectFaces(c.card, instanceFaceOptions(c)).colors
-				)
+			const idx = searchingPlayer.library.findIndex(
+				(c) =>
+					(!searchableIds || searchableIds.has(c.instanceId)) &&
+					matchesLibrarySearchSpec(
+						c.card,
+						searchSpec,
+						resolveObjectFaces(c.card, instanceFaceOptions(c)).colors
+					)
 			);
 			if (idx < 0) break;
 			const found = searchingPlayer.library[idx];
@@ -16705,13 +17085,21 @@ export function executeProliferate(
 				}
 			}
 			if (chosenSet.has(pl.playerId)) {
-				if (pl.poison > 0) pl.poison += 1;
+				// --- Track P17a: CR 122.1, 614.1a scale player counter additions ---
+				if (pl.poison > 0) {
+					pl.poison += scalePlayerCountersPlaced(state, pl.playerId, 'poison', 1, controller.playerId);
+				}
 				if ((pl.experienceCounters || 0) > 0) {
-					pl.experienceCounters = (pl.experienceCounters || 0) + 1;
+					pl.experienceCounters =
+						(pl.experienceCounters || 0) +
+						scalePlayerCountersPlaced(state, pl.playerId, 'experience', 1, controller.playerId);
 				}
 				if ((pl.energyCounters || 0) > 0) {
-					pl.energyCounters = (pl.energyCounters || 0) + 1;
+					pl.energyCounters =
+						(pl.energyCounters || 0) +
+						scalePlayerCountersPlaced(state, pl.playerId, 'energy', 1, controller.playerId);
 				}
+				// --- End Track P17a ---
 			}
 		}
 	} else {
@@ -16735,12 +17123,18 @@ export function executeProliferate(
 			}
 		}
 		if (controller.poison === 0) {
+			// --- Track P17a ---
 			if ((controller.experienceCounters || 0) > 0) {
-				controller.experienceCounters = (controller.experienceCounters || 0) + 1;
+				controller.experienceCounters =
+					(controller.experienceCounters || 0) +
+					scalePlayerCountersPlaced(state, controller.playerId, 'experience', 1, controller.playerId);
 			}
 			if ((controller.energyCounters || 0) > 0) {
-				controller.energyCounters = (controller.energyCounters || 0) + 1;
+				controller.energyCounters =
+					(controller.energyCounters || 0) +
+					scalePlayerCountersPlaced(state, controller.playerId, 'energy', 1, controller.playerId);
 			}
+			// --- End Track P17a ---
 		}
 		for (const opp of state.players) {
 			if (opp.playerId === controller.playerId) continue;
@@ -16753,13 +17147,19 @@ export function executeProliferate(
 				}
 			}
 			if (opp.poison > 0) {
-				opp.poison += 1;
+				// --- Track P17a ---
+				opp.poison += scalePlayerCountersPlaced(state, opp.playerId, 'poison', 1, controller.playerId);
 				if ((opp.experienceCounters || 0) > 0) {
-					opp.experienceCounters = (opp.experienceCounters || 0) + 1;
+					opp.experienceCounters =
+						(opp.experienceCounters || 0) +
+						scalePlayerCountersPlaced(state, opp.playerId, 'experience', 1, controller.playerId);
 				}
 				if ((opp.energyCounters || 0) > 0) {
-					opp.energyCounters = (opp.energyCounters || 0) + 1;
+					opp.energyCounters =
+						(opp.energyCounters || 0) +
+						scalePlayerCountersPlaced(state, opp.playerId, 'energy', 1, controller.playerId);
 				}
+				// --- End Track P17a ---
 			}
 		}
 	}
@@ -18453,6 +18853,9 @@ export function checkStateBasedActions(state: GameState): void {
 				const legendaryByName = new Map<string, CardInstance[]>();
 				for (const perm of p.battlefield) {
 					if (perm.phasedOut || perm.isFaceDown || queuedIds.has(perm.instanceId)) continue;
+					// --- Track P17a: CR 704.5j legend rule exemption (e.g. Mirror Box, Mirror Gallery) ---
+					if (isPermanentExemptFromLegendRule(state, perm)) continue;
+					// --- End Track P17a ---
 					const evalPerm = getSbaEval(perm);
 					const name = evalPerm.effectiveName || perm.card.name;
 					if (evalPerm.typeLine.includes('Legendary') && name) {
@@ -20151,6 +20554,41 @@ export function validateChosenTargets(
 		}
 	}
 
+	// --- Track P17a: CR 115.1 Flagbearer targeting requirement ---
+	const flagbearerIds = getRequiredFlagbearerIdsForActor(state, actorId);
+	if (flagbearerIds.size > 0 && targets.length > 0) {
+		const fbSpecs = activeSpecs ?? info.targetSpecs?.filter((sp) => sp.max > 0);
+		const srcInstForFb = sourceInstanceId
+			? findPermanentOnBoard(state, sourceInstanceId)?.inst
+			: undefined;
+		if (fbSpecs && fbSpecs.length > 0 && sourceCard) {
+			const partitionedFb = partitionTargetsBySpecs(targets, info, sourceCard);
+			const fbEntries = fbSpecs.map((spec, idx) => ({
+				spec,
+				chosen: partitionedFb?.[idx] ?? [],
+				legalCandidates: specTargetCandidates(state, actorId, sourceCard, srcInstForFb, spec)
+			}));
+			const fbRes = validateFlagbearerTargets(state, actorId, fbEntries);
+			if (!fbRes.ok) return { ok: false, error: fbRes.error! };
+		} else {
+			const chosenHasFb = targets.some((t) => t.kind === 'permanent' && flagbearerIds.has(t.id));
+			if (!chosenHasFb) {
+				for (const fbId of flagbearerIds) {
+					const fbPerm = findPermanentOnBoard(state, fbId)?.inst;
+					if (!fbPerm) continue;
+					const fbCandidate: TargetRef = { kind: 'permanent', id: fbId, label: fbPerm.card.name };
+					if (validateTargetLegality(state, actorId, fbCandidate, info, sourceCard, sourceInstanceId).ok) {
+						return {
+							ok: false,
+							error: `Strict Rules Violation: You must choose at least one Flagbearer on the battlefield as a target if able (CR 115.1).`
+						};
+					}
+				}
+			}
+		}
+	}
+	// --- End Track P17a ---
+
 	// --- Track P7 ---
 	const dividedCheckSpecs = activeSpecs ?? info.targetSpecs?.filter((sp) => sp.max > 0);
 	if (dividedCheckSpecs?.some((sp) => Boolean(sp.divideTotal))) {
@@ -21520,6 +21958,20 @@ function checkSpellCastOptionLegalityInner(
 		...(option.mandatoryAdditionalCosts ?? []),
 		...extraNonManaDefs
 	];
+	// --- Track P17a: CR 118.3, 601.2h static cost-payment locks on spell legality ---
+	if (combinedCostDefs.length > 0) {
+		const castCostLock = checkWave6CostPaymentLocks(
+			state,
+			actorId,
+			combinedCostDefs,
+			undefined,
+			false
+		);
+		if (!castCostLock.ok) {
+			return { ok: false, error: castCostLock.error! };
+		}
+	}
+	// --- End Track P17a ---
 	if (
 		combinedCostDefs.length > 0 &&
 		!canPayCosts(
@@ -21924,8 +22376,25 @@ function checkAbilityActivationLegalityInner(
 	const costCtx = costContext(state, actor, perm, minAbX, false, abilityMana);
 	// --- End Track P18b ---
 	const checkCost = (): { ok: boolean; error?: string } => {
-		if (canPayCosts(costCtx, abilityCost.defs)) return { ok: true };
-		const plan = planCosts(costCtx, abilityCost.defs);
+		// --- Track P17a: CR 118.3, 702.122a, 702.171a cost locks & Crew/Saddle virtual power ---
+		const costLock = checkWave6CostPaymentLocks(
+			state,
+			actorId,
+			abilityCost.defs,
+			undefined,
+			ab.isManaAbility,
+			perm
+		);
+		if (!costLock.ok) return costLock;
+		const crewAdjusted = adjustCostDefsForCrewSaddleVirtualPower(
+			state,
+			actor,
+			perm,
+			abilityCost.defs
+		);
+		if (canPayCosts(costCtx, crewAdjusted.defs)) return { ok: true };
+		const plan = planCosts(costCtx, crewAdjusted.defs);
+		// --- End Track P17a ---
 		return { ok: false, error: plan.ok ? `You can't pay the cost of ${perm.card.name}'s ability.` : plan.error };
 	};
 
@@ -22661,15 +23130,20 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 		p.handCount = p.hand.length;
 		p.libraryCount = p.library.length;
 		if (p.playerId !== viewerId) {
+			// --- Track P17a: CR 400.2, 402 static hand reveal ("play with their hands revealed") ---
+			const handRevealedByStatic = isPlayerHandRevealedToViewer(state, p.playerId, viewerId);
+			// --- End Track P17a ---
 			// Hide opponent hand contents unless revealed to viewerId (CR 701.20a) or referenced by an active hand choice prompt
-			p.hand =
-				viewerId === null
-					? []
-					: p.hand.filter(
-							(c) =>
-								Boolean(c.knownToPlayerIds?.includes(viewerId)) ||
-								activeHandCandidateIds.has(c.instanceId)
-						);
+			if (!handRevealedByStatic) {
+				p.hand =
+					viewerId === null
+						? []
+						: p.hand.filter(
+								(c) =>
+									Boolean(c.knownToPlayerIds?.includes(viewerId)) ||
+									activeHandCandidateIds.has(c.instanceId)
+							);
+			}
 		}
 		for (const perm of p.battlefield) {
 			scrubFaceDownInstance(perm, 'battlefield', viewerId);
@@ -22702,9 +23176,9 @@ export function sanitizeGameStateForViewer(state: GameState, viewerId: string | 
 		if (scryIds) {
 			p.library = p.library.filter((c) => scryIds.includes(c.instanceId));
 		} else if (!isSearchingThisLibrary) {
-			// --- Track P8 (CR 401.5): Top-of-library look / reveal visibility ---
+			// --- Track P8 + Track P17a (CR 401.5): Top-of-library look / reveal visibility ---
 			const topVis = getPlayerTopOfLibraryVisibility(state, p.playerId);
-			if (topVis.revealToAll) {
+			if (topVis.revealToAll || isPlayerTopLibraryRevealedByGlobalStatic(state, p.playerId)) {
 				p.library = p.library.slice(0, 1);
 			} else if (
 				topVis.lookByController &&
