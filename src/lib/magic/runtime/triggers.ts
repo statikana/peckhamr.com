@@ -144,6 +144,21 @@ import {
 // --- Track P17a ---
 import { applyPendingExileReplacementCounters } from './staticsWave6.ts';
 // --- End Track P17a ---
+// --- Track P19b ---
+import type { Wave7SpellDelayedTrigger } from '../types.ts';
+import {
+	buildDelegatedSubFilterP19b,
+	canEnterInlineManaResolution,
+	consumeP19bSpellDelayedTrigger,
+	evaluateP19bCondition,
+	hasDelegatedObjectFilterFieldsP19b,
+	isP19bInlineManaEvent,
+	matchesManaColorEventFilterP19b,
+	recordP19bDamageState,
+	recordP19bZoneChangeState,
+	resolveTapActorId
+} from './triggersWave7.ts';
+// --- End Track P19b ---
 
 /**
  * How a pending trigger is executed. 'stack': a StackItem put on the stack the next time a player
@@ -237,6 +252,10 @@ export interface PendingTrigger {
 	wave6FaceIndex?: number;
 	sourceTributePaid?: boolean;
 	// --- End Track P18a ---
+	// --- Track P19b ---
+	lastTappedManaColors?: ManaColor[];
+	treasureManaSpent?: boolean;
+	// --- End Track P19b ---
 	/** Match order (deterministic tie-break for a player's own simultaneous triggers). */
 	order: number;
 }
@@ -563,6 +582,10 @@ function persistPendingTriggers(state: GameState, triggers: PendingTrigger[]): v
 			...(t.wave6FaceIndex !== undefined ? { wave6FaceIndex: t.wave6FaceIndex } : {}),
 			...(t.sourceTributePaid ? { sourceTributePaid: true } : {}),
 			// --- End Track P18a ---
+			// --- Track P19b ---
+			...(t.lastTappedManaColors?.length ? { lastTappedManaColors: [...t.lastTappedManaColors] } : {}),
+			...(t.treasureManaSpent ? { treasureManaSpent: true } : {}),
+			// --- End Track P19b ---
 			order: t.order
 		});
 	}
@@ -636,6 +659,10 @@ function hydratePendingTriggers(state: GameState, ch: TriggerChannel): void {
 		...(t.wave6FaceIndex !== undefined ? { wave6FaceIndex: t.wave6FaceIndex } : {}),
 		...(t.sourceTributePaid ? { sourceTributePaid: true } : {}),
 		// --- End Track P18a ---
+		// --- Track P19b ---
+		...(t.lastTappedManaColors?.length ? { lastTappedManaColors: [...t.lastTappedManaColors] } : {}),
+		...(t.treasureManaSpent ? { treasureManaSpent: true } : {}),
+		// --- End Track P19b ---
 		order: t.order
 	}));
 	ch.pending = [...hydrated, ...ch.pending];
@@ -1236,6 +1263,30 @@ function filterMatches(f: ObjectFilter, subject: Subject, source: Viewer): boole
 		}
 	}
 	// --- End Track P16b ---
+	// --- Track P19b ---
+	if (f.named !== undefined) {
+		if (subject.isFaceDown || subject.name().toLowerCase() !== f.named.toLowerCase()) {
+			return false;
+		}
+	}
+	if (f.allColors?.length) {
+		if (!f.allColors.every((c) => subject.colors.includes(c))) return false;
+	}
+	if (stP16b && hasDelegatedObjectFilterFieldsP19b(f)) {
+		const srcPermP19b = source.sourceObj ?? permanentById(stP16b, source.id)?.obj;
+		if (
+			!matchesObjectFilter(subject.obj, buildDelegatedSubFilterP19b(f), {
+				state: stP16b,
+				controllerId: source.controllerId,
+				source: srcPermP19b,
+				zone: subject.zone ?? subject.obj.zone,
+				stackItem: subject.stackItem
+			})
+		) {
+			return false;
+		}
+	}
+	// --- End Track P19b ---
 	return true;
 }
 
@@ -1309,6 +1360,9 @@ interface Source {
 	chosenCardName?: string;
 	grantedTrigger?: GrantedTriggeredAbilityInstance;
 	// --- End Track P11 ---
+	// --- Track P19b ---
+	wave7SpellDelayed?: { entry: Wave7SpellDelayedTrigger; runtimeTrigger: RuntimeTrigger };
+	// --- End Track P19b ---
 }
 
 // --- Track P10: Compile quoted EOT-granted triggered abilities on demand ---
@@ -1531,6 +1585,27 @@ function sources(state: GameState, kind: EventKind): Source[] {
 		}
 		// --- End Track P13 ---
 	}
+	// --- Track P19b: Spell-created event-driven delayed triggers (CR 603.7a–b) ---
+	if (state.wave7SpellDelayedTriggers?.length) {
+		for (const dt of state.wave7SpellDelayedTriggers) {
+			const ctrl = state.players.find((pl) => pl.playerId === dt.controllerId && !pl.lost);
+			if (!ctrl) continue;
+			const rt = triggersOf(dt.sourceCard, dt.faceIndex).all.find(
+				(a) => a.abilityIndex === dt.abilityIndex
+			);
+			if (!rt) continue;
+			if (!alternatives(rt.trigger).some((alt) => alt.event === kind)) continue;
+			out.push({
+				obj: makeSynthCardInstance(dt.sourceInstanceId, dt.sourceCard, dt.controllerId, 'command'),
+				card: dt.sourceCard,
+				faceIndex: dt.faceIndex,
+				controllerId: dt.controllerId,
+				zone: 'command',
+				wave7SpellDelayed: { entry: dt, runtimeTrigger: rt }
+			});
+		}
+	}
+	// --- End Track P19b ---
 	return out;
 }
 
@@ -1544,6 +1619,13 @@ function abilitiesFor(
 	kind: EventKind,
 	pre: (alt: TriggerDef) => boolean = () => true
 ): Array<{ ability: RuntimeTrigger; alts: TriggerDef[]; grantedAbilityText?: string }> {
+	// --- Track P19b: Spell-created event-driven delayed triggers (CR 603.7a–b) ---
+	if (source.wave7SpellDelayed) {
+		const ability = source.wave7SpellDelayed.runtimeTrigger;
+		const alts = alternatives(ability.trigger).filter((a) => a.event === kind && pre(a));
+		return alts.length > 0 ? [{ ability, alts }] : [];
+	}
+	// --- End Track P19b ---
 	// --- Track P11: Layer 6 granted triggered abilities (CR 113.7a, 613.7e) ---
 	if (source.grantedTrigger) {
 		const ability = source.grantedTrigger.runtimeTrigger;
@@ -1578,6 +1660,9 @@ function abilitiesFor(
 	for (const ability of triggersOf(source.card, source.faceIndex ?? 0).all) {
 		// --- Track P16b & P18a: per-alternative fromZone matching for mixed-zone compound triggers (CR 603.1b) ---
 		const altMatchesZone = (a: TriggerDef): boolean => {
+			// --- Track P19b: spell-delayed abilities fire only via `wave7SpellDelayedTriggers` ---
+			if (a.spellDelayed || ability.trigger.spellDelayed) return false;
+			// --- End Track P19b ---
 			const zone = a.fromZone ?? ability.trigger.fromZone ?? 'battlefield';
 			if (zone === 'any' || isEmblemSource || isHauntExileSource) return true;
 			if (source.zone === 'stack') return kind === 'cast';
@@ -1656,6 +1741,9 @@ interface MatchExtras {
 	// --- Track P15 ---
 	gravestormCount?: number;
 	// --- End Track P15 ---
+	// --- Track P19b ---
+	lastTappedManaColors?: ManaColor[];
+	// --- End Track P19b ---
 }
 
 function record(state: GameState, source: Source, ability: RuntimeTrigger, kind: EventKind, extras: MatchExtras): void {
@@ -1713,6 +1801,16 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 		(state.triggeredOnceThisTurn ??= []).push(onceKey);
 		count = 1;
 	}
+	// --- Track P19b ---
+	if (source.wave7SpellDelayed) {
+		consumeP19bSpellDelayedTrigger(state, source.wave7SpellDelayed.entry.id);
+	}
+	const treasureManaSpent = Boolean(
+		source.obj.treasureManaSpent ||
+			extras.eventObject?.treasureManaSpent ||
+			extras.triggerEventStackItem?.treasureManaSpent
+	);
+	// --- End Track P19b ---
 	const sourceForetold = Boolean(source.foretold ?? source.obj.foretold);
 	const sourceBlitzed = Boolean(source.blitzed ?? source.obj.blitzed);
 	const sourceExertedThisTurn = Boolean(source.exerted ?? source.obj.exertedThisTurn);
@@ -1818,6 +1916,12 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
 				? { wave6FaceIndex: (ability as Wave6RuntimeTrigger).wave6FaceIndex }
 				: {}),
 			// --- End Track P18a ---
+			// --- Track P19b ---
+			...(extras.lastTappedManaColors?.length
+				? { lastTappedManaColors: [...extras.lastTappedManaColors] }
+				: {}),
+			...(treasureManaSpent ? { treasureManaSpent: true } : {}),
+			// --- End Track P19b ---
 			eventPlayer: extras.eventPlayer ?? extras.eventPlayerId,
 			defendingPlayerId: extras.defendingPlayerId,
 			order: ch.nextOrder++
@@ -1833,9 +1937,19 @@ function record(state: GameState, source: Source, ability: RuntimeTrigger, kind:
  */
 function modeFor(kind: EventKind, _source: Source, ability?: RuntimeTrigger): TriggerMode {
 	const e = ability?.effect;
-	if (kind === 'tappedForMana' && e && !e.modal && e.targets.length === 0 && e.steps.length > 0 && e.steps.every((st) => st.verb === 'addMana')) {
+	// --- Track P19b: CR 605.1b, 605.4a stackless triggered mana abilities ---
+	if (
+		isP19bInlineManaEvent(kind) &&
+		canEnterInlineManaResolution() &&
+		e &&
+		!e.modal &&
+		e.targets.length === 0 &&
+		e.steps.length > 0 &&
+		e.steps.every((st) => st.verb === 'addMana')
+	) {
 		return 'inline';
 	}
+	// --- End Track P19b ---
 	return 'stack';
 }
 
@@ -1895,8 +2009,15 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 			return matchObjectActionEvent(state, ev, 'explore', 'Explore Trigger');
 		case 'Connived':
 			return matchObjectActionEvent(state, ev, 'connive', 'Connive Trigger', ev.nonlandDiscardedCount);
-		case 'BecomesCrewed':
+		case 'BecomesCrewed': {
+			// --- Track P19b ---
+			const crewFound = permanentById(state, ev.objectId);
+			if (crewFound) {
+				crewFound.obj.crewedCountThisTurn = (crewFound.obj.crewedCountThisTurn ?? 0) + 1;
+			}
+			// --- End Track P19b ---
 			return matchObjectActionEvent(state, ev, 'becomesCrewed', 'Crew Trigger');
+		}
 		case 'BecomesSaddled':
 			return matchObjectActionEvent(state, ev, 'becomesSaddled', 'Saddle Trigger');
 		case 'Foretold':
@@ -2002,6 +2123,26 @@ function matchTriggersInner(state: GameState, ev: GameEvent): void {
 		case 'PlayerTargeted':
 			return matchPlayerTargeted(state, ev);
 		// --- End Track P16b & P18a ---
+		// --- Track P19b ---
+		case 'ManaAddedByLandAbility':
+			return matchManaAddedByLandAbility(state, ev);
+		case 'LibrarySearched':
+			return matchLibrarySearched(state, ev);
+		case 'PlayerLostGame':
+			return matchPlayerLostGame(state, ev);
+		case 'CoinFlipped':
+			return matchCoinFlipped(state, ev);
+		case 'DieRolled':
+			return matchDieRolled(state, ev);
+		case 'EnergyGained':
+			return matchEnergyGained(state, ev);
+		case 'Proliferated':
+			return matchProliferated(state, ev);
+		case 'Evolved':
+			return matchEvolved(state, ev);
+		case 'CrewedVehicle':
+			return matchCrewedVehicle(state, ev);
+		// --- End Track P19b ---
 	}
 }
 
@@ -2258,12 +2399,22 @@ function matchDayNightChanged(
 
 function matchLifeLost(state: GameState, ev: Extract<GameEvent, { kind: 'LifeLost' }>): void {
 	if (ev.amount <= 0) return;
+	// --- Track P19b ---
+	const loser = state.players.find((p) => p.playerId === ev.playerId);
+	const lossOrdinal = loser ? (loser.lifeLossEventsThisTurn = (loser.lifeLossEventsThisTurn ?? 0) + 1) : 1;
+	// --- End Track P19b ---
 	for (const source of sources(state, 'loseLife')) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'loseLife')) {
 			const alt = alts.find((a) => {
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				// --- Track P19b ---
+				if (a.filter.firstTimeEachTurn && lossOrdinal !== 1) return false;
+				if (a.filter.nthEventThisTurn !== undefined && lossOrdinal !== a.filter.nthEventThisTurn) {
+					return false;
+				}
+				// --- End Track P19b ---
 				if (
 					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
 				) {
@@ -2356,6 +2507,14 @@ function matchLandPlayed(state: GameState, ev: Extract<GameEvent, { kind: 'LandP
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				// --- Track P19b ---
+				if (a.filter.castFromZone !== undefined && ev.fromZone !== a.filter.castFromZone) {
+					return false;
+				}
+				if (a.filter.castFromNotHand && (!ev.fromZone || ev.fromZone === 'hand')) {
+					return false;
+				}
+				// --- End Track P19b ---
 				if (
 					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
 				) {
@@ -2421,6 +2580,248 @@ function matchPlayerTargeted(
 	}
 }
 // --- End Track P16b & P18a ---
+
+// --- Track P19b ---
+function matchManaAddedByLandAbility(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'ManaAddedByLandAbility' }>
+): void {
+	const found = permanentById(state, ev.objectId);
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.playerId, false, undefined, ev.object.tapped, undefined, false, false, { state });
+	for (const source of sources(state, 'manaAddedByLandAbility')) {
+		const srcChosenColor = source.chosenColor ?? source.obj.chosenColor;
+		for (const { ability, alts } of abilitiesFor(state, source, 'manaAddedByLandAbility')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (!matchesManaColorEventFilterP19b(a.filter, ev.producedColors, srcChosenColor)) {
+					return false;
+				}
+				if (a.filter.object !== undefined && !objectMatches(a.filter, subject, source)) {
+					return false;
+				}
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'manaAddedByLandAbility', {
+				label: 'Mana Trigger',
+				eventObject: found?.obj ?? ev.object,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				lastTappedManaColors: ev.producedColors
+			});
+		}
+	}
+}
+
+function matchLibrarySearched(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'LibrarySearched' }>
+): void {
+	for (const source of sources(state, 'librarySearched')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'librarySearched')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'librarySearched', {
+				label: 'Library Search Trigger',
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId
+			});
+		}
+	}
+}
+
+function matchPlayerLostGame(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'PlayerLostGame' }>
+): void {
+	for (const source of sources(state, 'playerLostGame')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'playerLostGame')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'playerLostGame', {
+				label: 'Player Lost Trigger',
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId
+			});
+		}
+	}
+}
+
+function matchCoinFlipped(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'CoinFlipped' }>
+): void {
+	for (const source of sources(state, 'coinFlipped')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'coinFlipped')) {
+			const flips = ev.flips ?? 1;
+			const wins = ev.wins ?? (ev.won ? 1 : 0);
+			const losses = Math.max(0, flips - wins);
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (a.filter.wonCoinFlip === true && !ev.won) return false;
+				if (a.filter.wonCoinFlip === false && losses <= 0) return false;
+				return true;
+			});
+			if (!alt) continue;
+			const baseTimes = alt.filter.oneOrMore
+				? 1
+				: alt.filter.wonCoinFlip === true
+					? Math.max(1, wins)
+					: alt.filter.wonCoinFlip === false
+						? Math.max(1, losses)
+						: Math.max(1, flips);
+			const mult =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, { event: 'coinFlipped' })
+					: 1;
+			record(state, source, ability, 'coinFlipped', {
+				label:
+					alt.filter.wonCoinFlip === true
+						? 'Coin Flip Won'
+						: alt.filter.wonCoinFlip === false
+							? 'Coin Flip Lost'
+							: 'Coin Flip Trigger',
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				times: baseTimes * mult
+			});
+		}
+	}
+}
+
+function matchDieRolled(state: GameState, ev: Extract<GameEvent, { kind: 'DieRolled' }>): void {
+	for (const source of sources(state, 'dieRolled')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'dieRolled')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (a.filter.dieRollMin !== undefined && ev.result < a.filter.dieRollMin) return false;
+				if (a.filter.dieRollValues?.length && !a.filter.dieRollValues.includes(ev.result)) {
+					return false;
+				}
+				return true;
+			});
+			if (!alt) continue;
+			const baseTimes = alt.filter.oneOrMore ? 1 : Math.max(1, ev.count ?? 1);
+			const mult =
+				source.zone === 'battlefield'
+					? triggerMultiplier(state, source.obj, source.controllerId, { event: 'dieRolled' })
+					: 1;
+			record(state, source, ability, 'dieRolled', {
+				label: 'Die Roll Trigger',
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				amount: ev.result,
+				times: baseTimes * mult
+			});
+		}
+	}
+}
+
+function matchEnergyGained(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'EnergyGained' }>
+): void {
+	if (ev.amount <= 0) return;
+	for (const source of sources(state, 'energyGained')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'energyGained')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'energyGained', {
+				label: 'Energy Trigger',
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId,
+				amount: ev.amount
+			});
+		}
+	}
+}
+
+function matchProliferated(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'Proliferated' }>
+): void {
+	for (const source of sources(state, 'proliferated')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'proliferated')) {
+			const alt = alts.find((a) => {
+				const rel = a.filter.player?.relation ?? 'any';
+				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
+				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				return true;
+			});
+			if (!alt) continue;
+			record(state, source, ability, 'proliferated', {
+				label: 'Proliferate Trigger',
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId
+			});
+		}
+	}
+}
+
+function matchEvolved(state: GameState, ev: Extract<GameEvent, { kind: 'Evolved' }>): void {
+	const found = permanentById(state, ev.objectId);
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.playerId, false, undefined, undefined, undefined, false, false, { state });
+	for (const source of sources(state, 'evolved')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'evolved')) {
+			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
+			if (!alt) continue;
+			record(state, source, ability, 'evolved', {
+				label: 'Evolve Trigger',
+				eventObject: found?.obj ?? ev.object,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId
+			});
+		}
+	}
+}
+
+function matchCrewedVehicle(
+	state: GameState,
+	ev: Extract<GameEvent, { kind: 'CrewedVehicle' }>
+): void {
+	const found = permanentById(state, ev.creatureId);
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(ev.creature, ev.creature.copiableCard ?? ev.creature.card, ev.playerId, false, undefined, undefined, undefined, false, false, { state });
+	for (const source of sources(state, 'crewedVehicle')) {
+		for (const { ability, alts } of abilitiesFor(state, source, 'crewedVehicle')) {
+			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
+			if (!alt) continue;
+			record(state, source, ability, 'crewedVehicle', {
+				label: 'Crew Trigger',
+				eventObject: found?.obj ?? ev.creature,
+				eventPlayer: ev.playerId,
+				eventPlayerId: ev.playerId
+			});
+		}
+	}
+}
+// --- End Track P19b ---
 
 // --- Track P13 & P15 ---
 function matchDoorUnlocked(
@@ -3225,12 +3626,22 @@ function matchSurveilled(state: GameState, ev: Extract<GameEvent, { kind: 'Surve
 
 function matchGainLife(state: GameState, ev: Extract<GameEvent, { kind: 'GainLife' }>): void {
 	if (ev.amount <= 0) return;
+	// --- Track P19b ---
+	const gainer = state.players.find((p) => p.playerId === ev.playerId);
+	const gainOrdinal = gainer ? (gainer.lifeGainEventsThisTurn = (gainer.lifeGainEventsThisTurn ?? 0) + 1) : 1;
+	// --- End Track P19b ---
 	for (const source of sources(state, 'gainLife')) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'gainLife')) {
 			const alt = alts.find((a) => {
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				// --- Track P19b ---
+				if (a.filter.firstTimeEachTurn && gainOrdinal !== 1) return false;
+				if (a.filter.nthEventThisTurn !== undefined && gainOrdinal !== a.filter.nthEventThisTurn) {
+					return false;
+				}
+				// --- End Track P19b ---
 				// --- Track P16b ---
 				if (
 					!matchesDuringTurnFilter(state, a.filter.duringTurn, source.controllerId, ev.playerId)
@@ -3435,7 +3846,18 @@ function matchObjectActionEvent(
 		: printedSubject(ev.object, ev.object.copiableCard ?? ev.object.card, ev.playerId);
 	for (const source of sources(state, event)) {
 		for (const { ability, alts } of abilitiesFor(state, source, event)) {
-			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
+			const alt = alts.find((a) => {
+				// --- Track P19b ---
+				if (event === 'becomesCrewed') {
+					const crewOrd = (found?.obj ?? ev.object).crewedCountThisTurn ?? 1;
+					if (a.filter.firstTimeEachTurn && crewOrd !== 1) return false;
+					if (a.filter.nthEventThisTurn !== undefined && crewOrd !== a.filter.nthEventThisTurn) {
+						return false;
+					}
+				}
+				// --- End Track P19b ---
+				return objectMatches(a.filter, subject, source);
+			});
 			if (alt) {
 				record(state, source, ability, event, {
 					label,
@@ -3515,9 +3937,23 @@ function matchBecomesTapped(state: GameState, ev: Extract<GameEvent, { kind: 'Be
 	const found = permanentById(state, ev.objectId);
 	if (!found) return;
 	const subject = battlefieldSubject(state, found.obj, found.controllerId);
+	// --- Track P19b ---
+	const tapActorId = resolveTapActorId(state, ev.actorId);
+	// --- End Track P19b ---
 	for (const source of sources(state, 'becomesTapped')) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'becomesTapped')) {
-			const alt = alts.find((a) => objectMatches(a.filter, subject, source));
+			const alt = alts.find((a) => {
+				// --- Track P19b ---
+				if (a.filter.tappedByPlayer === 'you' && tapActorId !== source.controllerId) return false;
+				if (
+					a.filter.tappedByPlayer === 'opponent' &&
+					(!tapActorId || tapActorId === source.controllerId)
+				) {
+					return false;
+				}
+				// --- End Track P19b ---
+				return objectMatches(a.filter, subject, source);
+			});
 			if (alt) {
 				record(state, source, ability, 'becomesTapped', {
 					label: 'Tap Trigger',
@@ -3531,19 +3967,45 @@ function matchBecomesTapped(state: GameState, ev: Extract<GameEvent, { kind: 'Be
 
 function matchTappedForMana(state: GameState, ev: Extract<GameEvent, { kind: 'TappedForMana' }>): void {
 	const found = permanentById(state, ev.objectId);
-	if (!found) return;
-	const subject = battlefieldSubject(state, found.obj, found.controllerId);
+	// --- Track P19b: support sacrificed mana permanents (e.g. Treasure) and produced color filters ---
+	const subject = found
+		? battlefieldSubject(state, found.obj, found.controllerId)
+		: printedSubject(
+				ev.object,
+				ev.object.copiableCard ?? ev.object.card,
+				ev.playerId,
+				false,
+				undefined,
+				true,
+				undefined,
+				false,
+				false,
+				{ state }
+			);
 	for (const source of sources(state, 'tappedForMana')) {
+		const srcChosenColor = source.chosenColor ?? source.obj.chosenColor;
 		for (const { ability, alts } of abilitiesFor(state, source, 'tappedForMana')) {
 			const alt = alts.find((a) => {
 				const rel = a.filter.player?.relation ?? 'any';
 				if (rel === 'you' && ev.playerId !== source.controllerId) return false;
 				if (rel === 'opponent' && ev.playerId === source.controllerId) return false;
+				if (!matchesManaColorEventFilterP19b(a.filter, ev.producedColors, srcChosenColor)) {
+					return false;
+				}
 				return objectMatches(a.filter, subject, source);
 			});
-			if (alt) record(state, source, ability, 'tappedForMana', { label: 'Mana Trigger', eventObject: found.obj, eventPlayer: ev.playerId });
+			if (alt) {
+				record(state, source, ability, 'tappedForMana', {
+					label: 'Mana Trigger',
+					eventObject: found?.obj ?? ev.object,
+					eventPlayer: ev.playerId,
+					eventPlayerId: ev.playerId,
+					lastTappedManaColors: ev.producedColors
+				});
+			}
 		}
 	}
+	// --- End Track P19b ---
 }
 
 function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneChange' }>): void {
@@ -3554,6 +4016,17 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 	}
 	// --- End Track P17a ---
 	if (ev.to === 'battlefield' && obj.phasedOut) return;
+	// --- Track P19b ---
+	recordP19bZoneChangeState(state, ev);
+	const inCombatNow =
+		state.combat.active ||
+		state.phase === 'begin_combat' ||
+		state.phase === 'declare_attackers' ||
+		state.phase === 'declare_blockers' ||
+		state.phase === 'first_strike_damage' ||
+		state.phase === 'combat_damage' ||
+		state.phase === 'end_combat';
+	// --- End Track P19b ---
 	const batchLki = ev.from === 'battlefield' ? channel(state).simultaneousLki : undefined;
 	const objBatchInfo = batchLki?.get(obj);
 	const subject: Subject =
@@ -3632,6 +4105,10 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 		(alt.filter.notFromZone === undefined || ev.from !== alt.filter.notFromZone) &&
 		(!alt.filter.entersUntapped || (enters && !obj.tapped)) &&
 		// --- End Track P16b ---
+		// --- Track P19b ---
+		(!alt.filter.duringStep || state.phase === alt.filter.duringStep) &&
+		(!alt.filter.duringCombat || inCombatNow) &&
+		// --- End Track P19b ---
 		(alt.filter.to === undefined || alt.filter.to === ev.to) &&
 		(alt.filter.from !== undefined || alt.filter.to !== undefined);
 	let amount: number | undefined;
@@ -3881,6 +4358,14 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 					return false;
 				}
 				// --- End Track P16b ---
+				// --- Track P19b: player filter on zoneChange (e.g. "Whenever an opponent mills one or more cards") ---
+				if (a.filter.player) {
+					const affectedPid = ev.toPlayerId ?? ev.fromPlayerId ?? obj.ownerId;
+					const rel = a.filter.player.relation ?? 'any';
+					if (rel === 'you' && affectedPid !== source.controllerId) return false;
+					if (rel === 'opponent' && affectedPid === source.controllerId) return false;
+				}
+				// --- End Track P19b ---
 				return objectMatches(
 					a.filter,
 					a.filter.fromAnywhere ? postMoveSubject : subject,
@@ -3909,7 +4394,12 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 						? (ch.zoneBatchTriggeredKeys = new Set())
 						: undefined);
 				if (batchSet) {
-					const batchKey = `${source.obj.instanceId}:${source.zone}:${source.faceIndex ?? 0}:${ability.abilityIndex}:${ev.from ?? ''}->${ev.to}`;
+					// --- Track P19b: scope per-player mill batching when `alt.filter.player` is present ---
+					const playerSuffix = alt.filter.player
+						? `:${ev.toPlayerId ?? ev.fromPlayerId ?? obj.ownerId}`
+						: '';
+					const batchKey = `${source.obj.instanceId}:${source.zone}:${source.faceIndex ?? 0}:${ability.abilityIndex}:${ev.from ?? ''}->${ev.to}${playerSuffix}`;
+					// --- End Track P19b ---
 					if (batchSet.has(batchKey)) continue;
 					batchSet.add(batchKey);
 				}
@@ -3956,7 +4446,17 @@ function matchZoneChange(state: GameState, ev: Extract<GameEvent, { kind: 'ZoneC
 								...(ev.lki.counters ? { counters: { ...ev.lki.counters } } : {})
 							}
 						: undefined;
-			record(state, source, ability, 'zoneChange', { label: label(source, alt), eventObject: obj, amount: enteredPower(), times, eventLki });
+			const zcAffectedPid = ev.toPlayerId ?? ev.fromPlayerId ?? obj.ownerId;
+			record(state, source, ability, 'zoneChange', {
+				label: label(source, alt),
+				eventObject: obj,
+				amount: enteredPower(),
+				times,
+				eventLki,
+				...(alt.filter.player
+					? { eventPlayer: zcAffectedPid, eventPlayerId: zcAffectedPid }
+					: {})
+			});
 		}
 	}
 	// --- Track P15: CR 702.174b Gift on permanent ETB ("When this permanent enters, if its gift cost was paid, ...") ---
@@ -4517,6 +5017,23 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 		.map((id) => permanentById(state, id))
 		.filter((a): a is NonNullable<typeof a> => Boolean(a))
 		.map((a) => battlefieldSubject(state, a.obj, a.controllerId));
+	// --- Track P19b: track per-turn attack declarations per permanent (CR 508.1k) ---
+	for (const atk of attackers) {
+		atk.obj.attacksCountThisTurn = (atk.obj.attacksCountThisTurn ?? 0) + 1;
+	}
+	const matchesAttackTurnOrdinal = (f: EventFilter, atkObj: CardInstance): boolean => {
+		if (f.firstTimeEachTurn && (atkObj.attacksCountThisTurn ?? 0) !== 1) return false;
+		if (f.nthEventThisTurn !== undefined && (atkObj.attacksCountThisTurn ?? 0) !== f.nthEventThisTurn) {
+			return false;
+		}
+		return true;
+	};
+	const directAttackedPlayerId = (atkId: string): string | undefined => {
+		const entry = state.combat.attackers.find((a) => a.attackerInstanceId === atkId);
+		if (!entry || entry.defenderPlaneswalkerId || entry.defenderBattleId) return undefined;
+		return entry.defenderPlayerId;
+	};
+	// --- End Track P19b ---
 	const attackerDefenderId = (id: string): string | undefined =>
 		state.combat.attackers.find((a) => a.attackerInstanceId === id)?.defenderPlayerId;
 
@@ -4611,6 +5128,46 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 					const targetFiltered = f.attackedTarget
 						? attackers.filter((s) => matchesAttackedTarget(s.obj.instanceId))
 						: attackers;
+					// --- Track P19b: CR 508.3e per-attacked-player batching & minAttackers on targetFiltered ---
+					if (playerMatches && f.perAttackedPlayer) {
+						const byDefender = new Map<string, Subject[]>();
+						for (const s of targetFiltered) {
+							const defPid = directAttackedPlayerId(s.obj.instanceId);
+							if (!defPid) continue;
+							let list = byDefender.get(defPid);
+							if (!list) {
+								list = [];
+								byDefender.set(defPid, list);
+							}
+							list.push(s);
+						}
+						let firedAny = false;
+						for (const [defPid, group] of byDefender) {
+							if (f.minAttackers !== undefined && group.length < f.minAttackers) continue;
+							const times =
+								source.zone === 'battlefield'
+									? triggerMultiplier(state, source.obj, source.controllerId, {
+											event: 'attacks',
+											attackers: group.map((s) => s.obj)
+										})
+									: 1;
+							record(state, source, ability, 'attacks', {
+								label: 'Attack',
+								times,
+								eventPlayer: defPid,
+								eventPlayerId: defPid,
+								defendingPlayerId: defPid,
+								amount: group.length
+							});
+							firedAny = true;
+						}
+						if (firedAny) break;
+						continue;
+					}
+					if (f.minAttackers !== undefined && targetFiltered.length < f.minAttackers) {
+						continue;
+					}
+					// --- End Track P19b ---
 					if (playerMatches && targetFiltered.length > 0) {
 						const times =
 							source.zone === 'battlefield'
@@ -4632,9 +5189,51 @@ function matchAttack(state: GameState, attackingPlayerId: string, attackerIds: s
 				}
 				// --- End Track P10 ---
 				const matching = attackers.filter(
-					(s) => objectMatches(f, s, source) && matchesAttackedTarget(s.obj.instanceId)
+					(s) =>
+						objectMatches(f, s, source) &&
+						matchesAttackedTarget(s.obj.instanceId) &&
+						// --- Track P19b ---
+						matchesAttackTurnOrdinal(f, s.obj)
+						// --- End Track P19b ---
 				);
 				if (matching.length === 0) continue;
+				// --- Track P19b: CR 508.3e "Whenever N or more <filter> you control attack a player" ---
+				if (f.perAttackedPlayer && f.object !== 'self') {
+					const byDefender = new Map<string, Subject[]>();
+					for (const s of matching) {
+						const defPid = directAttackedPlayerId(s.obj.instanceId);
+						if (!defPid) continue;
+						let list = byDefender.get(defPid);
+						if (!list) {
+							list = [];
+							byDefender.set(defPid, list);
+						}
+						list.push(s);
+					}
+					let firedAny = false;
+					for (const [defPid, group] of byDefender) {
+						if (f.minAttackers !== undefined && group.length < f.minAttackers) continue;
+						const times =
+							source.zone === 'battlefield'
+								? triggerMultiplier(state, source.obj, source.controllerId, {
+										event: 'attacks',
+										attackers: group.map((s) => s.obj)
+									})
+								: 1;
+						record(state, source, ability, 'attacks', {
+							label: ability.text || 'Attack',
+							times,
+							eventPlayer: defPid,
+							eventPlayerId: defPid,
+							defendingPlayerId: defPid,
+							amount: group.length
+						});
+						firedAny = true;
+					}
+					if (firedAny) break;
+					continue;
+				}
+				// --- End Track P19b ---
 				if (f.minAttackers !== undefined && f.object !== 'self' && matching.length < f.minAttackers) {
 					continue;
 				}
@@ -5033,6 +5632,9 @@ function matchBlocks(state: GameState, defenderId: string, blocks: Array<{ block
 
 function matchDamage(state: GameState, ev: Extract<GameEvent, { kind: 'DamageDealt' }>): void {
 	if (ev.amount <= 0) return;
+	// --- Track P19b ---
+	recordP19bDamageState(state, ev);
+	// --- End Track P19b ---
 	const dealer = permanentById(state, ev.sourceId);
 	const damaged = ev.targetKind === 'permanent' ? permanentById(state, ev.targetId) : null;
 	const damagedEval = damaged ? evaluatePermanent(state, damaged.obj) : null;
@@ -5075,6 +5677,22 @@ function matchDamage(state: GameState, ev: Extract<GameEvent, { kind: 'DamageDea
 					if (a.filter.noncombatOnly && ev.combat) return false;
 					if (!damageTargetKindFits(a.filter.damageTargetKind)) return false;
 					// --- End Track P16b ---
+					// --- Track P19b ---
+					if (a.filter.damageTargetEnchantedPlayer) {
+						if (
+							ev.targetKind !== 'player' ||
+							!source.obj.attachedToId ||
+							ev.targetId !== source.obj.attachedToId
+						) {
+							return false;
+						}
+					}
+					if (a.filter.damageTargetFilter) {
+						if (!damagedSubject || !filterMatches(a.filter.damageTargetFilter, damagedSubject, viewerOf(source))) {
+							return false;
+						}
+					}
+					// --- End Track P19b ---
 					// --- Track P7 ---
 					const rel = a.filter.damagePlayerRelation ?? a.filter.player?.relation ?? 'any';
 					const damagedPid =
@@ -5363,6 +5981,17 @@ function matchCounter(state: GameState, ev: Extract<GameEvent, { kind: 'CounterP
 			const matchedAlt = alts.find((a) => {
 				if (a.isChapterAbility) return false;
 				if (a.filter.counter && a.filter.counter !== ev.counterType) return false;
+				// --- Track P19b: ordinal Nth counter threshold on self (prev < N && next >= N) ---
+				if (a.filter.nthCounterOnSelf !== undefined) {
+					if (source.obj.instanceId !== ev.objectId) return false;
+					const nextCnt =
+						ev.newCount ??
+						((ev.object.counters as Record<string, number>)[ev.counterType] || 0);
+					const prevCnt = ev.previousCount ?? nextCnt - ev.amount;
+					const n = a.filter.nthCounterOnSelf;
+					if (!(prevCnt < n && nextCnt >= n)) return false;
+				}
+				// --- End Track P19b ---
 				if (a.filter.putByPlayer === 'you' && ev.actorId !== source.controllerId) return false;
 				if (a.filter.putByPlayer === 'opponent' && (!ev.actorId || ev.actorId === source.controllerId)) {
 					return false;
@@ -5447,6 +6076,9 @@ function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameT
 	const priorTargeterIds = found.obj.targetedByControllerIdsThisTurn ?? [];
 	const wasFirstTargetByController = !priorTargeterIds.includes(ev.controllerId);
 	// --- End Track P13 ---
+	// --- Track P19b: per-turn target ordinal on permanent ("for the first time each turn") ---
+	const targetOrdinal = (found.obj.targetedCountThisTurn = (found.obj.targetedCountThisTurn ?? 0) + 1);
+	// --- End Track P19b ---
 	for (const source of sources(state, 'becomesTarget')) {
 		for (const { ability, alts } of abilitiesFor(state, source, 'becomesTarget')) {
 			if (ability.ward) {
@@ -5472,6 +6104,12 @@ function matchTargeted(state: GameState, ev: Extract<GameEvent, { kind: 'BecameT
 					if (ev.controllerId !== source.controllerId || !wasFirstTargetByController) return false;
 				}
 				// --- End Track P13 ---
+				// --- Track P19b ---
+				if (a.filter.firstTimeEachTurn && targetOrdinal !== 1) return false;
+				if (a.filter.nthEventThisTurn !== undefined && targetOrdinal !== a.filter.nthEventThisTurn) {
+					return false;
+				}
+				// --- End Track P19b ---
 				// --- Track P16b ---
 				if (
 					a.filter.targetingSourceFilter &&
@@ -6198,6 +6836,24 @@ export function evaluateCondition(
 		);
 	}
 	// --- End Track P16b ---
+	// --- Track P19b ---
+	const p19b = evaluateP19bCondition(
+		cond,
+		{
+			state,
+			controllerId,
+			sourceInstanceId,
+			source: srcObjFallback,
+			stackItem,
+			triggerEventStackItem: effTriggerEventStackItem,
+			eventObject:
+				eventObject ??
+				(stackItem?.eventObjectId ? permanentById(state, stackItem.eventObjectId)?.obj : undefined)
+		},
+		matchesObjectFilter
+	);
+	if (p19b !== undefined) return p19b;
+	// --- End Track P19b ---
 	return false;
 }
 

@@ -395,13 +395,15 @@ describe('Phase 5 bug: unsupported qualifiers never fire', () => {
 
 	it('a cast trigger with an unmodelled intervening-if does not fire', () => {
 		const { state, p } = game();
+		// --- Track P19b: Treasure-mana intervening-if is now implemented; test an unmodelled condition ---
 		const c = card({
 			name: 'Tide Sage',
 			typeLine: 'Creature — Merfolk',
-			oracleText: 'Whenever you cast a noncreature spell, if mana from a Treasure was spent to cast it, draw a card.',
+			oracleText: 'Whenever you cast a noncreature spell, if an opponent voted for grace, draw a card.',
 			power: '1',
 			toughness: '3'
 		});
+		// --- End Track P19b ---
 		assert.ok(compileCard(c).faces[0].abilities.some((a) => a.kind === 'unsupported'));
 		put(state, p[0], c, 'battlefield');
 		const spell = put(state, p[0], card({ name: 'Small Thought', manaCost: '{U}', typeLine: 'Instant', oracleText: 'You gain 1 life.' }), 'hand');

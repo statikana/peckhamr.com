@@ -572,6 +572,25 @@ import {
 	resolveP13InherentTrigger
 } from './runtime/effectsWave5.ts';
 // --- End Track P13 ---
+// --- Track P19b ---
+import {
+	capturePlayerEnergySnapshot,
+	clearP19bEndOfTurnState,
+	clearP19bPlayerManaPoolTracking,
+	emitEnergyDiffEvents,
+	emitP19bPostEffectStepEvents,
+	isPermanentLandForManaP19b,
+	recordP19bManaDeduction,
+	recordP19bTreasureManaAdded,
+	isPureSpellDelayedInstantSorceryP19b,
+	registerP19bSpellDelayedTriggers,
+	resolveInlineManaRecipientPlayer,
+	rewriteInlineManaStepsP19b,
+	totalUnrestrictedAndRestrictedPoolCount,
+	withActiveTapActorId,
+	withInlineManaResolutionGuard
+} from './runtime/triggersWave7.ts';
+// --- End Track P19b ---
 import { chooseBotModalTriggerModes, chooseBotTriggerTargets } from './ai.ts';
 import { splitSubtypes } from './runtime/layers.ts';
 // --- Track P7 ---
@@ -2827,9 +2846,15 @@ function finalizeCastSpell(
 		wasForetoldCard && !opts.spellMods?.foretold
 			? { ...opts.spellMods, foretold: true }
 			: opts.spellMods;
-	const effectiveSpellMods: SpellModifications | undefined = isGiftPaid && !baseSpellMods?.giftPromised
-		? { ...baseSpellMods, giftPromised: true }
-		: baseSpellMods;
+	// --- Track P19b ---
+	const surgeAdjustedMods: SpellModifications | undefined =
+		opts.castOptionId?.includes('surge') && !baseSpellMods?.surged
+			? { ...baseSpellMods, surged: true }
+			: baseSpellMods;
+	// --- End Track P19b ---
+	const effectiveSpellMods: SpellModifications | undefined = isGiftPaid && !surgeAdjustedMods?.giftPromised
+		? { ...surgeAdjustedMods, giftPromised: true }
+		: surgeAdjustedMods;
 	const exSourceName =
 		opts.exSourceName ??
 		inst.playableFromExileBy?.sourceName ??
@@ -2948,6 +2973,17 @@ function finalizeCastSpell(
 	}
 	// --- End Track P20a ---
 	actor.spellsCastThisTurn = (actor.spellsCastThisTurn || 0) + 1;
+	// --- Track P19b ---
+	if (!isPreparationCopy && sourceZone === 'hand') {
+		actor.spellsCastFromHandThisTurn = (actor.spellsCastFromHandThisTurn ?? 0) + 1;
+	}
+	const treasureManaSpentOnSpell = Boolean(actor.spentTreasureManaOnCurrentSpell);
+	delete actor.spentTreasureManaOnCurrentSpell;
+	if (!isPreparationCopy) {
+		if (treasureManaSpentOnSpell) inst.treasureManaSpent = true;
+		else delete inst.treasureManaSpent;
+	}
+	// --- End Track P19b ---
 	// --- Track P15: Day/Night active-player spell count (CR 732.5) ---
 	if (state.players[state.activePlayerIndex]?.playerId === actorId) {
 		state.spellsCastByActivePlayerThisTurn = (state.spellsCastByActivePlayerThisTurn ?? 0) + 1;
@@ -3021,6 +3057,9 @@ function finalizeCastSpell(
 			// --- Track P17a ---
 			...(castGrantedSpellKws.length > 0 ? { grantedSpellKeywords: castGrantedSpellKws } : {}),
 			// --- End Track P17a ---
+			// --- Track P19b ---
+			...(treasureManaSpentOnSpell ? { treasureManaSpent: true } : {}),
+			// --- End Track P19b ---
 			...(optionalCostCounts ? { optionalCostCounts } : {}),
 			commanderCastCount: isPreparationCopy ? 0 : inst.commanderCastCount,
 			requiresGuidedResolution: false,
@@ -3362,6 +3401,23 @@ function finalizeActivateAbility(
 		});
 	}
 	// --- End Track P16b ---
+	// --- Track P19b: CR 702.122b "Whenever ~ crews a Vehicle" ---
+	if (crewedByIds && crewedByIds.length > 0) {
+		for (const crewId of crewedByIds) {
+			const crewFound = findPermanentOnBoard(state, crewId);
+			if (crewFound) {
+				emitEvent(state, {
+					kind: 'CrewedVehicle',
+					creatureId: crewFound.inst.instanceId,
+					creature: crewFound.inst,
+					vehicleId: perm.instanceId,
+					vehicle: perm,
+					playerId: actor.playerId
+				});
+			}
+		}
+	}
+	// --- End Track P19b ---
 	for (const t of targets) {
 		const targeted = t.kind === 'permanent' ? findPermanentOnBoard(state, t.id) : null;
 		if (targeted) {
@@ -4509,16 +4565,47 @@ function resolveActivatedManaAbility(
 			}
 		}
 	}
+	// --- Track P19b: CR 605.1b, 605.4a track produced colors, Treasure mana, and ManaAddedByLandAbility ---
+	const producedColors: ManaColor[] =
+		chosenBundle && chosenBundle.length > 0
+			? [...new Set(chosenBundle)]
+			: chosenColor && amount > 0
+				? [chosenColor]
+				: [];
+	const totalManaAdded =
+		chosenBundle && chosenBundle.length > 0
+			? chosenBundle.length
+			: chosenColor && amount > 0
+				? amount
+				: 0;
+	recordP19bTreasureManaAdded(state, player, perm, totalManaAdded);
+	// --- End Track P19b ---
 	if (tappedForMana) {
 		// CR 605.1b, 605.4a: triggered mana abilities ("Whenever you tap a land for mana") resolve immediately.
 		emitEvent(state, {
 			kind: 'TappedForMana',
 			playerId: player.playerId,
 			objectId: perm.instanceId,
-			object: perm
+			object: perm,
+			// --- Track P19b ---
+			...(producedColors.length > 0 ? { producedColors } : {})
+			// --- End Track P19b ---
 		});
 		flushInlineTriggers(state);
 	}
+	// --- Track P19b: CR 605.1b second prong ("Whenever a land's ability causes you to add ...") ---
+	if (producedColors.length > 0 && isPermanentLandForManaP19b(state, perm)) {
+		emitEvent(state, {
+			kind: 'ManaAddedByLandAbility',
+			playerId: player.playerId,
+			objectId: perm.instanceId,
+			object: perm,
+			producedColors,
+			amount: totalManaAdded
+		});
+		flushInlineTriggers(state);
+	}
+	// --- End Track P19b ---
 }
 
 // --- Track P11: Snow-conserving mana pool deduction (CR 107.4h) ---
@@ -4527,10 +4614,21 @@ function deductManaForSpendContextWithSnow(
 	manaReq: ManaCostRequirement,
 	spendCtx: ManaSpendContext
 ): void {
+	// --- Track P19b ---
+	const p19bPoolBefore = totalUnrestrictedAndRestrictedPoolCount(player);
+	// --- End Track P19b ---
 	const snowReq = manaReq.snow ?? 0;
 	const snowPool = totalSnowManaInPool(player);
 	if (snowReq === 0 && snowPool === 0) {
 		deductManaForSpendContext(player, manaReq, spendCtx);
+		// --- Track P19b ---
+		recordP19bManaDeduction(
+			player,
+			p19bPoolBefore,
+			totalUnrestrictedAndRestrictedPoolCount(player),
+			Boolean(spendCtx.isSpell)
+		);
+		// --- End Track P19b ---
 		return;
 	}
 	const unrestrictedTotal =
@@ -4565,6 +4663,14 @@ function deductManaForSpendContextWithSnow(
 		deductManaForSpendContext(player, manaReq, spendCtx);
 		clampSnowManaToPool(player);
 	}
+	// --- Track P19b ---
+	recordP19bManaDeduction(
+		player,
+		p19bPoolBefore,
+		totalUnrestrictedAndRestrictedPoolCount(player),
+		Boolean(spendCtx.isSpell)
+	);
+	// --- End Track P19b ---
 }
 // --- End Track P11 ---
 
@@ -5299,6 +5405,9 @@ export function loseTheGame(state: GameState, player: PlayerGameState, reason: s
 	player.lost = true;
 	player.lossReason = reason;
 	addLog(state, 'sba', `${player.username} loses the game! (${reason})`, player.playerId);
+	// --- Track P19b ---
+	emitEvent(state, { kind: 'PlayerLostGame', playerId: player.playerId });
+	// --- End Track P19b ---
 	cleanupEliminatedPlayer(state, player);
 	checkStateBasedActions(state);
 	return true;
@@ -5414,6 +5523,9 @@ export function emptyAllPlayersManaPools(state: GameState): void {
 		// --- Track P11: clamp tracked snow mana to any remaining retained/firebending mana ---
 		clampSnowManaToPool(p);
 		// --- End Track P11 ---
+		// --- Track P19b ---
+		clearP19bPlayerManaPoolTracking(p);
+		// --- End Track P19b ---
 		p.manaRiders = [];
 	}
 }
@@ -6543,6 +6655,9 @@ function applyGameActionInner(
 			landInst.tapped = false;
 			landInst.summoningSick = true;
 			landInst.defaultControllerId = actorId;
+			// --- Track P19b ---
+			landInst.castFromZone = sourceZone;
+			// --- End Track P19b ---
 			if (cardHasSupportedMultiFace(effectiveCardForObject(landInst)) || resolvedFace.faceIndex !== 0) {
 				landInst.activeFaceIndex = resolvedFace.faceIndex;
 			}
@@ -8961,7 +9076,14 @@ function performDeclareAttackers(
 			(p) => p.playerId === effectiveDefId && !p.lost
 		)!;
 		if (!vigilantIds.has(creature.instanceId)) {
-			tapPermanent(state, creature);
+			// --- Track P19b: CR 508.1f "if it isn't being declared as an attacker" ---
+			state.declaringAttackersNow = true;
+			try {
+				tapPermanent(state, creature);
+			} finally {
+				delete state.declaringAttackersNow;
+			}
+			// --- End Track P19b ---
 		}
 		validAttackers.push({
 			attackerInstanceId: creature.instanceId,
@@ -11850,8 +11972,19 @@ for (const kind of [
 	'PhasedIn',
 	'CollectedEvidence',
 	'LandPlayed',
-	'PlayerTargeted'
+	'PlayerTargeted',
 	// --- End Track P16b & P18a ---
+	// --- Track P19b ---
+	'ManaAddedByLandAbility',
+	'LibrarySearched',
+	'PlayerLostGame',
+	'CoinFlipped',
+	'DieRolled',
+	'EnergyGained',
+	'Proliferated',
+	'Evolved',
+	'CrewedVehicle'
+	// --- End Track P19b ---
 ] as const) {
 	registerEventHandler(kind, (state, ev) => {
 		// --- Track P12 ---
@@ -12176,6 +12309,10 @@ function triggeredStackItem(state: GameState, t: PendingTrigger, idPrefix: strin
 			...(t.amount !== undefined ? { eventAmount: t.amount } : {}),
 			...(t.targetStackItemId ? { eventStackItemId: t.targetStackItemId } : {}),
 			...(t.triggerEventStackItem ? { triggerEventStackItem: t.triggerEventStackItem } : {}),
+			// --- Track P19b ---
+			...(t.lastTappedManaColors ? { lastTappedManaColors: [...t.lastTappedManaColors] } : {}),
+			...(t.treasureManaSpent ? { treasureManaSpent: true } : {}),
+			// --- End Track P19b ---
 			...(t.stormCount !== undefined ? { stormCount: t.stormCount } : {}),
 			...(t.isChapterAbility || t.ability.trigger.isChapterAbility ? { isChapterAbility: true } : {}),
 			...(t.ability.ward ? { wardCost: t.ability.ward.cost } : {}),
@@ -12820,21 +12957,27 @@ function executeTriggerEffects(state: GameState, controller: PlayerGameState, it
 	const compiled = triggerItemEffect(item);
 	if (compiled && staticallyInterpretable(compiled) && interpretableNow(state, item, compiled, controller, false)) {
 		triggerPathCounts.interpreter++;
-		executeEffectSteps(
-			state,
-			{
-				controller,
-				sourceId: item.sourceInstanceId,
-				sourceCard: item.card,
-				title: item.title,
-				item,
-				targets: item.targets,
-				targetSpecs: compiled.targets,
-				xValue: item.xValue,
-				...triggerEventContext(item)
-			},
-			compiled.steps
-		);
+		// --- Track P19b ---
+		const effectiveSteps = rewriteInlineManaStepsP19b(compiled.steps, item.lastTappedManaColors);
+		if (effectiveSteps.length === 0) return;
+		withActiveTapActorId(controller.playerId, () => {
+			executeEffectSteps(
+				state,
+				{
+					controller,
+					sourceId: item.sourceInstanceId,
+					sourceCard: item.card,
+					title: item.title,
+					item,
+					targets: item.targets,
+					targetSpecs: compiled.targets,
+					xValue: item.xValue,
+					...triggerEventContext(item)
+				},
+				effectiveSteps
+			);
+		});
+		// --- End Track P19b ---
 		return;
 	}
 	// Not automated: an inline trigger (a triggered mana ability) can't be resolved manually.
@@ -12849,7 +12992,20 @@ registerTriggerHost({
 		if (state.triggersPlacedThisTurn) {
 			state.triggersPlacedThisTurn.resolutionSerial = (state.triggersPlacedThisTurn.resolutionSerial ?? 0) + 1;
 		}
-		executeTriggerEffects(state, controller, triggeredStackItem(state, t, 'trg'));
+		// --- Track P19b: CR 605.1b, 605.4a stackless mana recipient & recursion guard ---
+		const item = triggeredStackItem(state, t, 'trg');
+		const compiled = triggerItemEffect(item);
+		const recipient = resolveInlineManaRecipientPlayer(
+			state,
+			controller,
+			compiled?.steps,
+			t.eventObject,
+			t.eventPlayer ?? t.eventPlayerId
+		);
+		withInlineManaResolutionGuard(() => {
+			executeTriggerEffects(state, recipient, item);
+		});
+		// --- End Track P19b ---
 		addLog(
 			state,
 			'trigger',
@@ -14209,6 +14365,9 @@ function isUnautomatedStackItem(item: StackItem): boolean {
 	// --- Track P18a ---
 	if (isWave6StackItem(item) || item.wave6Tag === 'epic_upkeep') return false;
 	// --- End Track P18a ---
+	// --- Track P19b ---
+	if (isPureSpellDelayedInstantSorceryP19b(item)) return false;
+	// --- End Track P19b ---
 	if (item.kind === 'activated') return true;
 	if (item.kind === 'spell') {
 		const types = resolveObjectFaces(item.card, stackItemFaceOptions(item)).types;
@@ -14823,26 +14982,52 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 	// --- End Track P16a ---
 	const steps: EffectStep[] = compiled?.steps ?? [];
 	if (interpreted && compiled) {
-		const result = executeEffectSteps(
-			state,
-			{
-				controller,
-				sourceId: item.sourceInstanceId,
-				sourceCard: item.card,
-				title: item.title,
-				item,
-				targets: item.targets,
-				targetSpecs: compiled.targets,
-				xValue: item.xValue,
-				targetsBecomeEach,
-				...triggerEventContext(item, state)
-			},
-			steps,
-			item.effectResume
+		// --- Track P19b ---
+		const p19bPreRng = state.rngState;
+		const p19bPreEnergy = capturePlayerEnergySnapshot(state);
+		const p19bPreSourcePlusOne =
+			item.kind === 'triggered'
+				? findPermanentOnBoard(state, item.sourceInstanceId)?.inst.counters['+1/+1'] ?? 0
+				: undefined;
+		const result = withActiveTapActorId(controller.playerId, () =>
+			executeEffectSteps(
+				state,
+				{
+					controller,
+					sourceId: item.sourceInstanceId,
+					sourceCard: item.card,
+					title: item.title,
+					item,
+					targets: item.targets,
+					targetSpecs: compiled.targets,
+					xValue: item.xValue,
+					targetsBecomeEach,
+					...triggerEventContext(item, state)
+				},
+				steps,
+				item.effectResume
+			)
 		);
+		// --- End Track P19b ---
 		// Step E2: a human must choose first (sacrifice, discard). The item stays on the stack with its
 		// resume frame (CR 608.2n) and resolves on, by id, once the prompt is answered.
-		if (result.paused) return;
+		if (result.paused) {
+			// --- Track P19b ---
+			emitEnergyDiffEvents(state, p19bPreEnergy);
+			// --- End Track P19b ---
+			return;
+		}
+		// --- Track P19b ---
+		emitP19bPostEffectStepEvents(
+			state,
+			controller,
+			item,
+			steps,
+			p19bPreRng,
+			p19bPreEnergy,
+			p19bPreSourcePlusOne
+		);
+		// --- End Track P19b ---
 		delete item.effectResume;
 		if (state.delayedTriggers) {
 			for (const dt of state.delayedTriggers) {
@@ -15006,6 +15191,10 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 			if (item.manaColorsAllSpent) perm.manaColorsAllSpent = [...item.manaColorsAllSpent];
 			else delete perm.manaColorsAllSpent;
 			// --- End Track P13 ---
+			// --- Track P19b ---
+			if (item.treasureManaSpent) perm.treasureManaSpent = true;
+			else delete perm.treasureManaSpent;
+			// --- End Track P19b ---
 			const isPrototypedSpell = Boolean(
 				item.spellMods?.prototyped || item.copiableState?.prototyped
 			);
@@ -15263,7 +15452,11 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 				// --- End Track P13 & P15 ---
 			}
 			flushTriggers(state);
-		} else if (!handleParadigmSpellPostResolve(state, item, controller) && !item.isCopy) {
+		} else {
+			// --- Track P19b: CR 603.7a–b register spell-created event/upkeep delayed triggers ---
+			registerP19bSpellDelayedTriggers(state, item, controller.playerId, () => uid('w7dt', state));
+			// --- End Track P19b ---
+			if (!handleParadigmSpellPostResolve(state, item, controller) && !item.isCopy) {
 			// CR 702.27a: If the buyback cost was paid, put the resolving spell into its owner's hand
 			// instead of into that player's graveyard (moveStackSpellToZone still overrides with
 			// exileOnLeaveStack per CR 702.34a when cast via Flashback).
@@ -15371,6 +15564,7 @@ function resolveStackItemNow(state: GameState, item: StackItem): void {
 					maybeEnqueueSpellHauntTrigger(state, item, cardOwner, controller);
 				}
 				// --- End Track P18a ---
+			}
 			}
 		}
 	}
@@ -17318,6 +17512,9 @@ function initiateLibrarySearch(
 	const searchableIds =
 		searchLock.topN !== undefined ? new Set(searchablePool.map((c) => c.instanceId)) : null;
 	// --- End Track P17a ---
+	// --- Track P19b: CR 701.19a "Whenever a player / an opponent searches their library" ---
+	emitEvent(state, { kind: 'LibrarySearched', playerId: searchingPlayer.playerId });
+	// --- End Track P19b ---
 	const interceptor = getLibrarySearchInterceptor(state, searchingPlayer.playerId);
 	const decisionPlayer = interceptor
 		? state.players.find((p) => p.playerId === interceptor.controllerId) || searchingPlayer
@@ -17540,6 +17737,9 @@ export function executeProliferate(
 	controller: PlayerGameState,
 	chosenIds?: string[]
 ): void {
+	// --- Track P19b ---
+	const p19bPreEnergy = capturePlayerEnergySnapshot(state);
+	// --- End Track P19b ---
 	// --- Track P11 + Track P16a: Proliferate all counters including arbitrary & rad/ticket (CR 701.27a) ---
 	void ALL_COUNTER_TYPES;
 	// --- End Track P11 + Track P16a ---
@@ -17654,6 +17854,10 @@ export function executeProliferate(
 		}
 	}
 	noteLayerInputsChanged(state);
+	// --- Track P19b ---
+	emitEnergyDiffEvents(state, p19bPreEnergy);
+	emitEvent(state, { kind: 'Proliferated', playerId: controller.playerId });
+	// --- End Track P19b ---
 	emitVfx(state, {
 		kind: 'proliferate',
 		sourceId: controller.playerId,
@@ -18598,6 +18802,9 @@ registerPromptHandler(COMBAT_DAMAGE_ASSIGNMENT_HANDLER, (state, prompt, answer) 
 });
 
 function clearEndOfTurnAndDamage(state: GameState): void {
+	// --- Track P19b ---
+	clearP19bEndOfTurnState(state);
+	// --- End Track P19b ---
 	// --- Track P13 ---
 	cleanupP13TurnState(state, state.players[state.activePlayerIndex]?.playerId ?? '');
 	// --- End Track P13 ---
@@ -19822,6 +20029,9 @@ export function checkStateBasedActions(state: GameState): void {
 				p.lossReason = reason;
 				p.attemptedEmptyLibraryDraw = false;
 				addLog(state, 'sba', logText, p.playerId);
+				// --- Track P19b ---
+				emitEvent(state, { kind: 'PlayerLostGame', playerId: p.playerId });
+				// --- End Track P19b ---
 			}
 			for (const { player: p } of newlyEliminated) {
 				cleanupEliminatedPlayer(state, p);

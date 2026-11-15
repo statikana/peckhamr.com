@@ -9196,6 +9196,17 @@ class Run {
 				});
 			}
 			// --- End Track P20a ---
+			// --- Track P19b ---
+			default: {
+				const srcFound = this.locate(this.ctx.sourceId);
+				return evaluateCondition(c, {
+					state: this.state,
+					controllerId: this.you.playerId,
+					source: srcFound?.inst,
+					stackItem: this.ctx.item
+				});
+			}
+			// --- End Track P19b ---
 		}
 	}
 

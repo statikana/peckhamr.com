@@ -8,7 +8,7 @@
  *
  * compiler/card.ts uses it for every "When/Whenever/At" line.
  */
-import type { Amount, CardDefinition, Compare, Condition, CostDef, EffectStep, EventFilter, ModalDef, ObjectFilter, Span, TargetSpec, TriggerDef } from '../ir.ts';
+import type { Amount, CardDefinition, Compare, Condition, CostDef, EffectStep, EventFilter, ModalDef, ObjectFilter, PlayerFilter, PlayerRef, Span, TargetSpec, TriggerDef } from '../ir.ts';
 import { getKeywordSpec } from '../keywords.ts';
 import { normalizeCounterName, type CounterType, type GamePhase, type ManaColor, type TriggerScope, type ZoneType } from '../types.ts';
 import { COUNTERS, singularSubtype } from './costs.ts';
@@ -63,8 +63,52 @@ const STEPS: Record<string, GamePhase> = {
 	'second main phase': 'main2'
 };
 
+// --- Track P19b ---
+const EXTENDED_ORDINAL_WORDS: Record<string, number> = {
+	first: 1,
+	second: 2,
+	third: 3,
+	fourth: 4,
+	fifth: 5,
+	sixth: 6,
+	seventh: 7,
+	eighth: 8,
+	ninth: 9,
+	tenth: 10
+};
+
+function parseExtendedOrdinal(raw: string): number | null {
+	const low = raw.trim().toLowerCase();
+	if (EXTENDED_ORDINAL_WORDS[low] !== undefined) return EXTENDED_ORDINAL_WORDS[low];
+	const numM = low.match(/^(\d+)(?:st|nd|rd|th)$/);
+	if (numM) {
+		const val = parseInt(numM[1], 10);
+		return val >= 1 ? val : null;
+	}
+	return null;
+}
+
+const COLOR_WORD_TO_MANA: Record<string, ManaColor> = {
+	white: 'W',
+	blue: 'U',
+	black: 'B',
+	red: 'R',
+	green: 'G'
+};
+// --- End Track P19b ---
+
 /** "your upkeep", "each opponent's end step", "combat on your turn", "each combat". */
 function phaseBegin(rest: string): TriggerDef | null {
+	// --- Track P19b: spell-created delayed next-upkeep trigger (CR 603.7a) ---
+	if (rest === 'your next upkeep') {
+		return {
+			event: 'phaseBegin',
+			filter: { phase: 'upkeep' },
+			scope: 'controller_turn',
+			spellDelayed: 'nextUpkeep'
+		};
+	}
+	// --- End Track P19b ---
 	if (rest === 'combat on your turn' || rest === 'your combat step') {
 		return { event: 'phaseBegin', filter: { phase: 'begin_combat' }, scope: 'controller_turn' };
 	}
@@ -240,6 +284,24 @@ function parseP16bObjectPhrase(
 			rest = namedSelf[1].trim();
 			continue;
 		}
+		// --- Track P19b: linked-exile same-name & explicit card-name qualifiers ---
+		const sameExiled = rest.match(
+			/^(.+?)\s+with the same name as (?:the exiled card|(?:the|a|an) card exiled with ~)$/i
+		);
+		if (sameExiled && outer.sameNameAsLinkedExile === undefined) {
+			outer.sameNameAsLinkedExile = true;
+			rest = sameExiled[1].trim();
+			continue;
+		}
+		const namedExplicit = rest.match(
+			/^(.+?)\s+named ([A-Z][A-Za-z0-9',-]*(?:\s+(?:[A-Z][A-Za-z0-9',-]*|of|the))*)$/
+		);
+		if (namedExplicit && outer.named === undefined && outer.sameNameAsSource === undefined) {
+			outer.named = namedExplicit[2].trim();
+			rest = namedExplicit[1].trim();
+			continue;
+		}
+		// --- End Track P19b ---
 		const otherSelf = rest.match(/^(.+?)\s+other than ~$/i);
 		if (otherSelf) {
 			outer.other = true;
@@ -308,6 +370,21 @@ function parseP16bObjectPhrase(
 			rest = dealtDmg[1].trim();
 			continue;
 		}
+		// --- Track P19b: "that's both <colorA> and <colorB>" ---
+		const thatsBothColors = rest.match(
+			/^(.+?)\s+that(?:'s| is) both (white|blue|black|red|green) and (white|blue|black|red|green)$/i
+		);
+		if (thatsBothColors && !outer.allColors && !outer.colors) {
+			const c1 = COLOR_WORD_TO_MANA[thatsBothColors[2].toLowerCase()];
+			const c2 = COLOR_WORD_TO_MANA[thatsBothColors[3].toLowerCase()];
+			if (c1 && c2 && c1 !== c2) {
+				outer.colors = [c1, c2];
+				outer.allColors = [c1, c2];
+				rest = thatsBothColors[1].trim();
+				continue;
+			}
+		}
+		// --- End Track P19b ---
 		const thatsColors = rest.match(
 			/^(.+?)\s+that(?:'s| is)\s+((?:white|blue|black|red|green|colorless)(?:(?:\s*,\s*|\s*,?\s+or\s+)(?:white|blue|black|red|green|colorless))*)$/i
 		);
@@ -389,13 +466,26 @@ function parseP16bObjectPhrase(
 
 	const normalizedAndOr = rest.replace(/,\s*and\/or\s+/gi, ', or ').replace(/\s+and\/or\s+/gi, ' or ');
 	const parsed = parseExtendedObjectPhrase(normalizedAndOr, opts);
-	if (parsed) return mergeP16bFilter(parsed, outer);
+	if (parsed) {
+		const merged = mergeP16bFilter(parsed, outer);
+		return hasSupplementaryDeckSubtype(merged) ? null : merged;
+	}
 
 	if (/^[A-Z][A-Za-z'-]*$/.test(rest)) {
 		const sub = singularSubtype(rest);
-		if (sub) return mergeP16bFilter({ subtypes: [sub] }, outer);
+		if (sub && !SUPPLEMENTARY_DECK_SUBTYPES.has(sub)) {
+			return mergeP16bFilter({ subtypes: [sub] }, outer);
+		}
 	}
 	return null;
+}
+
+const SUPPLEMENTARY_DECK_SUBTYPES: ReadonlySet<string> = new Set(['Contraption', 'Attraction']);
+
+function hasSupplementaryDeckSubtype(f: ObjectFilter): boolean {
+	if (f.subtypes?.some((s) => SUPPLEMENTARY_DECK_SUBTYPES.has(s))) return true;
+	if (f.anyOf?.some((sub) => hasSupplementaryDeckSubtype(sub))) return true;
+	return false;
 }
 // --- End Track P16b ---
 
@@ -437,6 +527,26 @@ function objectSubject(text: string): Subject | null {
 			...(mappedType ? { attachedFilter: { types: [mappedType] } } : {})
 		};
 	}
+	// --- Track P19b: subtype-qualified enchanted object ("enchanted Forest", "enchanted Plains") ---
+	const enchSub = text.match(/^enchanted ([A-Z][A-Za-z'-]*)$/);
+	if (enchSub) {
+		const sub = singularSubtype(enchSub[1]);
+		if (sub) {
+			return { object: 'attachedTo', attachedFilter: { subtypes: [sub] } };
+		}
+	}
+	const selfOrEnchSub = text.match(/^~ or enchanted ([A-Z][A-Za-z'-]*)$/);
+	if (selfOrEnchSub) {
+		const sub = singularSubtype(selfOrEnchSub[1]);
+		if (sub) {
+			return {
+				object: 'attachedTo',
+				orAttachedToSelf: true,
+				attachedFilter: { subtypes: [sub] }
+			};
+		}
+	}
+	// --- End Track P19b ---
 	// --- Track P16b ---
 	if (/^~ or equipped creature$/i.test(text)) {
 		return {
@@ -724,7 +834,84 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 		case 'becomes the target of an ability':
 			return subject.oneOrMore ? null : def('becomesTarget', { targetedBy: 'ability' });
 		case 'is tapped for mana':
-			return def('tappedForMana');
+			return def(
+				'tappedForMana',
+				subject.attachedFilter?.subtypes ? { attachedFilter: subject.attachedFilter } : {}
+			);
+		// --- Track P19b ---
+		case 'is tapped for mana of the chosen color':
+			return def('tappedForMana', {
+				tappedManaChosenColor: true,
+				...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+			});
+		case 'enters during the declare attackers step':
+		case 'enter during the declare attackers step':
+		case 'enters the battlefield during the declare attackers step':
+		case 'enter the battlefield during the declare attackers step':
+			return def('zoneChange', { to: 'battlefield', duringStep: 'declare_attackers' });
+		case 'enters during combat':
+		case 'enter during combat':
+		case 'enters the battlefield during combat':
+		case 'enter the battlefield during combat':
+			return def('zoneChange', { to: 'battlefield', duringCombat: true });
+		case 'dies during combat':
+		case 'die during combat':
+			return def('zoneChange', {
+				from: 'battlefield',
+				to: 'graveyard',
+				duringCombat: true,
+				...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+			});
+		case 'deals combat damage to enchanted player':
+		case 'deal combat damage to enchanted player':
+			return subject.oneOrMore
+				? null
+				: def('dealsDamage', {
+						combat: true,
+						damageTo: 'player',
+						damageTargetEnchantedPlayer: true,
+						...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+					});
+		case 'deals damage to enchanted player':
+		case 'deal damage to enchanted player':
+			return subject.oneOrMore
+				? null
+				: def('dealsDamage', {
+						damageTo: 'player',
+						damageTargetEnchantedPlayer: true,
+						...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+					});
+		case 'becomes plotted':
+			return subject.object === 'self'
+				? { event: 'plot', filter: { object: 'self' }, fromZone: 'exile' }
+				: null;
+		case 'evolves':
+		case 'evolve':
+			return subject.oneOrMore ? null : def('evolved');
+		case 'becomes crewed for the first time each turn':
+			return subject.oneOrMore ? null : def('becomesCrewed', { firstTimeEachTurn: true });
+		case 'crews a vehicle':
+		case 'crews a Vehicle':
+		case 'crew a vehicle':
+		case 'crew a Vehicle':
+			return subject.oneOrMore ? null : def('crewedVehicle');
+		case 'attacks this turn':
+		case 'attack this turn':
+			return { ...def('attacks'), spellDelayed: 'thisTurn' };
+		case 'blocks this turn':
+		case 'block this turn':
+			return { ...def('blocks'), spellDelayed: 'thisTurn' };
+		case 'dies this turn':
+		case 'die this turn':
+			return {
+				...def('zoneChange', {
+					from: 'battlefield',
+					to: 'graveyard',
+					...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+				}),
+				spellDelayed: 'thisTurn'
+			};
+		// --- End Track P19b ---
 		case 'becomes attached to a creature':
 			return def('attached', { host: { types: ['Creature'] } });
 		case 'becomes attached to a creature you control':
@@ -915,14 +1102,19 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 					};
 				}
 			}
-			// Non-self attacks against specific player/planeswalker targets (never matching "~ attacks a player")
-			if (typeof base.object === 'object') {
+			// Attacks against specific player/planeswalker targets (never matching "~ attacks a player")
+			if (typeof base.object === 'object' || base.object === 'self') {
 				if (/^attacks? you$/i.test(verb)) {
 					return def('attacks', { attackedTarget: 'you' });
 				}
 				if (/^attacks? you or a planeswalker you control$/i.test(verb)) {
 					return def('attacks', { attackedTarget: 'youOrPlaneswalkerYouControl' });
 				}
+				if (/^attacks? enchanted player$/i.test(verb)) {
+					return def('attacks', { attackedTarget: 'enchantedPlayer' });
+				}
+			}
+			if (typeof base.object === 'object') {
 				if (/^attacks? (?:an opponent|one of your opponents)$/i.test(verb)) {
 					return def('attacks', { attackedTarget: 'opponent' });
 				}
@@ -935,11 +1127,63 @@ function objectEvent(verb: string, subject: Subject): TriggerDef | null {
 						attackedTarget: 'opponentOrPlaneswalkerOpponentControls'
 					});
 				}
-				if (/^attacks? enchanted player$/i.test(verb)) {
-					return def('attacks', { attackedTarget: 'enchantedPlayer' });
-				}
 			}
 			// --- End Track P16b ---
+			// --- Track P19b ---
+			const tappedColorObj = verb.match(/^is tapped for \{([WUBRGC])\}$/i);
+			if (tappedColorObj) {
+				return def('tappedForMana', {
+					tappedManaColor: tappedColorObj[1].toUpperCase() as ManaColor,
+					...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+				});
+			}
+			const atkNthTurn = verb.match(/^attacks? for the (\S+) time each turn$/i);
+			if (atkNthTurn && !subject.oneOrMore) {
+				const ord = parseExtendedOrdinal(atkNthTurn[1]);
+				if (ord !== null) {
+					return def('attacks', {
+						...(ord === 1 ? { firstTimeEachTurn: true } : { nthEventThisTurn: ord }),
+						...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+					});
+				}
+			}
+			const firstTimeTgt = verb.match(
+				/^becomes? the target of (a spell or ability|a spell|an ability)(?: (an opponent controls|your opponents control|you don't control))? for the first time each turn$/i
+			);
+			if (firstTimeTgt && !subject.oneOrMore) {
+				const rawBy = firstTimeTgt[1].toLowerCase();
+				const targetedBy: EventFilter['targetedBy'] =
+					rawBy === 'a spell' ? 'spell' : rawBy === 'an ability' ? 'ability' : 'spellOrAbility';
+				const player: EventFilter['player'] = firstTimeTgt[2] ? { relation: 'opponent' } : undefined;
+				return def('becomesTarget', {
+					targetedBy,
+					firstTimeEachTurn: true,
+					...(player ? { player } : {}),
+					...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+				});
+			}
+			const dmgToFiltered = verb.match(/^deals? (combat |noncombat )?damage to (?:a|an) (.+)$/i);
+			if (
+				dmgToFiltered &&
+				!subject.oneOrMore &&
+				!/\b(?:player|opponent)\b/i.test(dmgToFiltered[2])
+			) {
+				const tgtFilter = parseP16bObjectPhrase(dmgToFiltered[2]);
+				if (tgtFilter) {
+					const rawKind = dmgToFiltered[1]?.trim().toLowerCase();
+					return def('dealsDamage', {
+						...(rawKind === 'combat'
+							? { combat: true }
+							: rawKind === 'noncombat'
+								? { combat: false }
+								: {}),
+						damageTargetKind: 'permanent',
+						damageTargetFilter: tgtFilter,
+						...(subject.attachedFilter ? { attachedFilter: subject.attachedFilter } : {})
+					});
+				}
+			}
+			// --- End Track P19b ---
 			// --- Track P10 ---
 			const bobb = verb.match(/^blocks? or becomes? blocked by (?:a|an) (.+)$/i);
 			if (bobb && !subject.oneOrMore) {
@@ -1290,6 +1534,26 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		return { event: 'cast', filter };
 	}
 	// --- End Track P13 ---
+	// --- Track P19b: spell-created delayed cast triggers ("When you next cast ... this turn" / "Whenever you cast ... this turn") ---
+	if (player?.relation === 'you') {
+		const nextCast = rest.match(/^next cast (.+?) this turn$/i);
+		if (nextCast) {
+			const object = spellFilter(nextCast[1]);
+			if (object !== null && object !== 'self' && object !== 'attachedTo') {
+				return { event: 'cast', filter: { object, player }, spellDelayed: 'nextThisTurn' };
+			}
+		}
+	}
+	const castThisTurn = rest.match(/^(cast or copy|casts or copies|casts?) (.+?) this turn$/i);
+	if (castThisTurn) {
+		const object = spellFilter(castThisTurn[2]);
+		if (object !== null && object !== 'self' && object !== 'attachedTo') {
+			const filter: EventFilter = { object, player };
+			if (/copy|copies/i.test(castThisTurn[1])) filter.orCopy = true;
+			return { event: 'cast', filter, spellDelayed: 'thisTurn' };
+		}
+	}
+	// --- End Track P19b ---
 	const cast = rest.match(/^(cast or copy|casts or copies|casts?) (.+)$/);
 	if (cast) {
 		const object = spellFilter(cast[2]);
@@ -1318,7 +1582,75 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		return { event: 'attacks', filter: { player, oneOrMore: true, attackedTarget: 'opponent' } };
 	}
 	// --- End Track P16b ---
+	// --- Track P19b: CR 508.3e per-attacked-player & Curse enchanted-player attack triggers ---
+	if (player?.relation === 'you' && /^attack a player$/i.test(rest)) {
+		return { event: 'attacks', filter: { player, oneOrMore: true, perAttackedPlayer: true } };
+	}
+	if (/^attacks? enchanted player$/i.test(rest)) {
+		return { event: 'attacks', filter: { player, oneOrMore: true, attackedTarget: 'enchantedPlayer' } };
+	}
+	const atkEnchPlWith = rest.match(/^attacks? enchanted player with (\S+) or more creatures$/i);
+	if (atkEnchPlWith) {
+		const minN = number(atkEnchPlWith[1]);
+		if (minN !== null && minN >= 1) {
+			return {
+				event: 'attacks',
+				filter: { player, oneOrMore: true, minAttackers: minN, attackedTarget: 'enchantedPlayer' }
+			};
+		}
+	}
+	if (player?.relation === 'you') {
+		const atkTargetWith = rest.match(
+			/^attacks? (a player|an opponent) with (?:(\S+) or more |(?:a|an) )(.+)$/i
+		);
+		if (atkTargetWith) {
+			const minN = atkTargetWith[2] ? number(atkTargetWith[2]) : 1;
+			const object = parseP16bObjectPhrase(atkTargetWith[3]);
+			if (minN !== null && minN >= 1 && object) {
+				const isPerPlayer = /^a player$/i.test(atkTargetWith[1]);
+				return {
+					event: 'attacks',
+					filter: {
+						player,
+						oneOrMore: true,
+						minAttackers: minN,
+						object,
+						...(isPerPlayer ? { perAttackedPlayer: true } : { attackedTarget: 'opponent' })
+					}
+				};
+			}
+		}
+	}
+	// --- End Track P19b ---
 	if (rest === 'gain life' || rest === 'gains life') return { event: 'gainLife', filter: { player } };
+	// --- Track P19b: ordinal life gain / life loss triggers ---
+	const gainLifeNth = rest.match(/^gains? life for the (\S+) time each turn$/i);
+	if (gainLifeNth) {
+		const ord = parseExtendedOrdinal(gainLifeNth[1]);
+		if (ord !== null) {
+			return {
+				event: 'gainLife',
+				filter: {
+					player,
+					...(ord === 1 ? { firstTimeEachTurn: true } : { nthEventThisTurn: ord })
+				}
+			};
+		}
+	}
+	const loseLifeNth = rest.match(/^loses? life for the (\S+) time each turn$/i);
+	if (loseLifeNth) {
+		const ord = parseExtendedOrdinal(loseLifeNth[1]);
+		if (ord !== null) {
+			return {
+				event: 'loseLife',
+				filter: {
+					player,
+					...(ord === 1 ? { firstTimeEachTurn: true } : { nthEventThisTurn: ord })
+				}
+			};
+		}
+	}
+	// --- End Track P19b ---
 	// --- Track P16b: life loss, timing-qualified life gain/loss, scry/surveil, landPlayed, dilemma, exhaust, evidence, put counters ---
 	if (rest === 'lose life' || rest === 'loses life') {
 		return { event: 'loseLife', filter: { player } };
@@ -1366,6 +1698,28 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 	if (/^plays? a land$/i.test(rest)) {
 		return { event: 'landPlayed', filter: { player } };
 	}
+	// --- Track P19b: play land / card from exile ---
+	if (/^plays? a land from exile$/i.test(rest)) {
+		return { event: 'landPlayed', filter: { player, castFromZone: 'exile' } };
+	}
+	if (/^plays? a land from anywhere other than (?:your|their) hand$/i.test(rest)) {
+		return { event: 'landPlayed', filter: { player, castFromNotHand: true } };
+	}
+	if (/^plays? a card from exile$/i.test(rest)) {
+		return {
+			event: 'landPlayed',
+			filter: { player, castFromZone: 'exile' },
+			or: [{ event: 'cast', filter: { object: {}, player, castFromZone: 'exile' } }]
+		};
+	}
+	if (/^plays? a card from anywhere other than (?:your|their) hand$/i.test(rest)) {
+		return {
+			event: 'landPlayed',
+			filter: { player, castFromNotHand: true },
+			or: [{ event: 'cast', filter: { object: {}, player, castFromNotHand: true } }]
+		};
+	}
+	// --- End Track P19b ---
 	const playFilteredLand = rest.match(/^plays? (?:a|an) (.+?\bland\b.*)$/i);
 	if (playFilteredLand) {
 		const object = parseP16bObjectPhrase(playFilteredLand[1]);
@@ -1442,7 +1796,54 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		const object = parseP16bObjectPhrase(tap[1]);
 		if (object) return { event: 'tappedForMana', filter: { object, player } };
 	}
-	const nthDraw = rest.match(/^draws? (your|their) (first|second|third) card each turn$/);
+	// --- Track P19b: CR 605.1b color-qualified mana taps & draw "in a turn" ---
+	const tapSelfColor = rest.match(/^taps? ~ for \{([WUBRGC])\}$/i);
+	if (tapSelfColor) {
+		return {
+			event: 'tappedForMana',
+			filter: {
+				object: 'self',
+				player,
+				tappedManaColor: tapSelfColor[1].toUpperCase() as ManaColor
+			}
+		};
+	}
+	if (/^taps? ~ for mana of the chosen color$/i.test(rest)) {
+		return {
+			event: 'tappedForMana',
+			filter: { object: 'self', player, tappedManaChosenColor: true }
+		};
+	}
+	const tapColor = rest.match(/^taps? (?:a|an) (.+) for \{([WUBRGC])\}$/i);
+	if (tapColor) {
+		const object = /^permanents?$/i.test(tapColor[1].trim())
+			? ({} as ObjectFilter)
+			: parseP16bObjectPhrase(tapColor[1]);
+		if (object) {
+			return {
+				event: 'tappedForMana',
+				filter: {
+					object,
+					player,
+					tappedManaColor: tapColor[2].toUpperCase() as ManaColor
+				}
+			};
+		}
+	}
+	const tapChosen = rest.match(/^taps? (?:a|an) (.+) for mana of the chosen color$/i);
+	if (tapChosen) {
+		const object = /^permanents?$/i.test(tapChosen[1].trim())
+			? ({} as ObjectFilter)
+			: parseP16bObjectPhrase(tapChosen[1]);
+		if (object) {
+			return {
+				event: 'tappedForMana',
+				filter: { object, player, tappedManaChosenColor: true }
+			};
+		}
+	}
+	// --- End Track P19b ---
+	const nthDraw = rest.match(/^draws? (your|their) (first|second|third) card (?:each turn|in a turn)$/);
 	if (nthDraw) {
 		if ((nthDraw[1] === 'your') !== (player?.relation === 'you')) return null;
 		return { event: 'drawCard', filter: { player, nthThisTurn: ORDINAL_WORDS[nthDraw[2]] } };
@@ -1551,6 +1952,84 @@ function playerEvent(player: EventFilter['player'], rest: string): TriggerDef | 
 		return { event: 'tookInitiative', filter: { player } };
 	}
 	// --- End Track P13 ---
+	// --- Track P19b: mill, dice, coin flips, tap untapped, search library, lose game, energy, proliferate ---
+	const plMill = rest.match(/^mills? (one or more|(?:a|an)) (?:(.+?) )?cards?$/i);
+	if (plMill) {
+		const oneOrMore = /^one or more$/i.test(plMill[1]);
+		const objFilter = parseGraveyardLeaveCardFilter(plMill[2]);
+		if (objFilter) {
+			return {
+				event: 'zoneChange',
+				filter: {
+					player,
+					object: objFilter,
+					from: 'library',
+					to: 'graveyard',
+					...(oneOrMore ? { oneOrMore: true } : {})
+				}
+			};
+		}
+	}
+	if (/^rolls? (?:one or more dice|a die)$/i.test(rest)) {
+		return { event: 'dieRolled', filter: { player } };
+	}
+	const rollMin = rest.match(/^rolls? (?:a )?(\d+) or higher(?: on a die)?$/i);
+	if (rollMin) {
+		return {
+			event: 'dieRolled',
+			filter: { player, dieRollMin: parseInt(rollMin[1], 10) }
+		};
+	}
+	const rollVals = rest.match(/^rolls? (?:a )?(\d+(?:(?:\s*,\s*|\s*,?\s+or\s+)\d+)*)(?: on a die)?$/i);
+	if (rollVals) {
+		const vals = rollVals[1]
+			.split(/(?:\s*,\s*or\s+|\s+or\s+|\s*,\s*)/i)
+			.map((v) => parseInt(v.trim(), 10))
+			.filter((v) => Number.isFinite(v));
+		if (vals.length > 0) {
+			return { event: 'dieRolled', filter: { player, dieRollValues: vals } };
+		}
+	}
+	if (/^wins? a coin flip$/i.test(rest)) {
+		return { event: 'coinFlipped', filter: { player, wonCoinFlip: true } };
+	}
+	if (/^loses? a coin flip$/i.test(rest)) {
+		return { event: 'coinFlipped', filter: { player, wonCoinFlip: false } };
+	}
+	if (/^flips? a coin$/i.test(rest)) {
+		return { event: 'coinFlipped', filter: { player } };
+	}
+	const tapUntapped = rest.match(/^taps? (?:a|an) untapped (.+)$/i);
+	if (tapUntapped && player?.relation) {
+		const objFilter = parseP16bObjectPhrase(tapUntapped[1]);
+		if (objFilter) {
+			const tappedByPlayer: EventFilter['tappedByPlayer'] =
+				player.relation === 'you' ? 'you' : player.relation === 'opponent' ? 'opponent' : 'any';
+			return {
+				event: 'becomesTapped',
+				filter: { object: objFilter, tappedByPlayer }
+			};
+		}
+	}
+	if (/^search(?:es)? (?:your|their|a) library$/i.test(rest)) {
+		return { event: 'librarySearched', filter: { player } };
+	}
+	if (/^loses the game$/i.test(rest)) {
+		return { event: 'playerLostGame', filter: { player } };
+	}
+	if (/^gets? (?:one or more )?\{E\}$/i.test(rest)) {
+		return { event: 'energyGained', filter: { player } };
+	}
+	if (/^proliferates?$/i.test(rest)) {
+		return { event: 'proliferated', filter: { player } };
+	}
+	if (/^plays? a card$/i.test(rest)) {
+		return mergeCompoundTriggerDefs(
+			{ event: 'landPlayed', filter: { player, object: {} } },
+			{ event: 'cast', filter: { player, object: {} } }
+		);
+	}
+	// --- End Track P19b ---
 	return null;
 }
 
@@ -1602,6 +2081,27 @@ function counterEvent(head: string): TriggerDef | null {
 			}
 		}
 	}
+
+	// --- Track P19b: ordinal counter placed on self ("the fourth plan counter is put on ~") ---
+	const nthOnSelf = head.match(
+		/^the (\S+) (?:([+-−]\d+\/[+-−]\d+|first strike|double strike|[a-z][a-z -]*?) )?counter is (?:put|placed) on ~$/i
+	);
+	if (nthOnSelf) {
+		const ord = parseExtendedOrdinal(nthOnSelf[1]);
+		const rawCtr = nthOnSelf[2];
+		const ctr = rawCtr ? parseTriggerCounter(rawCtr) : undefined;
+		if (ord !== null && (!rawCtr || ctr)) {
+			return {
+				event: 'counterPlaced',
+				filter: {
+					object: 'self',
+					...(ctr ? { counter: ctr } : {}),
+					nthCounterOnSelf: ord
+				}
+			};
+		}
+	}
+	// --- End Track P19b ---
 
 	// Counter placed: "a +1/+1 counter is put on ~", "one or more +1/+1 counters are put on another creature you control"
 	const m = head.match(
@@ -1776,6 +2276,24 @@ function triggerHead(head: string, depth = 0): TriggerDef | null {
 			if (left && right) return mergeCompoundTriggerDefs(left, right);
 		}
 		// --- End Track P16b ---
+		// --- Track P19b: CR 603.1b compound step + event ("At the beginning of <step> and/or whenever/when <event>") ---
+		const atThenEvent = head.match(
+			/^(at (?:the beginning of .+|(?:the )?end of combat))\s+(?:and|or)\s+((?:when|whenever) .+)$/i
+		);
+		if (atThenEvent) {
+			const left = triggerHead(atThenEvent[1].trim(), depth + 1);
+			const right = triggerHead(atThenEvent[2].trim(), depth + 1);
+			if (left && right) return mergeCompoundTriggerDefs(left, right);
+		}
+		const twoAts = head.match(
+			/^(at (?:the beginning of .+|(?:the )?end of combat))\s+(?:and|or)\s+(at (?:the beginning of .+|(?:the )?end of combat))$/i
+		);
+		if (twoAts) {
+			const left = triggerHead(twoAts[1].trim(), depth + 1);
+			const right = triggerHead(twoAts[2].trim(), depth + 1);
+			if (left && right) return mergeCompoundTriggerDefs(left, right);
+		}
+		// --- End Track P19b ---
 		const compound = head.match(/^((?:when|whenever) .+?)\s+(?:and|or)\s+((?:when|whenever) .+)$/i);
 		if (compound) {
 			const left = triggerHead(compound[1].trim(), depth + 1);
@@ -1985,6 +2503,129 @@ function triggerHead(head: string, depth = 0): TriggerDef | null {
 		}
 	}
 	// --- End Track P16b ---
+	// --- Track P19b ---
+	if (/^enchanted player is attacked$/i.test(body)) {
+		return {
+			event: 'attacks',
+			filter: { player: { relation: 'any' }, oneOrMore: true, attackedTarget: 'enchantedPlayer' }
+		};
+	}
+	const manaAddedHead = body.match(
+		/^a (.+?)'s ability causes (you|a player|an opponent) to add (?:one or more )?(?:mana of the chosen color|\{([WUBRGC])\})$/i
+	);
+	if (manaAddedHead) {
+		const subj = objectSubject(`a ${manaAddedHead[1]}`);
+		const pl = playerSubject(manaAddedHead[2].toLowerCase());
+		if (subj && typeof subj.object === 'object' && !objectFilterProblem(subj.object) && pl) {
+			return {
+				event: 'manaAddedByLandAbility',
+				filter: {
+					object: subj.object,
+					player: pl,
+					...(manaAddedHead[3]
+						? { tappedManaColor: manaAddedHead[3].toUpperCase() as ManaColor }
+						: { tappedManaChosenColor: true })
+				}
+			};
+		}
+	}
+	const youOrPermTarget = body.match(
+		/^you or (a|an|another) (.+?) you control becomes? the target of (a spell or ability|a spell|an ability)(?: (an opponent controls|your opponents control|you don't control|you control))?( for the first time each turn)?$/i
+	);
+	if (youOrPermTarget) {
+		const permSubj = objectSubject(`${youOrPermTarget[1]} ${youOrPermTarget[2]} you control`);
+		if (permSubj && typeof permSubj.object === 'object' && !objectFilterProblem(permSubj.object)) {
+			const rawBy = youOrPermTarget[3].toLowerCase();
+			const targetedBy: 'spell' | 'ability' | 'spellOrAbility' =
+				rawBy === 'a spell' ? 'spell' : rawBy === 'an ability' ? 'ability' : 'spellOrAbility';
+			const rawCtrl = youOrPermTarget[4]?.toLowerCase();
+			const player: PlayerFilter | undefined = !rawCtrl
+				? undefined
+				: rawCtrl === 'you control'
+					? { relation: 'you' }
+					: { relation: 'opponent' };
+			const firstTime = Boolean(youOrPermTarget[5]);
+			return mergeCompoundTriggerDefs(
+				{
+					event: 'becomesTarget',
+					filter: {
+						targetPlayer: 'you',
+						targetedBy,
+						...(player ? { player } : {}),
+						...(firstTime ? { firstTimeEachTurn: true } : {})
+					}
+				},
+				{
+					event: 'becomesTarget',
+					filter: {
+						object: permSubj.object,
+						targetedBy,
+						...(player ? { player } : {}),
+						...(firstTime ? { firstTimeEachTurn: true } : {})
+					}
+				}
+			);
+		}
+	}
+	if (/^~ is milled$/i.test(body)) {
+		return {
+			event: 'zoneChange',
+			filter: { object: 'self', from: 'library', to: 'graveyard' },
+			fromZone: 'graveyard'
+		};
+	}
+	const cardsMilled = body.match(
+		/^(one or more|(?:a|an)) (?:(.+?) )?cards? (?:is|are) milled( during your turn)?$/i
+	);
+	if (cardsMilled) {
+		const oneOrMore = /^one or more$/i.test(cardsMilled[1]);
+		const object = parseGraveyardLeaveCardFilter(cardsMilled[2]);
+		if (object) {
+			return {
+				event: 'zoneChange',
+				filter: {
+					object,
+					from: 'library',
+					to: 'graveyard',
+					...(oneOrMore ? { oneOrMore: true } : {}),
+					...(cardsMilled[3] ? { duringTurn: 'your' } : {})
+				}
+			};
+		}
+	}
+	const nOrMoreAttack = body.match(
+		/^(\S+) or more (.+?) attack( a player| an opponent| enchanted player)?$/i
+	);
+	if (nOrMoreAttack) {
+		const minN = number(nOrMoreAttack[1]);
+		const obj = parseP16bObjectPhrase(nOrMoreAttack[2]);
+		const suffix = nOrMoreAttack[3]?.trim().toLowerCase();
+		if (
+			minN !== null &&
+			(suffix ? minN >= 1 : minN >= 2) &&
+			obj &&
+			!objectFilterProblem(obj) &&
+			(!obj.controller || obj.controller === 'you' || obj.controller === 'opponent')
+		) {
+			return {
+				event: 'attacks',
+				filter: {
+					...(obj.controller === 'you' ? { player: { relation: 'you' } } : {}),
+					oneOrMore: true,
+					...(minN >= 2 ? { minAttackers: minN } : {}),
+					object: obj,
+					...(suffix === 'a player'
+						? { perAttackedPlayer: true }
+						: suffix === 'an opponent'
+							? { attackedTarget: 'opponent' }
+							: suffix === 'enchanted player'
+								? { attackedTarget: 'enchantedPlayer' }
+								: {})
+				}
+			};
+		}
+	}
+	// --- End Track P19b ---
 
 	// Player subjects first ("you cast", "an opponent draws a card").
 	const ps = body.match(/^(you|a player|an opponent) (.+)$/);
@@ -2268,7 +2909,9 @@ export function parseCondition(
 	if (/^if an opponent has more cards in hand than you$/i.test(t)) {
 		return { k: 'opponentComparison', metric: 'hand' };
 	}
-	const gyThreshold = t.match(/^if (?:there are )?(\S+) or more cards(?: are)? in your graveyard$/i);
+	const gyThreshold = t.match(
+		/^if (?:there are |you have )?(\S+) or more cards(?: are)? in your graveyard$/i
+	);
 	if (gyThreshold && number(gyThreshold[1]) !== null) {
 		return {
 			k: 'compare',
@@ -2289,7 +2932,7 @@ export function parseCondition(
 		};
 	}
 	const gyTypedCond = t.match(
-		/^if (?:there are )?(\S+) or more (.+?) cards(?: are)? in your graveyard$/i
+		/^if (?:there are |you have )?(\S+) or more (.+?) cards(?: are)? in your graveyard$/i
 	);
 	if (gyTypedCond && number(gyTypedCond[1]) !== null) {
 		const f = parseGraveyardLeaveCardFilter(gyTypedCond[2]);
@@ -2422,11 +3065,11 @@ export function parseCondition(
 		};
 	}
 	const selfStateCond = t.match(
-		/^if (?:(?:~|it) is|it's) (not )?(tapped|untapped|attacking|blocking|enchanted|equipped|saddled|monstrous|modified|renowned|harnessed)$/i
+		/^if (?:(?:~|it) is(n't| not)?|it's( not)?) (tapped|untapped|attacking|blocking|enchanted|equipped|saddled|monstrous|modified|renowned|harnessed)$/i
 	);
 	if (selfStateCond) {
-		const neg = Boolean(selfStateCond[1]);
-		const st = selfStateCond[2].toLowerCase();
+		const neg = Boolean(selfStateCond[1] || selfStateCond[2]);
+		const st = selfStateCond[3].toLowerCase();
 		const baseCond: Condition =
 			st === 'tapped'
 				? { k: 'objectState', of: 'self', tapped: true }
@@ -2763,10 +3406,10 @@ export function parseCondition(
 		return { k: 'controlledByOtherThanOwner' };
 	}
 	// --- End Track P16b ---
-	const selfFilterCond = t.match(/^if (?:(?:~|it) is|it's) (not )?(?:a|an) (.+)$/i);
+	const selfFilterCond = t.match(/^if (?:(?:~|it) is(n't| not)?|it's( not)?) (?:a|an) (.+)$/i);
 	if (selfFilterCond) {
-		const neg = Boolean(selfFilterCond[1]);
-		const f = parseP16bObjectPhrase(selfFilterCond[2]);
+		const neg = Boolean(selfFilterCond[1] || selfFilterCond[2]);
+		const f = parseP16bObjectPhrase(selfFilterCond[3]);
 		if (f && !objectFilterProblem(f)) {
 			const baseCond: Condition = { k: 'matchesFilter', target: { k: 'self' }, filter: f };
 			return neg ? { k: 'not', of: baseCond } : baseCond;
@@ -2786,6 +3429,230 @@ export function parseCondition(
 		}
 	}
 	// --- End Track P16b ---
+	// --- Track P19b ---
+	if (/^if a creature died under your control this turn$/i.test(t)) {
+		return { k: 'creatureDiedUnderYourControlThisTurn' };
+	}
+	if (
+		/^if (?:no creatures? died|a creature didn't die|a creature did not die) under your control this turn$/i.test(
+			t
+		)
+	) {
+		return { k: 'not', of: { k: 'creatureDiedUnderYourControlThisTurn' } };
+	}
+	if (/^if mana from a treasure was spent to cast (?:it|~|this spell)$/i.test(t)) {
+		return { k: 'treasureManaSpentToCast' };
+	}
+	if (/^if mana from a treasure was(?:n't| not) spent to cast (?:it|~|this spell)$/i.test(t)) {
+		return { k: 'not', of: { k: 'treasureManaSpentToCast' } };
+	}
+	if (
+		/^if you (?:haven't|have not|didn't|did not) cast a spell from your hand this turn$/i.test(t)
+	) {
+		return { k: 'noSpellCastFromHandThisTurn' };
+	}
+	if (/^if you(?:'ve| have)? cast a spell from your hand this turn$/i.test(t)) {
+		return { k: 'not', of: { k: 'noSpellCastFromHandThisTurn' } };
+	}
+	if (/^if (?:(?:~|it) is|it's) suspended$/i.test(t)) {
+		return { k: 'isSuspended' };
+	}
+	if (/^if (?:(?:~|it) is(?:n't| not)|it's not) suspended$/i.test(t)) {
+		return { k: 'not', of: { k: 'isSuspended' } };
+	}
+	if (/^if you chose a creature other than ~ as your ring-bearer$/i.test(t)) {
+		return { k: 'choseOtherRingBearer' };
+	}
+	const altCostPaidM = t.match(/^if (?:its|the) (surge|prowl|spectacle) cost was paid$/i);
+	if (altCostPaidM) {
+		return {
+			k: 'paidAltCost',
+			kind: altCostPaidM[1].toLowerCase() as 'surge' | 'prowl' | 'spectacle'
+		};
+	}
+	const altCostNotPaidM = t.match(
+		/^if (?:its|the) (surge|prowl|spectacle) cost was(?:n't| not) paid$/i
+	);
+	if (altCostNotPaidM) {
+		return {
+			k: 'not',
+			of: {
+				k: 'paidAltCost',
+				kind: altCostNotPaidM[1].toLowerCase() as 'surge' | 'prowl' | 'spectacle'
+			}
+		};
+	}
+	const enteredUnderYouM = t.match(
+		/^if (?:(?:a|an|one or more) (.+?)|(another .+?)) entered(?: the battlefield)? under your control this turn$/i
+	);
+	if (enteredUnderYouM) {
+		const f = parseP16bObjectPhrase(enteredUnderYouM[1] ?? enteredUnderYouM[2]);
+		if (f && !f.controller && !objectFilterProblem(f)) {
+			return { k: 'enteredUnderYourControlThisTurn', filter: f };
+		}
+	}
+	const youHadEnterM = t.match(
+		/^if you had (?:a|an) (.+?) enter(?: the battlefield)? under your control this turn$/i
+	);
+	if (youHadEnterM) {
+		const f = parseP16bObjectPhrase(youHadEnterM[1]);
+		if (f && !f.controller && !objectFilterProblem(f)) {
+			return { k: 'enteredUnderYourControlThisTurn', filter: f };
+		}
+	}
+	const noEnteredUnderYouM = t.match(
+		/^if no (.+?) entered(?: the battlefield)? under your control this turn$/i
+	);
+	if (noEnteredUnderYouM) {
+		const f = parseP16bObjectPhrase(noEnteredUnderYouM[1]);
+		if (f && !f.controller && !objectFilterProblem(f)) {
+			return { k: 'not', of: { k: 'enteredUnderYourControlThisTurn', filter: f } };
+		}
+	}
+	const gyOneCardM = t.match(
+		/^if (?:there's|there is|there are|you have) (?:a|an|one or more) (.+?) cards? in your graveyard$/i
+	);
+	if (gyOneCardM) {
+		const f =
+			parseGraveyardLeaveCardFilter(gyOneCardM[1]) ??
+			parseP16bObjectPhrase(`${gyOneCardM[1]} card`);
+		if (f && !objectFilterProblem(f)) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, zone: 'graveyard', controller: 'you' } },
+				op: '>=',
+				right: n(1)
+			};
+		}
+	}
+	const gyMvThresholdM = t.match(
+		/^if there are (\S+) or more mana values among cards in your graveyard$/i
+	);
+	if (gyMvThresholdM && number(gyMvThresholdM[1]) !== null) {
+		return {
+			k: 'distinctManaValuesInGraveyardAtLeast',
+			min: number(gyMvThresholdM[1])!
+		};
+	}
+	const ctrlExactM = t.match(/^if you control exactly (\S+) (.+)$/i);
+	if (ctrlExactM && number(ctrlExactM[1]) !== null) {
+		const f = parseP16bObjectPhrase(ctrlExactM[2]);
+		if (f && !f.controller && !objectFilterProblem(f)) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, controller: 'you' } },
+				op: '=',
+				right: n(number(ctrlExactM[1])!)
+			};
+		}
+	}
+	const dontCtrlM = t.match(/^if you (?:don't|do not) control (?:a|an|any) (.+)$/i);
+	if (dontCtrlM) {
+		const f = parseP16bObjectPhrase(dontCtrlM[1]);
+		if (f && !f.controller && !objectFilterProblem(f)) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, controller: 'you' } },
+				op: '=',
+				right: n(0)
+			};
+		}
+	}
+	const oppCtrlNoneM = t.match(/^if (?:your opponents control|an opponent controls) no (.+)$/i);
+	if (oppCtrlNoneM) {
+		const f = parseP16bObjectPhrase(oppCtrlNoneM[1]);
+		if (f && !f.controller && !objectFilterProblem(f)) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, controller: 'opponent' } },
+				op: '=',
+				right: n(0)
+			};
+		}
+	}
+	const oppCtrlSomeM = t.match(
+		/^if (?:your opponents control|an opponent controls) (?:(?:a|an)|(\S+) or more) (.+)$/i
+	);
+	if (oppCtrlSomeM) {
+		const cnt = oppCtrlSomeM[1] ? number(oppCtrlSomeM[1]) : 1;
+		const f = parseP16bObjectPhrase(oppCtrlSomeM[2]);
+		if (cnt !== null && f && !f.controller && !objectFilterProblem(f)) {
+			return {
+				k: 'compare',
+				left: { k: 'count', of: { ...f, controller: 'opponent' } },
+				op: '>=',
+				right: n(cnt)
+			};
+		}
+	}
+	if (/^if (?:~|it) entered(?: the battlefield)? this turn$/i.test(t)) {
+		return { k: 'selfEnteredThisTurn' };
+	}
+	if (/^if (?:~|it) (?:didn't|did not) enter(?: the battlefield)? this turn$/i.test(t)) {
+		return { k: 'not', of: { k: 'selfEnteredThisTurn' } };
+	}
+	if (/^if that (?:creature|permanent) entered(?: the battlefield)? this turn$/i.test(t)) {
+		return { k: 'eventObjectEnteredThisTurn' };
+	}
+	if (
+		/^if that (?:creature|permanent) (?:didn't|did not) enter(?: the battlefield)? this turn$/i.test(
+			t
+		)
+	) {
+		return { k: 'not', of: { k: 'eventObjectEnteredThisTurn' } };
+	}
+	if (/^if (?:(?:~|it) is(?:n't| not)|it's not) being declared as an attacker$/i.test(t)) {
+		return { k: 'notBeingDeclaredAsAttacker' };
+	}
+	const dmgToSelfTurnM = t.match(
+		/^if (?:~ was dealt (\S+) or more damage|(\S+) or more damage was dealt to (?:it|~)) this turn$/i
+	);
+	if (dmgToSelfTurnM) {
+		const min = number(dmgToSelfTurnM[1] ?? dmgToSelfTurnM[2]);
+		if (min !== null) {
+			return { k: 'damageDealtToSelfThisTurnAtLeast', min };
+		}
+	}
+	if (/^if ~ (?:didn't|did not) attack or come under your control this turn$/i.test(t)) {
+		return {
+			k: 'and',
+			of: [
+				{ k: 'not', of: { k: 'boastAttackedThisTurn' } },
+				{ k: 'not', of: { k: 'selfEnteredThisTurn' } }
+			]
+		};
+	}
+	const onlyCardInGyM = t.match(/^if ~ is the only (.+?) card in your graveyard$/i);
+	if (onlyCardInGyM) {
+		const f =
+			parseGraveyardLeaveCardFilter(onlyCardInGyM[1]) ??
+			parseP16bObjectPhrase(`${onlyCardInGyM[1]} card`);
+		if (f && !objectFilterProblem(f)) {
+			return {
+				k: 'and',
+				of: [
+					{ k: 'selfInZone', zone: 'graveyard' },
+					{
+						k: 'compare',
+						left: { k: 'count', of: { ...f, zone: 'graveyard', controller: 'you' } },
+						op: '=',
+						right: n(1)
+					}
+				]
+			};
+		}
+	}
+	if (/^if ~ dealt (?:combat )?damage to (?:a player|an opponent) this turn$/i.test(t)) {
+		return { k: 'selfDealtDamageToOpponentThisTurn' };
+	}
+	if (
+		/^if ~ (?:didn't|did not) deal (?:combat )?damage to (?:a player|an opponent) this turn$/i.test(
+			t
+		)
+	) {
+		return { k: 'not', of: { k: 'selfDealtDamageToOpponentThisTurn' } };
+	}
+	// --- End Track P19b ---
 	return null;
 }
 
@@ -2805,7 +3672,7 @@ export function parseActivatedIfConditionSentence(
 	raw: string
 ): { condition: Condition; extra?: ActivatedExtraRestriction } | null {
 	const t = raw.trim().replace(/\.$/, '').trim();
-	if (/~ is in your (?:hand|graveyard)\b/i.test(t)) return null;
+	if (/~ is in your (?:hand|graveyard)\b|~ is in exile\b|~ is suspended\b/i.test(t)) return null;
 	const ifFirst = t.match(
 		/^activate only if (.+?)(?: and only (as a sorcery|once each turn|during your turn|during your upkeep|during combat))?$/i
 	);
@@ -2828,6 +3695,46 @@ export function parseActivatedIfConditionSentence(
 }
 
 // ---- Entry point ----------------------------------------------------------------------------
+
+function triggerHeadWithInlineWhile(
+	rawHead: string
+): { trigger: TriggerDef; inlineCondition?: Condition } | null {
+	const direct = triggerHead(rawHead);
+	if (direct) return { trigger: direct };
+	if (!/\s+while\s+/i.test(rawHead)) return null;
+	const matches: Array<{ index: number; len: number }> = [];
+	const whileRe = /\s+while\s+/gi;
+	for (let guard = 0; guard < 8; guard++) {
+		const m = whileRe.exec(rawHead);
+		if (!m) break;
+		matches.push({ index: m.index, len: m[0].length });
+	}
+	for (let i = matches.length - 1; i >= 0; i--) {
+		const leftText = rawHead.slice(0, matches[i].index).trim();
+		const rightClause = rawHead.slice(matches[i].index + matches[i].len).trim();
+		if (!leftText || !rightClause) continue;
+		const inlineCondition = parseCondition(`if ${rightClause}`, { allowDungeonCompletion: true });
+		if (!inlineCondition) continue;
+		const leftTrigger = triggerHead(leftText);
+		if (leftTrigger) return { trigger: leftTrigger, inlineCondition };
+	}
+	return null;
+}
+
+function conditionImpliesSuspendedExile(cond: Condition | undefined): boolean {
+	if (!cond) return false;
+	if (cond.k === 'isSuspended') return true;
+	if (cond.k === 'and') return cond.of.some((c) => conditionImpliesSuspendedExile(c));
+	return false;
+}
+
+function conditionImpliesGraveyard(cond: Condition | undefined): boolean {
+	if (!cond) return false;
+	if (cond.k === 'graveyardAbove') return true;
+	if (cond.k === 'selfInZone' && cond.zone === 'graveyard') return true;
+	if (cond.k === 'and') return cond.of.some((c) => conditionImpliesGraveyard(c));
+	return false;
+}
 
 function candidateSentenceCommas(body: string): number[] {
 	const commas: number[] = [];
@@ -2856,12 +3763,14 @@ export function parseTriggerHeader(body: string, offset = 0): TriggerParse | nul
 	const commas = candidateSentenceCommas(body);
 	let comma = -1;
 	let trigger: TriggerDef | undefined;
+	let inlineCondition: Condition | undefined;
 	if (commas.length > 0) {
 		for (let i = commas.length - 1; i >= 0; i--) {
-			const candidate = triggerHead(body.slice(0, commas[i]));
+			const candidate = triggerHeadWithInlineWhile(body.slice(0, commas[i]));
 			if (candidate) {
 				comma = commas[i];
-				trigger = candidate;
+				trigger = candidate.trigger;
+				inlineCondition = candidate.inlineCondition;
 				break;
 			}
 		}
@@ -2874,7 +3783,9 @@ export function parseTriggerHeader(body: string, offset = 0): TriggerParse | nul
 				unparsed: [{ start: offset, end: offset + body.length }]
 			};
 		}
-		trigger = triggerHead(body.slice(0, comma)) ?? undefined;
+		const candidate = triggerHeadWithInlineWhile(body.slice(0, comma));
+		trigger = candidate?.trigger;
+		inlineCondition = candidate?.inlineCondition;
 	}
 
 	const unparsed: Span[] = [];
@@ -2882,13 +3793,14 @@ export function parseTriggerHeader(body: string, offset = 0): TriggerParse | nul
 	if (!trigger) unparsed.push({ start: offset, end: offset + head.length });
 
 	let effectStart = comma + 1;
-	let condition: Condition | undefined;
+	let condition: Condition | undefined = inlineCondition;
 	const rest = body.slice(effectStart);
 	const lead = rest.length - rest.trimStart().length;
 	if (/^if\b/i.test(rest.trimStart())) {
 		const condStart = effectStart + lead;
 		const condCommas = commas.filter((c) => c > condStart);
 		let condEnd = -1;
+		let postCommaCondition: Condition | undefined;
 		if (condCommas.length > 0) {
 			for (let i = condCommas.length - 1; i >= 0; i--) {
 				const parsedCond = parseCondition(body.slice(condStart, condCommas[i]), {
@@ -2896,7 +3808,7 @@ export function parseTriggerHeader(body: string, offset = 0): TriggerParse | nul
 				});
 				if (parsedCond) {
 					condEnd = condCommas[i];
-					condition = parsedCond;
+					postCommaCondition = parsedCond;
 					break;
 				}
 			}
@@ -2904,7 +3816,7 @@ export function parseTriggerHeader(body: string, offset = 0): TriggerParse | nul
 		} else {
 			condEnd = body.indexOf(',', condStart);
 			if (condEnd >= 0) {
-				condition =
+				postCommaCondition =
 					parseCondition(body.slice(condStart, condEnd), {
 						allowDungeonCompletion: true
 					}) ?? undefined;
@@ -2914,24 +3826,32 @@ export function parseTriggerHeader(body: string, offset = 0): TriggerParse | nul
 			unparsed.push({ start: offset + condStart, end: offset + body.length });
 			return { trigger, effectStart: offset + body.length, unparsed };
 		}
-		if (!condition) unparsed.push({ start: offset + condStart, end: offset + condEnd });
+		if (!postCommaCondition) {
+			unparsed.push({ start: offset + condStart, end: offset + condEnd });
+			condition = undefined;
+		} else {
+			condition = inlineCondition
+				? { k: 'and', of: [inlineCondition, postCommaCondition] }
+				: postCommaCondition;
+		}
 		effectStart = condEnd + 1;
 	}
-	if (
-		trigger &&
-		condition &&
-		(condition.k === 'graveyardAbove' ||
-			(condition.k === 'selfInZone' && condition.zone === 'graveyard'))
-	) {
+	if (trigger && conditionImpliesGraveyard(condition)) {
 		trigger.fromZone = 'graveyard';
+		for (const alt of trigger.or ?? []) {
+			if (!alt.fromZone) alt.fromZone = 'graveyard';
+		}
 	} else if (
 		trigger &&
 		condition &&
-		condition.k === 'selfInZone' &&
-		condition.zone === 'exile' &&
+		((condition.k === 'selfInZone' && condition.zone === 'exile') ||
+			conditionImpliesSuspendedExile(condition)) &&
 		!trigger.fromZone
 	) {
 		trigger.fromZone = 'exile';
+		for (const alt of trigger.or ?? []) {
+			if (!alt.fromZone) alt.fromZone = 'exile';
+		}
 	}
 
 	const after = body.slice(effectStart);
@@ -3021,8 +3941,36 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 	'manaValueEqualsSourcePower',
 	'controlledByEnchantedPlayer',
 	'renowned',
-	'goaded'
+	'goaded',
 	// --- End Track P16b ---
+	// --- Track P19b ---
+	'named',
+	'allColors',
+	'sameNameAsLinkedExile',
+	'exiledWithSelf',
+	'sharesTypeWithCommander',
+	'unblockedAttacker',
+	'wasNotCast',
+	'abilitySourceFilter',
+	'artifactEnchantmentOrToken',
+	'powerLessThanSource',
+	'untappedNonattackingSummoningReady',
+	'castFromZone',
+	'castFromOutsideHand',
+	'sameOwnerAsSource',
+	'bargainedSpell',
+	'targetsAttached',
+	'targetsYouOrFilter',
+	'sharesCardTypeWithExiled',
+	'allSubtypes',
+	// --- End Track P19b ---
+	// --- Track P16a & P20a ---
+	'assimilatedWithSelf',
+	'pairedWithSource',
+	'toughnessGreaterThanPower',
+	'manaValueParity',
+	'controlledByChosenPlayer'
+	// --- End Track P16a & P20a ---
 ]);
 
 /** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */
@@ -3039,7 +3987,10 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'duringTurn',
 		'attachedFilter',
 		'dealtDamageBySelfThisTurn',
-		'oneOrMore'
+		'oneOrMore',
+		'player',
+		'duringStep',
+		'duringCombat'
 	]),
 	cast: new Set([
 		'object',
@@ -3066,7 +4017,10 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'attachedFilter',
 		'attackedTarget',
 		'coAttackerFilter',
-		'coAttackerMin'
+		'coAttackerMin',
+		'perAttackedPlayer',
+		'firstTimeEachTurn',
+		'nthEventThisTurn'
 	]),
 	combatDamageBatchPlayer: new Set(['object', 'oneOrMore', 'player']),
 	blocks: new Set([
@@ -3088,7 +4042,9 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'damageTo',
 		'damageTargetKind',
 		'player',
-		'attachedFilter'
+		'attachedFilter',
+		'damageTargetFilter',
+		'damageTargetEnchantedPlayer'
 	]),
 	dealtDamage: new Set([
 		'object',
@@ -3113,7 +4069,8 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'counter',
 		'oneOrMore',
 		'putByPlayer',
-		'duringTurn'
+		'duringTurn',
+		'nthCounterOnSelf'
 	]),
 	becomesTarget: new Set([
 		'object',
@@ -3124,13 +4081,26 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'targetPlayer',
 		'player',
 		'firstTimeTargetedByYouThisTurn',
-		'attachedFilter'
+		'attachedFilter',
+		'firstTimeEachTurn'
 	]),
 	attached: new Set(['object', 'host']),
-	tappedForMana: new Set(['object', 'player']),
-	gainLife: new Set(['player', 'duringTurn']),
+	tappedForMana: new Set([
+		'object',
+		'player',
+		'attachedFilter',
+		'tappedManaColor',
+		'tappedManaChosenColor'
+	]),
+	gainLife: new Set(['player', 'duringTurn', 'firstTimeEachTurn', 'nthEventThisTurn']),
 	drawCard: new Set(['player', 'nthThisTurn']),
-	becomesTapped: new Set(['object', 'orSelf', 'orAttachedToSelf', 'attachedFilter']),
+	becomesTapped: new Set([
+		'object',
+		'orSelf',
+		'orAttachedToSelf',
+		'attachedFilter',
+		'tappedByPlayer'
+	]),
 	cycle: new Set(['object', 'player', 'duringTurn']),
 	discard: new Set(['object', 'player', 'oneOrMore', 'causedByOpponent', 'duringTurn']),
 	transforms: new Set(['object', 'orSelf', 'orAttachedToSelf', 'toFaceFilter', 'attachedFilter']),
@@ -3139,7 +4109,7 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	surveil: new Set(['player', 'duringTurn']),
 	explore: new Set(['object', 'orSelf']),
 	connive: new Set(['object', 'orSelf']),
-	becomesCrewed: new Set(['object', 'orSelf']),
+	becomesCrewed: new Set(['object', 'orSelf', 'firstTimeEachTurn']),
 	becameMonarch: new Set(['player', 'duringTurn']),
 	becomesSaddled: new Set(['object', 'orSelf']),
 	foretell: new Set(['object', 'player']),
@@ -3176,16 +4146,32 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	stateTriggered: new Set(['stateCondition']),
 	dayNightChanged: new Set(['dayNightDirection']),
 	facedDilemma: new Set(['player']),
-	loseLife: new Set(['player', 'duringTurn']),
+	loseLife: new Set(['player', 'duringTurn', 'firstTimeEachTurn', 'nthEventThisTurn']),
 	exhaustActivated: new Set(['object', 'player']),
 	unattached: new Set(['object', 'orSelf', 'orAttachedToSelf']),
 	phasedIn: new Set(['object', 'orSelf', 'orAttachedToSelf']),
 	collectEvidence: new Set(['player']),
-	landPlayed: new Set(['object', 'player', 'duringTurn']),
+	landPlayed: new Set(['object', 'player', 'duringTurn', 'castFromZone', 'castFromNotHand']),
 	mutates: new Set(['object', 'orSelf', 'orAttachedToSelf', 'player']),
 	soulbondPaired: new Set(['object']),
-	hauntedCreatureDies: new Set(['object'])
+	hauntedCreatureDies: new Set(['object']),
 	// --- End Track P16b ---
+	// --- Track P19b ---
+	manaAddedByLandAbility: new Set([
+		'object',
+		'player',
+		'tappedManaColor',
+		'tappedManaChosenColor'
+	]),
+	librarySearched: new Set(['player']),
+	playerLostGame: new Set(['player']),
+	coinFlipped: new Set(['player', 'wonCoinFlip', 'oneOrMore']),
+	dieRolled: new Set(['player', 'dieRollMin', 'dieRollValues', 'oneOrMore']),
+	energyGained: new Set(['player']),
+	proliferated: new Set(['player']),
+	evolved: new Set(['object', 'orSelf']),
+	crewedVehicle: new Set(['object', 'orSelf'])
+	// --- End Track P19b ---
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {
@@ -3206,6 +4192,14 @@ function objectFilterProblem(f: ObjectFilter | undefined): string | null {
 	if (f.targetsFilter) {
 		const tp = objectFilterProblem(f.targetsFilter);
 		if (tp) return tp;
+	}
+	if (f.abilitySourceFilter) {
+		const ap = objectFilterProblem(f.abilitySourceFilter);
+		if (ap) return ap;
+	}
+	if (f.targetsYouOrFilter) {
+		const typ = objectFilterProblem(f.targetsYouOrFilter);
+		if (typ) return typ;
 	}
 	if (
 		f.controllerRef &&
@@ -3241,7 +4235,8 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 		objectFilterProblem(f.attachedFilter) ??
 		objectFilterProblem(f.blockedAttackerFilter) ??
 		objectFilterProblem(f.targetingSourceFilter) ??
-		objectFilterProblem(f.coAttackerFilter);
+		objectFilterProblem(f.coAttackerFilter) ??
+		objectFilterProblem(f.damageTargetFilter);
 	if (p) return p;
 	if (
 		f.object === 'attachedTo' &&
@@ -3296,14 +4291,8 @@ export function runtimeTriggerProblem(def: TriggerDef): string | null {
 	if (
 		def.fromZone &&
 		def.fromZone !== 'graveyard' &&
-		!(def.fromZone === 'any' && (def.event === 'cycle' || def.event === 'discard')) &&
-		!(
-			def.fromZone === 'exile' &&
-			(def.event === 'hauntedCreatureDies' ||
-				def.event === 'counterRemoved' ||
-				def.event === 'phaseBegin' ||
-				def.event === 'cast')
-		)
+		def.fromZone !== 'exile' &&
+		!(def.fromZone === 'any' && (def.event === 'cycle' || def.event === 'discard'))
 	) {
 		return `functions from ${def.fromZone}`;
 	}
@@ -3344,6 +4333,86 @@ export interface RuntimeTrigger {
 }
 
 const RUNTIME_TRIGGERS = new WeakMap<CardDefinition, Map<number, RuntimeTrigger[]>>();
+
+function synthesizeTriggeredManaEffect(
+	text: string,
+	trigger: TriggerDef
+): { steps: EffectStep[]; targets: TargetSpec[]; unparsed: [] } | null {
+	if (trigger.event !== 'tappedForMana' && trigger.event !== 'manaAddedByLandAbility') {
+		return null;
+	}
+	const hdr = parseTriggerHeader(text);
+	if (!hdr || hdr.unparsed.length > 0) return null;
+	const rawTail = text.slice(hdr.effectStart).trim().replace(/\.$/, '').trim();
+	const clauseM = rawTail.match(
+		/^(?:(its controller|that land's controller|that permanent's controller|that player|you)\s+adds?\s+|add\s+)(.+)$/i
+	);
+	if (!clauseM) return null;
+	const rawActor = clauseM[1]?.toLowerCase();
+	const actor: PlayerRef | undefined =
+		rawActor === 'that player'
+			? { k: 'eventPlayer' }
+			: rawActor && rawActor !== 'you'
+				? {
+						k: 'controllerOf',
+						of:
+							trigger.filter.object === 'attachedTo'
+								? { k: 'attachedTo' }
+								: { k: 'eventObject' }
+					}
+				: undefined;
+	const rest = clauseM[2].trim();
+	const span: Span = { start: hdr.effectStart, end: text.length };
+
+	const thatColorM = rest.match(
+		/^(?:an additional\s+)?(one|1|two|2)\s+(?:additional\s+)?mana of (?:that|the chosen) color$/i
+	);
+	if (thatColorM) {
+		const amtN = /^(?:two|2)$/i.test(thatColorM[1]) ? 2 : 1;
+		const params: EffectStep['params'] = trigger.filter.tappedManaChosenColor
+			? { manaChoice: 'chosenColor' }
+			: trigger.filter.tappedManaColor
+				? { mana: [trigger.filter.tappedManaColor] }
+				: { manaChoice: 'any', manaFromProducedEvent: true };
+		return {
+			steps: [
+				{
+					verb: 'addMana',
+					subject: { k: 'none' },
+					amount: n(amtN),
+					...(actor ? { actor } : {}),
+					params,
+					span
+				}
+			],
+			targets: [],
+			unparsed: []
+		};
+	}
+
+	const producedTypeM = rest.match(
+		/^(?:an additional\s+)?(one|1|two|2)\s+(?:additional\s+)?mana of any (?:type|color) that (?:land|permanent|creature|artifact) produced$/i
+	);
+	if (producedTypeM) {
+		const amtN = /^(?:two|2)$/i.test(producedTypeM[1]) ? 2 : 1;
+		return {
+			steps: [
+				{
+					verb: 'addMana',
+					subject: { k: 'none' },
+					amount: n(amtN),
+					...(actor ? { actor } : {}),
+					params: { manaChoice: 'any', manaFromProducedEvent: true },
+					span
+				}
+			],
+			targets: [],
+			unparsed: []
+		};
+	}
+
+	return null;
+}
 
 /**
  * The triggered abilities the runtime matches for a compiled card:
@@ -3397,13 +4466,16 @@ export function runtimeTriggers(def: CardDefinition, faceIndex = 0): RuntimeTrig
 		} else if (ab.kind === 'unsupported' && ab.reason === 'unparsed' && ab.trigger) {
 			// An unparsed intervening-if leaves `condition` undefined: such abilities are 'unparsed' via
 			// the trigger head (no ab.trigger), so they never get here.
+			const resolvedTrigger = resolveDoorFaceTrigger(ab.trigger, faceIndex);
+			const synthMana = synthesizeTriggeredManaEffect(ab.text, resolvedTrigger);
 			out.push({
 				abilityIndex,
-				trigger: resolveDoorFaceTrigger(ab.trigger, faceIndex),
+				trigger: resolvedTrigger,
 				condition: ab.condition,
 				...(ab.grantCondition ? { grantCondition: ab.grantCondition } : {}),
-				effectSupported: false,
-				text: ab.text
+				effectSupported: Boolean(synthMana),
+				text: ab.text,
+				...(synthMana ? { effect: synthMana } : {})
 			});
 		}
 	});

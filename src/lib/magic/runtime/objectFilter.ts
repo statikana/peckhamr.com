@@ -111,6 +111,9 @@ import {
 	matchesManaValueParity
 } from './staticsWave7.ts';
 // --- End Track P20a ---
+// --- Track P19b ---
+import { evaluateP19bCondition } from './triggersWave7.ts';
+// --- End Track P19b ---
 
 export interface FilterContext {
 	state: GameState;
@@ -626,9 +629,54 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	}
 	if (filter.other && ctx.source && obj.instanceId === ctx.source.instanceId) return false;
 	if (filter.named !== undefined) {
-		const name = obj.isFaceDown ? '' : evaluated ? evaluated.effectiveName : card.name;
+		// --- Track P19b: resolve active face name off-battlefield as well as evaluated name on-battlefield ---
+		const name = obj.isFaceDown
+			? ''
+			: evaluated
+				? evaluated.effectiveName
+				: resolveObjectFaces(card, faceOpts).name;
 		if (name.toLowerCase() !== filter.named.toLowerCase()) return false;
+		// --- End Track P19b ---
 	}
+	// --- Track P19b ---
+	if (filter.allColors?.length) {
+		const colors = onBattlefield
+			? (obj.isFaceDown ? [] : evaluated!.colors)
+			: resolveOffBattlefieldColors();
+		if (!filter.allColors.every((c) => colors.includes(c))) return false;
+	}
+	if (filter.sameNameAsLinkedExile) {
+		if (!ctx.source || obj.isFaceDown) return false;
+		const candName = (
+			evaluated ? evaluated.effectiveName : resolveObjectFaces(card, faceOpts).name
+		).toLowerCase();
+		if (!candName) return false;
+		const srcId = ctx.source.instanceId;
+		const srcVer = ctx.source.objectVersion ?? 1;
+		let matchedExile = false;
+		for (const pl of ctx.state.players) {
+			for (const ex of pl.exile) {
+				if (
+					ex.exiledBy &&
+					ex.exiledBy.sourceInstanceId === srcId &&
+					ex.exiledBy.sourceObjectVersion === srcVer &&
+					!ex.isFaceDown
+				) {
+					const exName = resolveObjectFaces(
+						effectiveCardForObject(ex),
+						instanceFaceOptions(ex)
+					).name.toLowerCase();
+					if (exName === candName) {
+						matchedExile = true;
+						break;
+					}
+				}
+			}
+			if (matchedExile) break;
+		}
+		if (!matchedExile) return false;
+	}
+	// --- End Track P19b ---
 	if (filter.colors) {
 		const colors = onBattlefield
 			? (obj.isFaceDown ? [] : evaluated!.colors)
@@ -1330,6 +1378,36 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 		case 'mostCommonColorAmongPermanents':
 			return evaluateMostCommonColorOnBattlefield(ctx.state, cond.color, cond.allowTie);
 		// --- End Track P20a ---
+		// --- Track P19b ---
+		case 'creatureDiedUnderYourControlThisTurn':
+		case 'treasureManaSpentToCast':
+		case 'noSpellCastFromHandThisTurn':
+		case 'isSuspended':
+		case 'choseOtherRingBearer':
+		case 'enteredUnderYourControlThisTurn':
+		case 'paidAltCost':
+		case 'notBeingDeclaredAsAttacker':
+		case 'selfDealtDamageToOpponentThisTurn':
+		case 'damageDealtToSelfThisTurnAtLeast':
+		case 'eventObjectEnteredThisTurn':
+		case 'selfEnteredThisTurn':
+		case 'distinctManaValuesInGraveyardAtLeast':
+			return (
+				evaluateP19bCondition(
+					cond,
+					{
+						state: ctx.state,
+						controllerId: ctx.controllerId,
+						sourceInstanceId: ctx.source?.instanceId ?? ctx.stackItem?.sourceInstanceId ?? '',
+						source: ctx.source,
+						stackItem: ctx.stackItem,
+						triggerEventStackItem: ctx.stackItem?.triggerEventStackItem,
+						zone: ctx.zone
+					},
+					matchesObjectFilter
+				) ?? false
+			);
+		// --- End Track P19b ---
 		default:
 			return false;
 	}
