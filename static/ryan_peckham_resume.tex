@@ -38,13 +38,17 @@
 \pdfgentounicode=1
 
 \newcommand{\resumeItem}[1]{
-\item\small{#1 \vspace{-2pt}}
+\item\small{#1 \vspace{2pt}}
 }
 
+\newcommand{
+\shortsection
+}{\vspace{-8pt}\section}
+
 \newcommand{\resumeSubheading}[4]{
-\vspace{-5pt}\item
+\vspace{-6pt}\item
 \begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
-\textbf{#1} & #2 \\
+\textbf{#1} & #2 \\ \vspace{4pt}
 \small#3 & \small #4 \\
 \end{tabular*}\vspace{-5pt}
 }
@@ -88,35 +92,33 @@
 
 \begin{document}
 \begin{center}
-\textbf{\Huge \scshape Ryan Peckham} \\ \vspace{2pt}
+\textbf{\Huge \scshape Ryan Peckham} \\ \vspace{1pt}
 \small \href{mailto:peckhamr@umich.edu}{peckhamr@umich.edu} $\cdot$
 \href{[https://peckhamr.com](https://peckhamr.com)}{peckhamr.com} $\cdot$
 +1 (616) 834-2160 $\cdot$
 Ann Arbor, MI
 \end{center}
 
-\section{Education}
+\shortsection{Education}
 \resumeSubHeadingListStart
 \resumeSubheading
 {University of Michigan}{Ann Arbor, MI}
 {B.S. Computer Engineering; GPA: 3.35/4.0}{Aug. 2025 -- Present}
-\resumeItem{\vspace{3pt}Sophomore -- Anticipated Graduation May 2029}
-\resumeItem{\textbf{Coursework:} Multivariable \& Vector Calculus, Electricity \& Magnetism, Quantum Photonics, Discrete Mathematics, Solar Energy Systems, Probability \& Statistics}
+\resumeItem{Sophomore -- Anticipated Graduation May 2029}
+\resumeItem{\textbf{Coursework:} Multivariable \& Vector Calculus, Electricity \& Magnetism, Quantum Photonics, Programming \& Data Structures, Discrete Mathematics, Solar Energy Systems, Probability \& Statistics}
 
 \resumeSubHeadingListEnd
 
-\section{Skills}
+\shortsection{Skills}
 \resumeSubHeadingListStart
-\small{\item{
-\textbf{Programming Languages}{: Python, Rust, C, C++, C\#, Java, SQL, MATLAB} \\
-\textbf{Web}{: HTML, CSS, JavaScript, Svelte, Cloudflare Workers}\\
-\textbf{Systems}{: Git \& GitHub, PostgreSQL, WSL, Docker, Database Normalization, Threading} \\
-\textbf{Operating Systems}{: Windows, Linux (Ubuntu, Debian, NixOS), MacOS} \\
-\textbf{Hardware}{: Soldering, Shielded Metal Arc Welding, CNC Machines, Lathes, Mills}
-}}
+\resumeItem{\textbf{Programming Languages} --- Python, Rust, C, C++, C\#, Java, SQL, MATLAB}
+\resumeItem{\textbf{Web} --- HTML, CSS, JavaScript, Svelte, Cloudflare Workers}
+\resumeItem{\textbf{Systems} --- Git \& GitHub, PostgreSQL, WSL, Docker, Database Normalization, Threading}
+\resumeItem{\textbf{Operating Systems} --- Windows, Linux (Ubuntu, Debian, NixOS), MacOS} 
+\resumeItem{\textbf{Hardware} --- Soldering, Shielded Metal Arc Welding, CNC Machines, Lathes, Mills}
 \resumeSubHeadingListEnd
 
-\section{Experience}
+\shortsection{Experience}
 \resumeSubHeadingListStart
 
 \resumeSubheading
@@ -129,21 +131,21 @@ Ann Arbor, MI
 \resumeItem{Integrating ROS2, OpenCV, telemetry, and path-finding modules into a cohesive flight software stack}
 \resumeItemListEnd
 
-\resumeSubheading
-{Michigan Hackers, Machine Learning Team, Member}{Nov. 2025 -- Present}
-{University of Michigan}{}
-\resumeItemListStart
-\resumeItem{Built a foundation in machine learning theory including Markov chains, Bayes' theorem, backpropagation, regression, and neural network design}
-\resumeItem{Led peer lectures and contributed to technical discussion of modern theory and applications of machine learning}
-\resumeItemListEnd
+% \resumeSubheading
+% {Michigan Hackers, Machine Learning Team, Member}{Nov. 2025 -- Present}
+% {University of Michigan}{}
+% \resumeItemListStart
+% \resumeItem{Built a foundation in machine learning theory including Markov chains, Bayes' theorem, backpropagation, regression, and neural network design}
+% \resumeItem{Led peer lectures and contributed to technical discussion of modern theory and applications of machine learning}
+% \resumeItemListEnd
 
-\resumeSubheading
-{Engineering 100}{Aug. 2025 -- Dec. 2025}
-{University of Michigan}{}
-\resumeItemListStart
-\resumeItem{Built a sun-tracking solar panel on a Raspberry Pi, writing the C++ control code and wiring and soldering photoresistors, stepper motors, voltage limiters, and a battery}
-\resumeItem{Collaborated in a design team to prioritize tasks, balance planning with execution, and draw meaningful conclusions from test data}
-\resumeItemListEnd
+% \resumeSubheading
+% {Engineering 100}{Aug. 2025 -- Dec. 2025}
+% {University of Michigan}{}
+% \resumeItemListStart
+% \resumeItem{Built a sun-tracking solar panel on a Raspberry Pi, writing the C++ control code and wiring and soldering photoresistors, stepper motors, voltage limiters, and a battery}
+% \resumeItem{Collaborated in a design team to prioritize tasks, balance planning with execution, and draw meaningful conclusions from test data}
+% \resumeItemListEnd
 
 \resumeSubheading
 {FIRST Robotics Competition (FRC), Team 141 ``WOBOT''}{Aug. 2023 -- Oct. 2024}
@@ -159,16 +161,20 @@ Ann Arbor, MI
 \resumeItemListStart
 \resumeItem{Diagnosed and refurbished desktop systems, troubleshooting hardware-level faults on motherboards, power supplies, and storage drives}
 \resumeItem{Replaced faulty physical components and managed hardware integration, deepening practical understanding of computer architecture}
-\resumeItem{Provisioned hardware by deploying Microsoft Windows OS and configuring system drivers, preparing ready-to-use systems for shipment to Cambodia and Haiti}
+\resumeItem{Provisioned hardware by deploying Windows OS and configuring system drivers, preparing ready-to-use systems for shipment to Cambodia and Haiti}
 \resumeItemListEnd
 
 \resumeSubHeadingListEnd
 
 \section{Personal Projects}
-\resumeItemListStart
-\resumeItem{Designed, built, and deployed my personal website \href{[https://peckhamr.com](https://peckhamr.com)}{peckhamr.com} with Svelte, JavaScript, HTML, and CSS, teaching modern myself web design and maintainable codebase design}
-\resumeItem{Designed and built M-AST's public website, \href{[https://flymast.com](https://flymast.com)}{flymast.com}, delivering a polished, professional presence for prospective students and sponsors}
-\resumeItemListEnd
+\resumeSubHeadingListStart
+\resumeItem{\textbf{QRust} --- Strictly-typed compiled language written in Rust. Implements native SIMD vector types, stack slot pointers and dereferencing, functions, and can compile to virtually any ISA using Cranelift}
+\resumeItem{\textbf{peckhamr.com} --- Personal portfolio website, with HTML, CSS, JavaScript, and Svelte for dynamic rendering }
+\resumeItem{\textbf{Sudoku Solver} ---  Represents Sudoku boards as NumPy arrays and square possibilities as bitmasks. Implements hidden singles, pairs, and triples; pointing pairs and triples; X-wing, Y-wing, and Swordfish solving strategies}
+\resumeItem{\textbf{Threaded Downloader} --- HTTPS downloader, splits files into disjoint chunks and then safety writes to a final file} 
+\resumeItem{\textbf{FlyMast.com} --- M-AST's public website, a polished, professional presence for prospective students and sponsors}
+\resumeItem{\textbf{M-AST Flight Stack} --- Co-contributor to M-AST's flight stack for the 2026-2027 season. Uses composed Docker Containers for reproducability, simulated environments, real-time telemetry, and on-board computer vision}
+\resumeSubHeadingListEnd
 
 \section{Work Experience}
 \resumeSubHeadingListStart
