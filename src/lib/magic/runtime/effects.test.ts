@@ -144,7 +144,7 @@ function pushSpellOnStack(
 		oracleText: card.oracleText,
 		targets,
 		xValue,
-		castMode: 'normal',
+		castOptionId: 'normal',
 		requiresGuidedResolution: false,
 		createdAt: Date.now()
 	};

@@ -7,10 +7,18 @@
  * restrictions), respecting ability loss (CR 613 layer 6), phasing (CR 702.26b), and static
  * conditions ("As long as ...").
  */
-import { compileCard } from '../compiler/index.ts';
+import { effectiveCardForObject } from '../scryfall.ts';
+import {
+	activeAbilityDefs,
+	activeCharacteristics,
+	instanceFaceOptions
+} from './faces.ts';
 import type {
 	Amount,
 	Condition,
+	// --- Track P10 ---
+	EventKind,
+	// --- End Track P10 ---
 	EventPattern,
 	ObjectFilter,
 	PlayerFilter,
@@ -20,17 +28,26 @@ import type {
 	StaticDef
 } from '../ir.ts';
 import { permanentHasLostAllAbilities } from '../ruleTree.ts';
-import type {
-	CardInstance,
-	CounterType,
-	GameState,
-	LibrarySearchInterceptorInfo,
-	PlayerGameState,
-	ScryfallCard,
-	StackItem,
-	ZoneType
+import {
+	createEmptyCounterMap,
+	type CardInstance,
+	type CounterType,
+	type GameState,
+	type LibrarySearchInterceptorInfo,
+	type ManaColor,
+	type PlayerGameState,
+	type ScryfallCard,
+	type StackItem,
+	type ZoneType
 } from '../types.ts';
 import type { LeftBattlefieldInfo } from './events.ts';
+import {
+	chooseBotBestColor,
+	chooseBotBestCreatureSubtype
+} from './tuckFreezeChosen.ts';
+// --- Track P10 ---
+import { isPermanentDetained } from './reflexiveManaAndActions.ts';
+// --- End Track P10 ---
 import { withStableLayerInputs } from './layerCache.ts';
 import { abilityActivePermanents, evaluatePermanent, type AbilityActivePermanent } from './layers.ts';
 import {
@@ -39,6 +56,51 @@ import {
 	matchesObjectFilter,
 	type FilterContext
 } from './objectFilter.ts';
+// --- Track P8 ---
+import { checkStaticActivatedAbilityLocks } from './staticsLayersAndRestrictions.ts';
+// --- Track P9 ---
+import { hasUnleashCantBlock } from './keywordsWave3.ts';
+// --- Track P11 ---
+import {
+	boardMayGrantReplacementAbility,
+	boardMayGrantStaticAbility,
+	chooseBotBestCardName,
+	collectActiveGrantedReplacementDefs,
+	collectActiveGrantedStaticDefs,
+	isActivationBannedByChosenName,
+	KEYWORD_COUNTER_SET,
+	peekPreLeaveGrantedReplacements
+} from './staticsDynamicAndCosts.ts';
+// --- End Track P11 ---
+// --- Track P17a ---
+import {
+	applyCounterReplacementStep,
+	checkWave6SpellCastLocks,
+	hasSelfConditionalFlashGrant,
+	recordPendingExileReplacementCounter
+} from './staticsWave6.ts';
+// --- End Track P17a ---
+// --- Track P20a ---
+import { setDayNight } from './framesBattlesAndKeywordsWave5.ts';
+import {
+	checkWave7SelfCastRestrictions,
+	chooseBotLandSubtype,
+	chooseBotPlayerForEtb
+} from './staticsWave7.ts';
+// --- End Track P20a ---
+// --- Track P22a ---
+import {
+	buildCardTypeChoiceOptions,
+	canPutCounterOnPermanentWave8,
+	checkWave8SpellCastLocks,
+	chooseBotBestCardType,
+	chooseBotBestEtbObject,
+	chooseBotBestNumber,
+	chooseBotTwoColors,
+	chooseBotTwoPlayers,
+	revealOpponentHandForEtbLook
+} from './staticsWave8.ts';
+// --- End Track P22a ---
 
 // ---- Condition & Amount Evaluation ----------------------------------------------------------
 
@@ -78,6 +140,9 @@ export function evalReplaceAmount(amount: Amount, ctx: FilterContext): number {
 		return zoneOfPlayer(player, amount.zone).length;
 	}
 	if (amount.k === 'negate') return -evalReplaceAmount(amount.of, ctx);
+	// --- Track P11 ---
+	if (amount.k === 'mul') return amount.factor * evalReplaceAmount(amount.of, ctx);
+	// --- End Track P11 ---
 	if (amount.k === 'sum') {
 		return amount.args.reduce((acc, x) => acc + evalReplaceAmount(x, ctx), 0);
 	}
@@ -133,6 +198,35 @@ function activePermanents(state: GameState): readonly ActivePermanent[] {
 	return abilityActivePermanents(state);
 }
 
+// --- Track P13: Emblems in command zone have functioning static/replacement abilities (CR 114.4) ---
+function activeEmblems(
+	state: GameState
+): Array<{ perm: CardInstance; card: ScryfallCard; controllerId: string }> {
+	const out: Array<{ perm: CardInstance; card: ScryfallCard; controllerId: string }> = [];
+	for (const p of state.players) {
+		if (p.lost) continue;
+		for (const cmd of p.command) {
+			if (!cmd.isEmblem || cmd.isRingEmblem) continue;
+			out.push({
+				perm: cmd,
+				card: cmd.card,
+				controllerId: cmd.controllerId || p.playerId
+			});
+		}
+	}
+	return out;
+}
+
+function activeStaticSources(
+	state: GameState
+): Array<{ perm: CardInstance; card: ScryfallCard; controllerId: string }> {
+	const perms = activePermanents(state);
+	const emblems = activeEmblems(state);
+	if (emblems.length === 0) return [...perms];
+	return [...perms, ...emblems];
+}
+// --- End Track P13 ---
+
 function resolvePlayer(
 	state: GameState,
 	playerOrId: PlayerGameState | string
@@ -142,7 +236,7 @@ function resolvePlayer(
 		: playerOrId;
 }
 
-function matchesPlayerFilter(
+export function matchesPlayerFilter(
 	who: PlayerFilter,
 	sourceControllerId: string,
 	targetPlayerId: string,
@@ -162,12 +256,15 @@ function matchesPlayerFilter(
 	}
 }
 
-function isBattlefieldActiveZone(def: StaticDef): boolean {
+// --- Track P13 ---
+function isBattlefieldActiveZone(def: StaticDef, source?: CardInstance): boolean {
+	if (source?.isEmblem) return true;
 	if ('activeZones' in def && def.activeZones && !def.activeZones.includes('battlefield')) {
 		return false;
 	}
 	return true;
 }
+// --- End Track P13 ---
 
 // ---- Rule Modifiers -------------------------------------------------------------------------
 
@@ -197,13 +294,15 @@ function activeRuleModifiersInner(
 	affectedPlayerId?: string
 ): ActiveRuleModifier[] {
 	const out: ActiveRuleModifier[] = [];
-	for (const { perm, card, controllerId, compiled } of activePermanents(state)) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (const ability of face.abilities) {
+	for (const { perm, card, controllerId } of activeStaticSources(state)) {
+		const abilities = activeAbilityDefs(
+			card,
+			instanceFaceOptions(perm, perm.isEmblem ? 'command' : 'battlefield')
+		);
+		for (const ability of abilities) {
 			if (ability.kind !== 'static' || ability.static.k !== 'ruleModifier') continue;
 			const def = ability.static;
-			if (!isBattlefieldActiveZone(def)) continue;
+			if (!isBattlefieldActiveZone(def, perm)) continue;
 			if (rule !== undefined && def.rule !== rule) continue;
 			if (
 				affectedPlayerId !== undefined &&
@@ -222,6 +321,39 @@ function activeRuleModifiersInner(
 			});
 		}
 	}
+	// --- Track P11: Include Layer 6 granted ruleModifier statics ---
+	if (boardMayGrantStaticAbility(state, 'ruleModifier', rule !== undefined ? [rule] : undefined)) {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			for (const perm of p.battlefield) {
+				if (perm.phasedOut) continue;
+				const granted = collectActiveGrantedStaticDefs(state, perm);
+				if (granted.length === 0) continue;
+				const ev = evaluatePermanent(state, perm);
+				for (const def of granted) {
+					if (def.k !== 'ruleModifier') continue;
+					if (!isBattlefieldActiveZone(def)) continue;
+					if (rule !== undefined && def.rule !== rule) continue;
+					if (
+						affectedPlayerId !== undefined &&
+						!matchesPlayerFilter(def.who, ev.controllerId, affectedPlayerId, state)
+					) {
+						continue;
+					}
+					if (!evalReplaceCondition(def.condition, { state, controllerId: ev.controllerId, source: perm })) {
+						continue;
+					}
+					out.push({
+						def,
+						source: perm,
+						sourceName: ev.effectiveName,
+						controllerId: ev.controllerId
+					});
+				}
+			}
+		}
+	}
+	// --- End Track P11 ---
 	return out;
 }
 
@@ -297,6 +429,9 @@ export function playerHasHexproofFrom(
 	actorId: string
 ): boolean {
 	if (targetPlayer.playerId === actorId) return false;
+	// --- Track P13 ---
+	if (targetPlayer.hexproofThisTurn || targetPlayer.hexproofUntilNextTurn) return true;
+	// --- End Track P13 ---
 	return activeRuleModifiers(state, 'playerHexproof', targetPlayer.playerId).length > 0;
 }
 
@@ -398,6 +533,11 @@ export function checkGlobalCastPermissionsAndRestrictions(
 			}
 		}
 	}
+	// --- Track P17a: Conditional self-flash ("You may cast ~ as though it had flash if ...") ---
+	if (!allowedAsThoughFlash && spellInst && hasSelfConditionalFlashGrant(state, actor.playerId, spellInst)) {
+		allowedAsThoughFlash = true;
+	}
+	// --- End Track P17a ---
 
 	// 2. Check global & opponent Stax restrictions ("Can't beats Can" — CR 101.2)
 	for (const mod of mods) {
@@ -458,6 +598,48 @@ export function checkGlobalCastPermissionsAndRestrictions(
 		}
 	}
 
+	// --- Track P17a: Wave 6 filtered spell caps & matching spell locks ---
+	const w6CastLock = checkWave6SpellCastLocks(state, actor, spellInst, fromZone);
+	if (!w6CastLock.ok) {
+		return {
+			allowedAsThoughFlash,
+			grantsFlash: allowedAsThoughFlash,
+			blocked: true,
+			ok: false,
+			error: w6CastLock.error
+		};
+	}
+	// --- End Track P17a ---
+	// --- Track P20a: Self cast restrictions (`k: 'selfCastRestriction'`) ---
+	const w7SelfCast = checkWave7SelfCastRestrictions(state, actor.playerId, spellInst);
+	if (!w7SelfCast.ok) {
+		return {
+			allowedAsThoughFlash,
+			grantsFlash: allowedAsThoughFlash,
+			blocked: true,
+			ok: false,
+			error: w7SelfCast.error
+		};
+	}
+	// --- End Track P20a ---
+	// --- Track P22a: Combat / own-turn / linked-exile-name spell cast locks ---
+	const w8CastError = checkWave8SpellCastLocks(
+		state,
+		actor.playerId,
+		spellInst ? (effectiveCardForObject(spellInst) ?? spellInst.card) : undefined,
+		spellInst?.activeFaceIndex
+	);
+	if (w8CastError) {
+		return {
+			allowedAsThoughFlash,
+			grantsFlash: allowedAsThoughFlash,
+			blocked: true,
+			ok: false,
+			error: w8CastError
+		};
+	}
+	// --- End Track P22a ---
+
 	return {
 		allowedAsThoughFlash,
 		grantsFlash: allowedAsThoughFlash,
@@ -475,14 +657,45 @@ export function checkGlobalCastPermissionsAndRestrictions(
 export function checkGlobalAbilityActivationRestrictions(
 	state: GameState,
 	actorId: string,
-	perm: CardInstance
+	perm: CardInstance,
+	// --- Track P8 ---
+	isManaAbility = false
 ): { ok: boolean; error?: string } {
-	const evalPerm = evaluatePermanent(state, perm);
-	if (!evalPerm.isArtifact && !evalPerm.isCreature && !evalPerm.isEnchantment) {
+	// --- Track P10 (CR 701.35a): Detain prevents activating any activated abilities (including mana abilities) ---
+	if (perm.zone === 'battlefield' && !perm.phasedOut && isPermanentDetained(perm)) {
+		return {
+			ok: false,
+			error: `Illegal Activation: ${perm.card.name} is detained and its activated abilities can't be activated (CR 701.35a).`
+		};
+	}
+	// --- End Track P10 ---
+	// --- Track P8: CR 602.5a / 606.2 static activated-ability locks ---
+	const staticLock = checkStaticActivatedAbilityLocks(state, actorId, perm, isManaAbility);
+	if (!staticLock.ok) return staticLock;
+	// --- Track P11: Chosen card name activation bans (CR 602.5a, 707.2) ---
+	const chosenBan = isActivationBannedByChosenName(state, perm, isManaAbility);
+	if (chosenBan.banned) {
+		return {
+			ok: false,
+			error: `Illegal Activation: ${chosenBan.sourceName ?? 'Restriction'} prevents activating abilities of sources with the chosen name.`
+		};
+	}
+	// --- End Track P11 ---
+	const evalPerm = perm.zone === 'battlefield' ? evaluatePermanent(state, perm) : null;
+	const innateTypes = evalPerm
+		? null
+		: activeCharacteristics(effectiveCardForObject(perm), instanceFaceOptions(perm)).types;
+	const isArtifact = evalPerm ? evalPerm.isArtifact : Boolean(innateTypes?.includes('Artifact'));
+	const isCreature = evalPerm ? evalPerm.isCreature : Boolean(innateTypes?.includes('Creature'));
+	const isEnchantment = evalPerm ? evalPerm.isEnchantment : Boolean(innateTypes?.includes('Enchantment'));
+	if (!isArtifact && !isCreature && !isEnchantment) {
 		return { ok: true };
 	}
 	const activePlayer = state.players[state.activePlayerIndex];
 	for (const mod of activeRuleModifiers(state, 'opponentsCantCastDuringYourTurn', actorId)) {
+		// --- Track P14: spell-only "Your opponents can't cast spells during your turn" leaves abilities legal ---
+		if (mod.def.params?.spellsOnly) continue;
+		// --- End Track P14 ---
 		if (activePlayer?.playerId === mod.controllerId) {
 			const p = state.players.find((pl) => pl.playerId === mod.controllerId);
 			return {
@@ -509,16 +722,14 @@ export function getLibrarySearchInterceptor(
 
 	for (const { perm, card, controllerId } of activePermanents(state)) {
 		if (controllerId === searchingPlayerId) continue;
-		const compiled = compileCard(card);
-		const face = compiled.faces[0];
-		if (!face) continue;
+		const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
 
 		let controlsSearch = false;
 		let exilesFoundCards = false;
 		let grantPlayFromExile = false;
 		let spendManaAsAnyColor = false;
 
-		for (const ability of face.abilities) {
+		for (const ability of abilities) {
 			if (
 				ability.kind !== 'static' ||
 				ability.static.k !== 'ruleModifier' ||
@@ -568,6 +779,14 @@ function matchesRestrictionKind(defKind: RestrictionKind, queried: RestrictionKi
 	if (defKind === 'cantAttackOrBlock' && (queried === 'cantAttack' || queried === 'cantBlock')) {
 		return true;
 	}
+	// --- Track P17a ---
+	if (
+		defKind === 'attacksOrBlocksEachCombat' &&
+		(queried === 'attacksEachCombat' || queried === 'blocksEachCombat')
+	) {
+		return true;
+	}
+	// --- End Track P17a ---
 	return false;
 }
 
@@ -598,39 +817,55 @@ function hasRestrictionInner(
 	restriction: RestrictionKind
 ): boolean {
 	const onBf = isOnBattlefield(state, obj.instanceId);
+	// --- Track P10 (CR 701.35a Detain & CR 701.60c Suspect) ---
+	if (onBf && !obj.phasedOut) {
+		if (
+			isPermanentDetained(obj) &&
+			(matchesRestrictionKind('cantAttack', restriction) ||
+				matchesRestrictionKind('cantBlock', restriction))
+		) {
+			return true;
+		}
+		if (obj.isSuspected && matchesRestrictionKind('cantBlock', restriction)) {
+			return true;
+		}
+	}
+	// --- End Track P10 ---
+	// --- Track P9 ---
+	if (onBf && matchesRestrictionKind('cantBlock', restriction) && hasUnleashCantBlock(state, obj)) {
+		return true;
+	}
 	const canCheckSelf =
 		!onBf || (!obj.phasedOut && !permanentHasLostAllAbilities(obj, state).lost);
 
 	if (canCheckSelf) {
-		const selfCard = obj.copiableCard ?? obj.card;
-		const selfDef = compileCard(selfCard);
-		const face = selfDef.faces[0];
-		if (face) {
-			for (const ability of face.abilities) {
-				if (ability.kind !== 'static' || ability.static.k !== 'restriction') continue;
-				const def = ability.static;
-				if (def.affected !== 'self') continue;
-				if (!matchesRestrictionKind(def.restriction, restriction)) continue;
-				if (
-					evalReplaceCondition(def.condition, {
-						state,
-						controllerId: obj.controllerId,
-						source: obj
-					})
-				) {
-					return true;
-				}
+		const selfCard = effectiveCardForObject(obj);
+		for (const ability of activeAbilityDefs(selfCard, instanceFaceOptions(obj))) {
+			if (ability.kind !== 'static' || ability.static.k !== 'restriction') continue;
+			const def = ability.static;
+			if (def.affected !== 'self') continue;
+			if (!matchesRestrictionKind(def.restriction, restriction)) continue;
+			if (
+				evalReplaceCondition(def.condition, {
+					state,
+					controllerId: obj.controllerId,
+					source: obj
+				})
+			) {
+				return true;
 			}
 		}
 	}
 
-	for (const { perm, card, controllerId, compiled } of activePermanents(state)) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (const ability of face.abilities) {
+	for (const { perm, card, controllerId } of activeStaticSources(state)) {
+		const abilities = activeAbilityDefs(
+			card,
+			instanceFaceOptions(perm, perm.isEmblem ? 'command' : 'battlefield')
+		);
+		for (const ability of abilities) {
 			if (ability.kind !== 'static' || ability.static.k !== 'restriction') continue;
 			const def = ability.static;
-			if (!isBattlefieldActiveZone(def)) continue;
+			if (!isBattlefieldActiveZone(def, perm)) continue;
 			if (!matchesRestrictionKind(def.restriction, restriction)) continue;
 			if (!evalReplaceCondition(def.condition, { state, controllerId, source: perm })) {
 				continue;
@@ -650,6 +885,40 @@ function hasRestrictionInner(
 			}
 		}
 	}
+	// --- Track P11: Include Layer 6 granted restriction statics ---
+	if (boardMayGrantStaticAbility(state, 'restriction')) {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			for (const perm of p.battlefield) {
+				if (perm.phasedOut) continue;
+				const granted = collectActiveGrantedStaticDefs(state, perm);
+				if (granted.length === 0) continue;
+				const ev = evaluatePermanent(state, perm);
+				for (const def of granted) {
+					if (def.k !== 'restriction') continue;
+					if (!isBattlefieldActiveZone(def)) continue;
+					if (!matchesRestrictionKind(def.restriction, restriction)) continue;
+					if (!evalReplaceCondition(def.condition, { state, controllerId: ev.controllerId, source: perm })) {
+						continue;
+					}
+					if (def.affected === 'self') {
+						if (perm.instanceId === obj.instanceId) return true;
+					} else if (def.affected === 'attachedTo') {
+						if (perm.attachedToId === obj.instanceId) return true;
+					} else if (
+						matchesObjectFilter(obj, def.affected, {
+							state,
+							controllerId: ev.controllerId,
+							source: perm
+						})
+					) {
+						return true;
+					}
+				}
+			}
+		}
+	}
+	// --- End Track P11 ---
 
 	return false;
 }
@@ -668,7 +937,10 @@ export function spellCannotBeCountered(state: GameState, item: StackItem): boole
 		zone: 'stack',
 		tapped: false,
 		summoningSick: false,
-		counters: { '+1/+1': 0, '-1/-1': 0, loyalty: 0, charge: 0, shield: 0, stun: 0, lore: 0, time: 0 },
+		// --- Track P11 ---
+		counters: createEmptyCounterMap(),
+		// --- End Track P11 ---
+		...(item.spellMods?.prototyped || item.copiableState?.prototyped ? { prototyped: true } : {}),
 		isToken: false,
 		damageMarked: 0,
 		deathtouchDamageMarked: false,
@@ -683,6 +955,35 @@ export function spellCannotBeCountered(state: GameState, item: StackItem): boole
 	};
 	return hasRestriction(state, stackObj, 'cantBeCountered');
 }
+
+// --- Track P22c ---
+export function spellCannotBeCopied(state: GameState, item: StackItem): boolean {
+	if (item.kind !== 'spell' || !item.card) return false;
+	const stackObj: CardInstance = {
+		instanceId: item.sourceInstanceId,
+		card: item.card,
+		ownerId: item.ownerId ?? item.controllerId,
+		controllerId: item.controllerId,
+		zone: 'stack',
+		tapped: false,
+		summoningSick: false,
+		counters: createEmptyCounterMap(),
+		...(item.spellMods?.prototyped || item.copiableState?.prototyped ? { prototyped: true } : {}),
+		isToken: false,
+		damageMarked: 0,
+		deathtouchDamageMarked: false,
+		attachedToId: null,
+		tempPowerMod: 0,
+		tempToughnessMod: 0,
+		grantedKeywords: [],
+		usedLoyaltyThisTurn: false,
+		isCommander: false,
+		commanderCastCount: 0,
+		transformed: false
+	};
+	return hasRestriction(state, stackObj, 'cantBeCopied');
+}
+// --- End Track P22c ---
 
 // ---- Replacement Effects --------------------------------------------------------------------
 
@@ -770,14 +1071,13 @@ export function applicableReplacements(
 	ctx?: ReplacementQueryContext
 ): ActiveReplacement[] {
 	const out: ActiveReplacement[] = [];
-	const active = activePermanents(state);
+	const active = activeStaticSources(state);
 	const candidates: Array<{
 		perm: CardInstance;
 		card: ScryfallCard;
 		controllerId: string;
-		compiled: ReturnType<typeof compileCard>;
 		fromMovingObject?: boolean;
-	}> = [...active];
+	}> = active.map(({ perm, card, controllerId }) => ({ perm, card, controllerId }));
 
 	if (
 		ctx?.object &&
@@ -785,21 +1085,19 @@ export function applicableReplacements(
 		!ctx.lkiLostAllAbilities &&
 		!active.some((a) => a.perm.instanceId === ctx.object!.instanceId)
 	) {
-		const objCard = ctx.object.copiableCard ?? ctx.object.card;
+		const objCard = effectiveCardForObject(ctx.object);
 		candidates.unshift({
 			perm: ctx.object,
 			card: objCard,
 			controllerId: ctx.object.controllerId || ctx.object.ownerId,
-			compiled: compileCard(objCard),
 			fromMovingObject: true
 		});
 	}
 
-	for (const { perm, card, controllerId, compiled, fromMovingObject } of candidates) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (let abIdx = 0; abIdx < face.abilities.length; abIdx++) {
-			const ability = face.abilities[abIdx];
+	for (const { perm, card, controllerId, fromMovingObject } of candidates) {
+		const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, perm.zone));
+		for (let abIdx = 0; abIdx < abilities.length; abIdx++) {
+			const ability = abilities[abIdx];
 			if (ability.kind !== 'replacement') continue;
 			const def = ability.replacement;
 			if (def.replaces.event !== event) continue;
@@ -848,6 +1146,119 @@ export function applicableReplacements(
 			});
 		}
 	}
+	// --- Track P11: Layer 6 granted ReplacementDefs & CR 122.1d Finality counter ---
+	const pushGrantedReplacementEntries = (
+		perm: CardInstance,
+		granted: ReplacementDef[],
+		controllerId: string,
+		sourceName: string,
+		fromMovingObject: boolean
+	) => {
+		for (let gIdx = 0; gIdx < granted.length; gIdx++) {
+			const def = granted[gIdx];
+			if (def.replaces.event !== event) continue;
+			const f = def.replaces.filter;
+			if (fromMovingObject && ctx?.from !== 'battlefield' && f?.object !== 'self') {
+				continue;
+			}
+			if (f) {
+				if (f.from !== undefined && ctx?.from !== undefined && f.from !== ctx.from) continue;
+				if (f.to !== undefined && ctx?.to !== undefined && f.to !== ctx.to) continue;
+				if (
+					f.player &&
+					ctx?.playerId !== undefined &&
+					!matchesPlayerFilter(f.player, controllerId, ctx.playerId, state)
+				) {
+					continue;
+				}
+				if (f.object !== undefined) {
+					if (f.object === 'self') {
+						if (ctx?.object?.instanceId !== perm.instanceId) continue;
+					} else if (f.object === 'attachedTo') {
+						if (!ctx?.object || perm.attachedToId !== ctx.object.instanceId) continue;
+					} else if (
+						ctx?.object &&
+						!matchesObjectFilter(ctx.object, f.object, {
+							state,
+							controllerId,
+							source: perm
+						})
+					) {
+						continue;
+					}
+				}
+			}
+			if (!evalReplaceCondition(def.condition, { state, controllerId, source: perm })) {
+				continue;
+			}
+			out.push({
+				id: `${perm.instanceId}:grep:${gIdx}`,
+				label: describeReplacementLabel(def, sourceName),
+				tier: replacementPriorityTier(def, perm, ctx?.object),
+				def,
+				source: perm,
+				sourceName,
+				controllerId
+			});
+		}
+	};
+
+	if (
+		ctx?.object &&
+		ctx.from === 'battlefield' &&
+		!ctx.object.phasedOut &&
+		!state.players.some((pl) => pl.battlefield.some((b) => b.instanceId === ctx.object!.instanceId))
+	) {
+		const preLeave = peekPreLeaveGrantedReplacements(ctx.object);
+		if (preLeave.length > 0) {
+			const objCard = effectiveCardForObject(ctx.object);
+			pushGrantedReplacementEntries(
+				ctx.object,
+				preLeave,
+				ctx.object.controllerId || ctx.object.ownerId,
+				objCard.name,
+				true
+			);
+		}
+	}
+
+	if (boardMayGrantReplacementAbility(state, event)) {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			for (const perm of p.battlefield) {
+				if (perm.phasedOut) continue;
+				const granted = collectActiveGrantedReplacementDefs(state, perm);
+				if (granted.length === 0) continue;
+				const ev = evaluatePermanent(state, perm);
+				pushGrantedReplacementEntries(perm, granted, ev.controllerId, ev.effectiveName, false);
+			}
+		}
+	}
+	if (
+		event === 'zoneChange' &&
+		ctx?.from === 'battlefield' &&
+		ctx?.to === 'graveyard' &&
+		ctx.object &&
+		(ctx.object.counters.finality ?? 0) > 0
+	) {
+		const finalityDef: ReplacementDef = {
+			replaces: {
+				event: 'zoneChange',
+				filter: { object: 'self', from: 'battlefield', to: 'graveyard' }
+			},
+			with: { k: 'modify', to: 'exile' }
+		};
+		out.push({
+			id: `${ctx.object.instanceId}:finality_counter`,
+			label: 'Exile instead (Finality counter)',
+			tier: 5,
+			def: finalityDef,
+			source: ctx.object,
+			sourceName: 'Finality counter',
+			controllerId: ctx.object.controllerId || ctx.object.ownerId
+		});
+	}
+	// --- End Track P11 ---
 	return out;
 }
 
@@ -855,6 +1266,9 @@ export interface ZoneChangeReplacementResolution {
 	dest: ZoneType;
 	shuffle: boolean;
 	replacedBy?: string;
+	// --- Track P17a ---
+	exileWithCounter?: CounterType;
+	// --- End Track P17a ---
 	pendingOptions?: ActiveReplacement[];
 	appliedIds: string[];
 	chooserId: string;
@@ -882,6 +1296,9 @@ export function resolveZoneChangeReplacements(
 	let currentDest = desiredDest;
 	let shuffle = false;
 	let replacedBy: string | undefined;
+	// --- Track P17a ---
+	let exileWithCounter: CounterType | undefined;
+	// --- End Track P17a ---
 	let nextChoiceId = chosenId;
 
 	for (let iter = 0; iter < 16; iter++) {
@@ -912,6 +1329,7 @@ export function resolveZoneChangeReplacements(
 					dest: currentDest,
 					shuffle,
 					replacedBy,
+					...(exileWithCounter ? { exileWithCounter } : {}),
 					pendingOptions: tierReps,
 					appliedIds: [...appliedIds],
 					chooserId
@@ -925,6 +1343,12 @@ export function resolveZoneChangeReplacements(
 			currentDest = w.to;
 			shuffle = Boolean(w.shuffleIntoLibrary);
 			replacedBy = picked.sourceName;
+			// --- Track P17a ---
+			if (w.to === 'exile' && w.exileWithCounter) {
+				exileWithCounter = w.exileWithCounter;
+				recordPendingExileReplacementCounter(obj, w.exileWithCounter);
+			}
+			// --- End Track P17a ---
 		}
 	}
 
@@ -932,6 +1356,9 @@ export function resolveZoneChangeReplacements(
 		dest: currentDest,
 		shuffle,
 		replacedBy,
+		// --- Track P17a ---
+		...(exileWithCounter ? { exileWithCounter } : {}),
+		// --- End Track P17a ---
 		appliedIds: [...appliedIds],
 		chooserId
 	};
@@ -968,17 +1395,19 @@ export function cardEntersTapped(
 	controllerId?: string,
 	source?: CardInstance
 ): boolean {
-	const compiled = compileCard(card);
-	const face = compiled.faces[0];
-	if (!face) return false;
-	for (const ability of face.abilities) {
+	const abilities = source
+		? activeAbilityDefs(card, instanceFaceOptions(source, 'battlefield'))
+		: activeAbilityDefs(card);
+	for (const ability of abilities) {
 		if (ability.kind !== 'replacement') continue;
 		const rep = ability.replacement;
 		if (rep.replaces.event !== 'zoneChange') continue;
 		if (rep.replaces.filter?.object !== 'self' || rep.replaces.filter?.to !== 'battlefield') {
 			continue;
 		}
-		if (Array.isArray(rep.with) || rep.with.k !== 'modify' || !rep.with.tapped) continue;
+		if (Array.isArray(rep.with) || rep.with.k !== 'modify' || !rep.with.tapped || rep.with.copyOf) {
+			continue;
+		}
 		if (rep.condition) {
 			if (!state || !controllerId) return false;
 			if (!evalReplaceCondition(rep.condition, { state, controllerId, source })) continue;
@@ -1001,24 +1430,218 @@ export function registerCounterPlacement(fn: CounterPlacementFn): void {
 	placeCounters = fn;
 }
 
+export function placeRegisteredCounters(
+	state: GameState,
+	perm: CardInstance,
+	type: CounterType,
+	amount: number
+): number {
+	// --- Track P22a (CR 122.6) ---
+	if (!canPutCounterOnPermanentWave8(state, perm, type)) return 0;
+	// --- End Track P22a ---
+	if (placeCounters) {
+		return placeCounters(state, perm, type, amount);
+	}
+	const mult = counterMultiplier(state, perm, type);
+	const added = amount * mult;
+	if (added > 0) {
+		perm.counters[type] = (perm.counters[type] ?? 0) + added;
+		// --- Track P11 (CR 613.7c) ---
+		if (KEYWORD_COUNTER_SET.has(type)) {
+			state.nextTimestamp = (state.nextTimestamp || 100) + 1;
+			(perm.counterTimestamps ??= {})[type] = state.nextTimestamp;
+		}
+		// --- End Track P11 ---
+	}
+	return added;
+}
+
+export interface SelfEtbChoiceSpec {
+	chooseSubType?: 'creature' | 'basicLand' | 'land';
+	chooseColor?: { exclude?: ManaColor };
+	// --- Track P8 ---
+	payLifeOrEnterTapped?: number;
+	revealFromHandOrEnterTapped?: ObjectFilter;
+	// --- Track P11 ---
+	chooseCardName?: { nonlandOnly?: boolean };
+	chooseCounter?: CounterType[];
+	// --- End Track P11 ---
+	// --- Track P20a ---
+	choosePlayer?: 'any' | 'opponent';
+	chooseParity?: boolean;
+	// --- End Track P20a ---
+	// --- Track P22a ---
+	chooseCardType?: { exclude?: string[]; options?: string[]; lookAtOpponentHand?: boolean };
+	chooseNumber?: { min?: number; max?: number };
+	chooseTwoColors?: boolean;
+	chooseTwoPlayers?: boolean;
+	chooseObjectOnBattlefield?: { filter: ObjectFilter; optional?: boolean };
+	chooseSubTypeOptions?: string[];
+	lookAtOpponentHandBeforeCardName?: boolean;
+	// --- End Track P22a ---
+}
+
+/**
+ * CR 614.1c, CR 614.12, CR 105.4, CR 205.3m: Inspects active self-ETB replacement abilities
+ * (`"As ~ enters, choose a creature type / choose a color / you may pay N life / you may reveal..."`)
+ * for a face-up permanent entering the battlefield.
+ */
+export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtbChoiceSpec | null {
+	if (perm.isFaceDown) return null;
+	const card = effectiveCardForObject(perm);
+	const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
+	const ctx: FilterContext = {
+		state,
+		controllerId: perm.controllerId || perm.defaultControllerId || perm.ownerId,
+		source: perm,
+		xValue: perm.enteredWithX
+	};
+	let chooseSubType: 'creature' | 'basicLand' | 'land' | undefined;
+	let chooseColor: { exclude?: ManaColor } | undefined;
+	// --- Track P8 ---
+	let payLifeOrEnterTapped: number | undefined;
+	let revealFromHandOrEnterTapped: ObjectFilter | undefined;
+	// --- Track P11 ---
+	let chooseCardName: { nonlandOnly?: boolean } | undefined;
+	let chooseCounter: CounterType[] | undefined;
+	// --- End Track P11 ---
+	// --- Track P20a ---
+	let choosePlayer: 'any' | 'opponent' | undefined;
+	let chooseParity: boolean | undefined;
+	// --- End Track P20a ---
+	// --- Track P22a ---
+	let chooseCardType:
+		| { exclude?: string[]; options?: string[]; lookAtOpponentHand?: boolean }
+		| undefined;
+	let chooseNumber: { min?: number; max?: number } | undefined;
+	let chooseTwoColors: boolean | undefined;
+	let chooseTwoPlayers: boolean | undefined;
+	let chooseObjectOnBattlefield: { filter: ObjectFilter } | undefined;
+	let chooseSubTypeOptions: string[] | undefined;
+	let lookAtOpponentHandBeforeCardName: boolean | undefined;
+	// --- End Track P22a ---
+	for (const ability of abilities) {
+		if (ability.kind !== 'replacement') continue;
+		const rep = ability.replacement;
+		if (rep.replaces.event !== 'zoneChange') continue;
+		if (rep.replaces.filter?.object !== 'self' || rep.replaces.filter?.to !== 'battlefield') {
+			continue;
+		}
+		if (Array.isArray(rep.with) || rep.with.k !== 'modify') continue;
+		if (!evalReplaceCondition(rep.condition, ctx)) continue;
+		if (rep.with.chooseSubType) {
+			chooseSubType = rep.with.chooseSubType;
+		}
+		if (rep.with.chooseColor) {
+			chooseColor = { ...rep.with.chooseColor };
+		}
+		if (rep.with.payLifeOrEnterTapped !== undefined) {
+			payLifeOrEnterTapped = rep.with.payLifeOrEnterTapped;
+		}
+		if (rep.with.revealFromHandOrEnterTapped) {
+			revealFromHandOrEnterTapped = rep.with.revealFromHandOrEnterTapped;
+		}
+		// --- Track P11 ---
+		if (rep.with.chooseCardName) {
+			chooseCardName = { ...rep.with.chooseCardName };
+		}
+		if (rep.with.chooseCounter && rep.with.chooseCounter.length > 0) {
+			chooseCounter = [...rep.with.chooseCounter];
+		}
+		// --- End Track P11 ---
+		// --- Track P20a ---
+		if (rep.with.choosePlayer) {
+			choosePlayer = rep.with.choosePlayer;
+		}
+		if (rep.with.chooseParity) {
+			chooseParity = true;
+		}
+		// --- End Track P20a ---
+		// --- Track P22a ---
+		if (rep.with.chooseCardType) {
+			chooseCardType = { ...rep.with.chooseCardType };
+		}
+		if (rep.with.chooseNumber) {
+			chooseNumber = { ...rep.with.chooseNumber };
+		}
+		if (rep.with.chooseTwoColors) {
+			chooseTwoColors = true;
+		}
+		if (rep.with.chooseTwoPlayers) {
+			chooseTwoPlayers = true;
+		}
+		if (rep.with.chooseObjectOnBattlefield) {
+			chooseObjectOnBattlefield = { filter: rep.with.chooseObjectOnBattlefield.filter };
+		}
+		if (rep.with.chooseSubTypeOptions && rep.with.chooseSubTypeOptions.length > 0) {
+			chooseSubTypeOptions = [...rep.with.chooseSubTypeOptions];
+		}
+		if (rep.with.lookAtOpponentHandBeforeCardName) {
+			lookAtOpponentHandBeforeCardName = true;
+		}
+		// --- End Track P22a ---
+	}
+	if (
+		!chooseSubType &&
+		!chooseColor &&
+		payLifeOrEnterTapped === undefined &&
+		!revealFromHandOrEnterTapped &&
+		!chooseCardName &&
+		!chooseCounter &&
+		!choosePlayer &&
+		!chooseParity &&
+		// --- Track P22a ---
+		!chooseCardType &&
+		!chooseNumber &&
+		!chooseTwoColors &&
+		!chooseTwoPlayers &&
+		!chooseObjectOnBattlefield &&
+		!chooseSubTypeOptions &&
+		!lookAtOpponentHandBeforeCardName
+		// --- End Track P22a ---
+	) {
+		return null;
+	}
+	return {
+		...(chooseSubType ? { chooseSubType } : {}),
+		...(chooseColor ? { chooseColor } : {}),
+		...(payLifeOrEnterTapped !== undefined ? { payLifeOrEnterTapped } : {}),
+		...(revealFromHandOrEnterTapped ? { revealFromHandOrEnterTapped } : {}),
+		...(chooseCardName ? { chooseCardName } : {}),
+		...(chooseCounter ? { chooseCounter } : {}),
+		...(choosePlayer ? { choosePlayer } : {}),
+		...(chooseParity ? { chooseParity } : {}),
+		// --- Track P22a ---
+		...(chooseCardType ? { chooseCardType } : {}),
+		...(chooseNumber ? { chooseNumber } : {}),
+		...(chooseTwoColors ? { chooseTwoColors } : {}),
+		...(chooseTwoPlayers ? { chooseTwoPlayers } : {}),
+		...(chooseObjectOnBattlefield ? { chooseObjectOnBattlefield } : {}),
+		...(chooseSubTypeOptions ? { chooseSubTypeOptions } : {}),
+		...(lookAtOpponentHandBeforeCardName ? { lookAtOpponentHandBeforeCardName } : {})
+		// --- End Track P22a ---
+	};
+}
+
 /**
  * Applies self-replacement effects (`~ enters tapped`, `~ enters with N <counter> counters on it`)
  * to `perm` as it enters the battlefield. Counter amounts are routed through `addCountersToPermanent`
  * so `CounterPlaced` is emitted and active counter multipliers on the battlefield apply (CR 122.6).
  */
 export function applySelfEtbReplacements(state: GameState, perm: CardInstance): void {
-	const card = perm.copiableCard ?? perm.card;
-	const compiled = compileCard(card);
-	const face = compiled.faces[0];
-	if (!face) return;
+	if (perm.isFaceDown) return;
+	const card = effectiveCardForObject(perm);
+	const abilities = activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'));
+	const ctrlId = perm.controllerId || perm.defaultControllerId || perm.ownerId;
+	const ctrl = state.players.find((p) => p.playerId === ctrlId);
 	const ctx: FilterContext = {
 		state,
-		controllerId: perm.controllerId,
+		controllerId: ctrlId,
 		source: perm,
 		xValue: perm.enteredWithX
 	};
 
-	for (const ability of face.abilities) {
+	for (const ability of abilities) {
 		if (ability.kind !== 'replacement') continue;
 		const rep = ability.replacement;
 		if (rep.replaces.event !== 'zoneChange') continue;
@@ -1028,8 +1651,112 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 		if (Array.isArray(rep.with) || rep.with.k !== 'modify') continue;
 		if (!evalReplaceCondition(rep.condition, ctx)) continue;
 
-		if (rep.with.tapped) {
+		if (rep.with.tapped && !rep.with.copyOf) {
 			perm.tapped = true;
+		}
+		// --- Track P14 & P15 (CR 723.3a): "~ enters prepared." ---
+		if (rep.with.entersPrepared) {
+			perm.isPrepared = true;
+		}
+		// --- End Track P14 & P15 ---
+		// --- Track P20a (CR 732.1c): "As ~ enters, if it's neither day nor night, it becomes day." ---
+		if (rep.with.becomesDayIfNeither && !state.dayNight) {
+			setDayNight(state, 'day');
+		}
+		// --- End Track P20a ---
+		if (ctrl?.isBot) {
+			if (rep.with.chooseColor && !perm.chosenColor) {
+				perm.chosenColor = chooseBotBestColor(state, ctrl, rep.with.chooseColor.exclude, perm);
+			}
+			if (rep.with.chooseSubType === 'creature' && !perm.chosenSubType) {
+				perm.chosenSubType = chooseBotBestCreatureSubtype(state, ctrl, perm);
+			}
+			// --- Track P20a ---
+			if (
+				(rep.with.chooseSubType === 'basicLand' || rep.with.chooseSubType === 'land') &&
+				!perm.chosenSubType
+			) {
+				perm.chosenSubType = chooseBotLandSubtype(state, ctrl, rep.with.chooseSubType);
+			}
+			if (rep.with.choosePlayer && !perm.chosenPlayerId) {
+				perm.chosenPlayerId = chooseBotPlayerForEtb(state, ctrl, rep.with.choosePlayer);
+			}
+			if (rep.with.chooseParity && !perm.chosenParity) {
+				perm.chosenParity = 'odd';
+			}
+			// --- End Track P20a ---
+			// --- Track P11 ---
+			if (rep.with.chooseCardName && !perm.chosenCardName) {
+				// --- Track P22a ---
+				if (rep.with.lookAtOpponentHandBeforeCardName) {
+					revealOpponentHandForEtbLook(state, ctrlId);
+				}
+				// --- End Track P22a ---
+				perm.chosenCardName = chooseBotBestCardName(
+					state,
+					ctrl,
+					perm,
+					Boolean(rep.with.chooseCardName.nonlandOnly)
+				);
+			}
+			// --- Track P22a ---
+			if (rep.with.chooseCardType && !perm.chosenCardType) {
+				if (rep.with.chooseCardType.lookAtOpponentHand) {
+					revealOpponentHandForEtbLook(state, ctrlId);
+				}
+				const opts = buildCardTypeChoiceOptions(rep.with.chooseCardType);
+				perm.chosenCardType = chooseBotBestCardType(state, ctrlId, opts);
+			}
+			if (rep.with.chooseNumber && perm.chosenNumber === undefined) {
+				perm.chosenNumber = chooseBotBestNumber(state, ctrlId, rep.with.chooseNumber);
+			}
+			if (rep.with.chooseTwoColors && !perm.chosenColors) {
+				const pair = chooseBotTwoColors(state, ctrlId);
+				perm.chosenColors = pair;
+				if (!perm.chosenColor) perm.chosenColor = pair[0];
+			}
+			if (rep.with.chooseTwoPlayers && !perm.chosenPlayerIds) {
+				const pids = chooseBotTwoPlayers(state, ctrlId);
+				perm.chosenPlayerIds = pids;
+				if (!perm.chosenPlayerId && pids.length > 0) perm.chosenPlayerId = pids[0];
+			}
+			if (rep.with.chooseObjectOnBattlefield && !perm.chosenObjectId) {
+				perm.chosenObjectId = chooseBotBestEtbObject(
+					state,
+					ctrlId,
+					perm,
+					rep.with.chooseObjectOnBattlefield.filter
+				);
+			}
+			if (
+				rep.with.chooseSubTypeOptions &&
+				rep.with.chooseSubTypeOptions.length > 0 &&
+				!perm.chosenSubType
+			) {
+				perm.chosenSubType = rep.with.chooseSubTypeOptions[0];
+			}
+			// --- End Track P22a ---
+			if (
+				rep.with.chooseCounter &&
+				rep.with.chooseCounter.length > 0 &&
+				!perm.etbCounterChoiceDone
+			) {
+				perm.etbCounterChoiceDone = true;
+				const chosenC = rep.with.chooseCounter[0];
+				if (placeCounters) {
+					const prevZone = perm.zone;
+					perm.zone = 'battlefield';
+					try {
+						placeCounters(state, perm, chosenC, 1);
+					} finally {
+						perm.zone = prevZone;
+					}
+				} else {
+					const mult = counterMultiplier(state, perm, chosenC);
+					perm.counters[chosenC] = (perm.counters[chosenC] ?? 0) + mult;
+				}
+			}
+			// --- End Track P11 ---
 		}
 		if (rep.with.counters) {
 			const baseAmount = Math.max(0, evalReplaceAmount(rep.with.counters.amount, ctx));
@@ -1062,6 +1789,9 @@ export interface ActiveCounterReplacement {
 	controllerId: string;
 	factor: number;
 	delta: number;
+	// --- Track P17a ---
+	round?: 'down' | 'up';
+	// --- End Track P17a ---
 }
 
 /**
@@ -1072,14 +1802,22 @@ export function applicableCounterReplacements(
 	state: GameState,
 	perm: CardInstance,
 	counterType: CounterType,
-	alreadyApplied: ReadonlySet<string> = new Set()
+	alreadyApplied: ReadonlySet<string> = new Set(),
+	placerPlayerId?: string
 ): ActiveCounterReplacement[] {
 	const out: ActiveCounterReplacement[] = [];
-	for (const { perm: source, card, controllerId, compiled } of activePermanents(state)) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (let abIdx = 0; abIdx < face.abilities.length; abIdx++) {
-			const ability = face.abilities[abIdx];
+	const effectivePlacer =
+		placerPlayerId ??
+		(state.stack.length > 0 ? state.stack[state.stack.length - 1]?.controllerId : undefined) ??
+		perm.controllerId ??
+		perm.ownerId;
+	for (const { perm: source, card, controllerId } of activeStaticSources(state)) {
+		const abilities = activeAbilityDefs(
+			card,
+			instanceFaceOptions(source, source.isEmblem ? 'command' : 'battlefield')
+		);
+		for (let abIdx = 0; abIdx < abilities.length; abIdx++) {
+			const ability = abilities[abIdx];
 			if (
 				ability.kind !== 'static' ||
 				ability.static.k !== 'multiplier' ||
@@ -1090,8 +1828,12 @@ export function applicableCounterReplacements(
 			const id = `${source.instanceId}:cmult:${abIdx}`;
 			if (alreadyApplied.has(id)) continue;
 			const def = ability.static;
-			if (!isBattlefieldActiveZone(def)) continue;
+			if (!isBattlefieldActiveZone(def, source)) continue;
 			if (def.counter !== undefined && def.counter !== counterType) continue;
+			// --- Track P17a ---
+			if (def.whoPlaces === 'you' && effectivePlacer !== controllerId) continue;
+			if (def.whoPlaces === 'opponents' && effectivePlacer === controllerId) continue;
+			// --- End Track P17a ---
 			if (!evalReplaceCondition(def.condition, { state, controllerId, source })) continue;
 			if (
 				def.filter &&
@@ -1116,10 +1858,65 @@ export function applicableCounterReplacements(
 				sourceName: card.name,
 				controllerId,
 				factor,
-				delta
+				delta,
+				...(def.round ? { round: def.round } : {})
 			});
 		}
 	}
+	// --- Track P11: Include Layer 6 granted counter multipliers ---
+	if (boardMayGrantStaticAbility(state, 'multiplier')) {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			for (const source of p.battlefield) {
+				if (source.phasedOut) continue;
+				const granted = collectActiveGrantedStaticDefs(state, source);
+				if (granted.length === 0) continue;
+				const ev = evaluatePermanent(state, source);
+				for (let gIdx = 0; gIdx < granted.length; gIdx++) {
+					const def = granted[gIdx];
+					if (def.k !== 'multiplier' || def.what !== 'counters') continue;
+					const id = `${source.instanceId}:gcmult:${gIdx}`;
+					if (alreadyApplied.has(id)) continue;
+					if (!isBattlefieldActiveZone(def)) continue;
+					if (def.counter !== undefined && def.counter !== counterType) continue;
+					// --- Track P17a ---
+					if (def.whoPlaces === 'you' && effectivePlacer !== ev.controllerId) continue;
+					if (def.whoPlaces === 'opponents' && effectivePlacer === ev.controllerId) continue;
+					// --- End Track P17a ---
+					if (!evalReplaceCondition(def.condition, { state, controllerId: ev.controllerId, source })) {
+						continue;
+					}
+					if (
+						def.filter &&
+						!matchesObjectFilter(perm, def.filter, {
+							state,
+							controllerId: ev.controllerId,
+							source
+						})
+					) {
+						continue;
+					}
+					const delta = def.delta ?? 0;
+					const factor = def.factor;
+					const desc =
+						delta > 0 && factor === 1
+							? `+${delta} ${counterType} counter(s) (${ev.effectiveName})`
+							: `×${factor} ${counterType} counters (${ev.effectiveName})`;
+					out.push({
+						id,
+						label: desc,
+						source,
+						sourceName: ev.effectiveName,
+						controllerId: ev.controllerId,
+						factor,
+						delta,
+						...(def.round ? { round: def.round } : {})
+					});
+				}
+			}
+		}
+	}
+	// --- End Track P11 ---
 	return out;
 }
 
@@ -1142,7 +1939,8 @@ export function resolveCounterReplacements(
 	counterType: CounterType,
 	initialAmount: number,
 	alreadyApplied: ReadonlySet<string> = new Set(),
-	chosenId?: string
+	chosenId?: string,
+	placerPlayerId?: string
 ): CounterReplacementResolution {
 	const appliedIds = new Set(alreadyApplied);
 	const chooserId = perm.controllerId || perm.ownerId;
@@ -1151,7 +1949,7 @@ export function resolveCounterReplacements(
 	let nextChoiceId = chosenId;
 
 	for (let iter = 0; iter < 16 && amount > 0; iter++) {
-		const reps = applicableCounterReplacements(state, perm, counterType, appliedIds);
+		const reps = applicableCounterReplacements(state, perm, counterType, appliedIds, placerPlayerId);
 		if (reps.length === 0) break;
 
 		let picked: ActiveCounterReplacement | undefined;
@@ -1176,7 +1974,9 @@ export function resolveCounterReplacements(
 		}
 
 		appliedIds.add(picked.id);
-		amount = (amount + picked.delta) * picked.factor;
+		// --- Track P17a ---
+		amount = applyCounterReplacementStep(amount, picked.factor, picked.delta, picked.round);
+		// --- End Track P17a ---
 	}
 
 	return {
@@ -1209,10 +2009,11 @@ export function counterMultiplier(
  */
 export function tokenMultiplier(state: GameState, recipientPlayerId: string): number {
 	let factor = 1;
-	for (const { perm: source, card, controllerId, compiled } of activePermanents(state)) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (const ability of face.abilities) {
+	for (const { perm: source, card, controllerId } of activeStaticSources(state)) {
+		for (const ability of activeAbilityDefs(
+			card,
+			instanceFaceOptions(source, source.isEmblem ? 'command' : 'battlefield')
+		)) {
 			if (
 				ability.kind !== 'static' ||
 				ability.static.k !== 'multiplier' ||
@@ -1221,7 +2022,15 @@ export function tokenMultiplier(state: GameState, recipientPlayerId: string): nu
 				continue;
 			}
 			const def = ability.static;
-			if (!isBattlefieldActiveZone(def)) continue;
+			if (!isBattlefieldActiveZone(def, source)) continue;
+			// --- Track P17a ---
+			if (def.extraToken || (def.delta ?? 0) !== 0) continue;
+			if (def.whoCreates === 'you' && controllerId !== recipientPlayerId) continue;
+			if (def.filter) {
+				const nonCtrlKeys = Object.keys(def.filter).filter((k) => k !== 'controller');
+				if (nonCtrlKeys.length > 0) continue;
+			}
+			// --- End Track P17a ---
 			if (!evalReplaceCondition(def.condition, { state, controllerId, source })) continue;
 			if (def.filter?.controller === 'you' && controllerId !== recipientPlayerId) continue;
 			if (def.filter?.controller === 'opponent' && controllerId === recipientPlayerId) continue;
@@ -1232,7 +2041,8 @@ export function tokenMultiplier(state: GameState, recipientPlayerId: string): nu
 }
 
 export interface TriggerMultiplierCause {
-	event: 'cast' | 'zoneChange' | 'attacks';
+	// --- Track P9 & Track P10: generalized to EventKind ---
+	event: EventKind;
 	spell?: CardInstance;
 	casterId?: string;
 	isCopy?: boolean;
@@ -1241,7 +2051,123 @@ export interface TriggerMultiplierCause {
 	from?: ZoneType | null;
 	to?: ZoneType;
 	attackers?: CardInstance[];
+	// --- Track P17a ---
+	playerId?: string;
+	combat?: boolean;
+	targetKind?: 'player' | 'permanent';
+	targetIsPlaneswalker?: boolean;
+	// --- End Track P17a ---
 }
+
+// --- Track P17a ---
+function matchesSingleTriggerCausePattern(
+	state: GameState,
+	source: CardInstance,
+	controllerId: string,
+	pattern: EventPattern,
+	cause: TriggerMultiplierCause
+): boolean {
+	const isCombatDamageAlias =
+		pattern.event === 'dealsDamage' &&
+		cause.event === 'combatDamageBatchPlayer' &&
+		Boolean(pattern.filter?.combat);
+	if (pattern.event !== cause.event && !isCombatDamageAlias) return false;
+	const cf = pattern.filter;
+	if (!cf) return true;
+
+	if (cause.event === 'cast') {
+		if (cause.isCopy && !cf.orCopy) return false;
+		if (
+			cf.player &&
+			cause.casterId !== undefined &&
+			!matchesPlayerFilter(cf.player, controllerId, cause.casterId, state)
+		) {
+			return false;
+		}
+		if (cf.object && typeof cf.object === 'object') {
+			if (!cause.spell) return false;
+			const spellView: CardInstance =
+				cause.casterId && cause.spell.controllerId !== cause.casterId
+					? { ...cause.spell, controllerId: cause.casterId }
+					: cause.spell;
+			if (!matchesObjectFilter(spellView, cf.object, { state, controllerId, source })) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	if (cause.event === 'zoneChange') {
+		if (cf.from !== undefined && cf.from !== cause.from) return false;
+		if (cf.to !== undefined && cf.to !== cause.to) return false;
+		if (cf.object && typeof cf.object === 'object') {
+			if (!cause.object) return false;
+			const objView: CardInstance = cause.lki
+				? {
+						...cause.object,
+						card: {
+							...cause.lki.card,
+							typeLine: cause.lki.typeLine
+						},
+						controllerId: cause.lki.controllerId,
+						isToken: cause.lki.isToken,
+						tapped: cause.lki.tapped
+					}
+				: cause.object;
+			if (!matchesObjectFilter(objView, cf.object, { state, controllerId, source })) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	if (cause.event === 'attacks' || isCombatDamageAlias) {
+		if (cf.object && typeof cf.object === 'object') {
+			const atkList = cause.attackers ?? (cause.object ? [cause.object] : []);
+			if (
+				!atkList.some((atk) =>
+					matchesObjectFilter(atk, cf.object as ObjectFilter, { state, controllerId, source })
+				)
+			) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	if (cause.event === 'dealsDamage') {
+		if (cf.combat && !cause.combat) return false;
+		if (cf.damageTo === 'player' && cause.targetKind !== 'player') return false;
+		if (
+			cf.damageTo === 'playerOrPlaneswalker' &&
+			cause.targetKind !== 'player' &&
+			!cause.targetIsPlaneswalker
+		) {
+			return false;
+		}
+		if (cf.object && typeof cf.object === 'object') {
+			if (!cause.object) return false;
+			if (!matchesObjectFilter(cause.object, cf.object, { state, controllerId, source })) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	if (cause.event === 'drawCard') {
+		if (
+			cf.player &&
+			cause.playerId !== undefined &&
+			!matchesPlayerFilter(cf.player, controllerId, cause.playerId, state)
+		) {
+			return false;
+		}
+		return true;
+	}
+
+	return true;
+}
+// --- End Track P17a ---
 
 /**
  * Computes the trigger count for a triggered ability of battlefield permanent `triggeredPerm`
@@ -1255,14 +2181,28 @@ export function triggerMultiplier(
 ): number {
 	let times = 1;
 	const permView: CardInstance =
-		triggeredPerm.controllerId === triggeredControllerId
-			? triggeredPerm
-			: { ...triggeredPerm, controllerId: triggeredControllerId };
+		triggeredPerm.zone !== 'battlefield' &&
+		cause.object?.instanceId === triggeredPerm.instanceId &&
+		cause.lki
+			? {
+					...triggeredPerm,
+					card: {
+						...cause.lki.card,
+						typeLine: cause.lki.typeLine
+					},
+					controllerId: triggeredControllerId,
+					isToken: cause.lki.isToken,
+					tapped: cause.lki.tapped
+				}
+			: triggeredPerm.controllerId === triggeredControllerId
+				? triggeredPerm
+				: { ...triggeredPerm, controllerId: triggeredControllerId };
 
-	for (const { perm: source, card, controllerId, compiled } of activePermanents(state)) {
-		const face = compiled.faces[0];
-		if (!face) continue;
-		for (const ability of face.abilities) {
+	for (const { perm: source, card, controllerId } of activeStaticSources(state)) {
+		for (const ability of activeAbilityDefs(
+			card,
+			instanceFaceOptions(source, source.isEmblem ? 'command' : 'battlefield')
+		)) {
 			if (
 				ability.kind !== 'static' ||
 				ability.static.k !== 'multiplier' ||
@@ -1271,8 +2211,13 @@ export function triggerMultiplier(
 				continue;
 			}
 			const def = ability.static;
-			if (!isBattlefieldActiveZone(def)) continue;
+			if (!isBattlefieldActiveZone(def, source)) continue;
 			if (!evalReplaceCondition(def.condition, { state, controllerId, source })) continue;
+			// --- Track P17a ---
+			if (def.triggerSourceAttachedTo && source.attachedToId !== triggeredPerm.instanceId) {
+				continue;
+			}
+			// --- End Track P17a ---
 			if (
 				def.filter &&
 				!matchesObjectFilter(permView, def.filter, {
@@ -1283,78 +2228,20 @@ export function triggerMultiplier(
 			) {
 				continue;
 			}
-			if (def.cause) {
-				if (def.cause.event !== cause.event) continue;
-				const cf = def.cause.filter;
-				if (cause.event === 'cast') {
-					if (cause.isCopy && !cf?.orCopy) continue;
-					if (
-						cf?.player &&
-						cause.casterId !== undefined &&
-						!matchesPlayerFilter(cf.player, controllerId, cause.casterId, state)
-					) {
-						continue;
-					}
-					if (cf?.object && typeof cf.object === 'object') {
-						if (!cause.spell) continue;
-						const spellView: CardInstance =
-							cause.casterId && cause.spell.controllerId !== cause.casterId
-								? { ...cause.spell, controllerId: cause.casterId }
-								: cause.spell;
-						if (
-							!matchesObjectFilter(spellView, cf.object, {
-								state,
-								controllerId,
-								source
-							})
-						) {
-							continue;
-						}
-					}
-				} else if (cause.event === 'zoneChange') {
-					if (cf?.from !== undefined && cf.from !== cause.from) continue;
-					if (cf?.to !== undefined && cf.to !== cause.to) continue;
-					if (cf?.object && typeof cf.object === 'object') {
-						if (!cause.object) continue;
-						const objView: CardInstance = cause.lki
-							? {
-									...cause.object,
-									card: {
-										...cause.lki.card,
-										typeLine: cause.lki.typeLine
-									},
-									controllerId: cause.lki.controllerId,
-									isToken: cause.lki.isToken,
-									tapped: cause.lki.tapped
-								}
-							: cause.object;
-						if (
-							!matchesObjectFilter(objView, cf.object, {
-								state,
-								controllerId,
-								source
-							})
-						) {
-							continue;
-						}
-					}
-				} else if (cause.event === 'attacks') {
-					if (cf?.object && typeof cf.object === 'object') {
-						const atkList = cause.attackers ?? (cause.object ? [cause.object] : []);
-						if (
-							!atkList.some((atk) =>
-								matchesObjectFilter(atk, cf.object as ObjectFilter, {
-									state,
-									controllerId,
-									source
-								})
-							)
-						) {
-							continue;
-						}
-					}
-				}
+			// --- Track P17a ---
+			const causes = def.causeOr ?? (def.cause ? [def.cause] : undefined);
+			if (
+				causes &&
+				!causes.some((pat) =>
+					matchesSingleTriggerCausePattern(state, source, controllerId, pat, cause)
+				)
+			) {
+				continue;
 			}
+			if (def.factor <= 0) {
+				return 0;
+			}
+			// --- End Track P17a ---
 			// CR 603.2d: Each "triggers an additional time" effect adds (def.factor - 1) additional triggers.
 			times += Math.max(0, def.factor - 1);
 		}

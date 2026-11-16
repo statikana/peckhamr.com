@@ -9,8 +9,10 @@
  * UI (for display) may read.
  */
 import type { CardDefinition, Span, UnsupportedReason } from '../ir.ts';
+import { isNonPlayableHelperCard } from '../scryfall.ts';
 import type { DeckCardEntry, LobbyRulesConfig, MagicDeck, ScryfallCard, StackItem } from '../types.ts';
 import { compileCard } from './index.ts';
+import { printedText } from './normalize.ts';
 
 /**
  * Step E2: what kind of ability isn't automated, which decides what the runtime does with it
@@ -81,7 +83,7 @@ export function definitionSupportReport(def: CardDefinition): CardSupportReport 
 const TRIGGER_WORD = /^(?:when|whenever|at)\b/i;
 const MANA_EFFECT = /:\s*add\b/i;
 /** "{T}: ...", "{2}{G}, Sacrifice ~: ...", "+1: ...": a cost, a colon, then an effect. */
-const ACTIVATED_LINE = /^[^"“:]*?(?:\{[^}]+\}|[+−-]\d+|\b(?:tap|untap|sacrifice|discard|exile|pay|remove)\b)[^"“:]*:\s*\S/i;
+const ACTIVATED_LINE = /^[^"“:]*?(?:\{[^}]+\}|[+−-](?:\d+|X)|\b(?:tap|untap|sacrifice|discard|exile|pay|remove)\b)[^"“:]*:\s*\S/i;
 
 function unsupportedKind(ab: Extract<CardDefinition['faces'][number]['abilities'][number], { kind: 'unsupported' }>, isSpell: boolean): UnsupportedAbilityKind {
 	switch (ab.reason) {
@@ -127,14 +129,14 @@ export function unsupportedKindLabel(kind: UnsupportedAbilityKind): string {
 /**
  * Step E2: the abilities to mention when a permanent enters the battlefield (the engine can't act on
  * them itself): statics, replacements and keywords that aren't enforced, and triggered abilities whose
- * trigger isn't understood. Display text only (`~` shown as the face name).
+ * trigger isn't understood. Display text only (`~` shown as the card prints it).
  */
 export function enteringNotices(card: ScryfallCard): Array<{ kind: UnsupportedAbilityKind; text: string }> {
 	const report = cardSupportReport(card);
 	const first = report.unsupported[0]?.face;
 	return report.unsupported
 		.filter((u) => u.face === first && u.text.trim().length > 0 && (u.kind === 'static' || u.kind === 'keyword' || u.kind === 'triggerUnrecognised'))
-		.map((u) => ({ kind: u.kind, text: displayAbilityText(u.text, u.face) }));
+		.map((u) => ({ kind: u.kind, text: displayAbilityText(u.text, u.face, card) }));
 }
 
 /** The rules text a stack item shows (display only: prompts, logs). */
@@ -149,7 +151,7 @@ export function stackItemDisplayText(item: Pick<StackItem, 'card' | 'oracleText'
 export function cardAbilityDisplayText(card: ScryfallCard, unsupportedIndex?: number): string {
 	if (unsupportedIndex !== undefined) {
 		const u = cardSupportReport(card).unsupported[unsupportedIndex];
-		if (u) return displayAbilityText(u.text, u.face);
+		if (u) return displayAbilityText(u.text, u.face, card);
 	}
 	return card.oracleText || '';
 }
@@ -157,6 +159,9 @@ export function cardAbilityDisplayText(card: ScryfallCard, unsupportedIndex?: nu
 /** Which of the card's abilities the engine won't automate. Never throws; a compiler error counts
  * as one unsupported ability covering the whole card. */
 export function cardSupportReport(card: ScryfallCard): CardSupportReport {
+	if (isNonPlayableHelperCard(card)) {
+		return { fullySupported: true, unsupported: [] };
+	}
 	try {
 		return definitionSupportReport(compileCard(card));
 	} catch {
@@ -167,9 +172,16 @@ export function cardSupportReport(card: ScryfallCard): CardSupportReport {
 	}
 }
 
-/** Ability text for display: `~` (CARDNAME) shown as the face's name. */
-export function displayAbilityText(text: string, faceName: string): string {
-	return text.replace(/~/g, faceName);
+/**
+ * Ability text for display. With the card, `~` is shown as the card prints it ("this artifact" inside
+ * a granted ability, not the granting card's name); without it, as the face's name.
+ */
+export function displayAbilityText(text: string, faceName: string, card?: ScryfallCard): string {
+	if (!card) return text.replace(/~/g, faceName);
+	const faceOracle = card.faces?.find((f) => f.name === faceName)?.oracleText;
+	const rulesText =
+		faceOracle ?? (card.backFace ? `${card.oracleText}\n${card.backFace.oracleText}` : card.oracleText);
+	return printedText(text, faceName, rulesText || '');
 }
 
 export interface DeckUnsupportedCard {
@@ -181,7 +193,8 @@ export interface DeckUnsupportedCard {
 /** The deck's distinct cards (commanders first) that have at least one unsupported ability. */
 export function deckUnsupportedCards(
 	commanders: ScryfallCard[] | undefined,
-	cards: DeckCardEntry[] | undefined
+	cards: DeckCardEntry[] | undefined,
+	companion?: ScryfallCard | null
 ): DeckUnsupportedCard[] {
 	const out: DeckUnsupportedCard[] = [];
 	const seen = new Set<string>();
@@ -193,6 +206,7 @@ export function deckUnsupportedCards(
 		if (!report.fullySupported) out.push({ card, isCommander, report });
 	};
 	for (const c of commanders ?? []) visit(c, true);
+	if (companion) visit(companion, false);
 	for (const e of cards ?? []) visit(e.card, false);
 	return out;
 }
@@ -206,12 +220,15 @@ const MAX_NAMES_PER_SEAT = 10;
  */
 export function unsupportedCardsStartError(
 	rules: Pick<LobbyRulesConfig, 'allowUnsupportedCards'>,
-	seats: Array<{ username: string; deck: Pick<MagicDeck, 'name' | 'commanders' | 'cards'> }>
+	seats: Array<{
+		username: string;
+		deck: Pick<MagicDeck, 'name' | 'commanders' | 'cards'> & { companion?: ScryfallCard | null };
+	}>
 ): string | null {
 	if (rules.allowUnsupportedCards !== false) return null;
 	const problems: string[] = [];
 	for (const { username, deck } of seats) {
-		const bad = deckUnsupportedCards(deck.commanders, deck.cards);
+		const bad = deckUnsupportedCards(deck.commanders, deck.cards, deck.companion);
 		if (bad.length === 0) continue;
 		const names = bad.slice(0, MAX_NAMES_PER_SEAT).map((b) => b.card.name);
 		const more = bad.length - names.length;

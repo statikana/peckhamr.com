@@ -1,0 +1,45 @@
+{
+	"oracleId": "ee6099b0-fb1f-42f1-b862-7708c6e36d05",
+	"expectedTextHash": "1b302029",
+	"faces": [
+		{
+			"name": "Lion's Eye Diamond",
+			"characteristics": {
+				"manaCost": "{0}",
+				"types": ["Artifact"],
+				"subtypes": [],
+				"supertypes": [],
+				"colors": []
+			},
+			"abilities": [
+				{
+					"kind": "activated",
+					"id": "act_0",
+					"cost": [
+						{ "k": "discardHand" },
+						{
+							"k": "sacrifice",
+							"count": { "k": "const", "n": 1 },
+							"filter": "self"
+						}
+					],
+					"targets": [],
+					"effect": [
+						{
+							"verb": "addMana",
+							"subject": { "k": "none" },
+							"amount": { "k": "const", "n": 3 },
+							"params": { "manaChoice": "any" },
+							"span": { "start": 32, "end": 63 }
+						}
+					],
+					"timing": "mana",
+					"isMana": true,
+					"activationRestrictions": ["onlyAsInstant"],
+					"text": "Discard your hand, Sacrifice ~: Add three mana of any one color. Activate only as an instant.",
+					"span": { "start": 0, "end": 93 }
+				}
+			]
+		}
+	]
+}

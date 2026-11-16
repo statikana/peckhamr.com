@@ -1,8 +1,8 @@
 {
 	"Forest": {
 		"oracleId": "card_forest",
-		"compilerVersion": 7,
-		"textHash": "feeeded1",
+		"compilerVersion": 41,
+		"textHash": "15dd7c47",
 		"name": "Forest",
 		"faces": [
 			{
@@ -66,8 +66,8 @@
 	},
 	"Sol Ring": {
 		"oracleId": "card_sol_ring",
-		"compilerVersion": 7,
-		"textHash": "828d16e9",
+		"compilerVersion": 41,
+		"textHash": "9a66771f",
 		"name": "Sol Ring",
 		"faces": [
 			{
@@ -128,8 +128,8 @@
 	},
 	"Command Tower": {
 		"oracleId": "card_command_tower",
-		"compilerVersion": 7,
-		"textHash": "ca67ac9f",
+		"compilerVersion": 41,
+		"textHash": "78e32af5",
 		"name": "Command Tower",
 		"faces": [
 			{
@@ -187,8 +187,8 @@
 	},
 	"Arcane Signet": {
 		"oracleId": "card_arcane_signet",
-		"compilerVersion": 7,
-		"textHash": "8880be04",
+		"compilerVersion": 41,
+		"textHash": "a2aed3ce",
 		"name": "Arcane Signet",
 		"faces": [
 			{
@@ -246,8 +246,8 @@
 	},
 	"Mind Stone": {
 		"oracleId": "card_mind_stone",
-		"compilerVersion": 7,
-		"textHash": "99d414d7",
+		"compilerVersion": 41,
+		"textHash": "a1f55679",
 		"name": "Mind Stone",
 		"faces": [
 			{
@@ -355,8 +355,8 @@
 	},
 	"Elvish Archdruid": {
 		"oracleId": "card_elvish_archdruid",
-		"compilerVersion": 7,
-		"textHash": "7139654d",
+		"compilerVersion": 41,
+		"textHash": "6e743ff7",
 		"name": "Elvish Archdruid",
 		"faces": [
 			{
@@ -461,8 +461,8 @@
 	},
 	"Marwyn, the Nurturer": {
 		"oracleId": "card_marwyn",
-		"compilerVersion": 7,
-		"textHash": "f70c3491",
+		"compilerVersion": 41,
+		"textHash": "a5a2689f",
 		"name": "Marwyn, the Nurturer",
 		"faces": [
 			{
@@ -492,11 +492,11 @@
 							"event": "zoneChange",
 							"filter": {
 								"object": {
-									"controller": "you",
-									"other": true,
 									"subtypes": [
 										"Elf"
-									]
+									],
+									"controller": "you",
+									"other": true
 								},
 								"to": "battlefield"
 							}
@@ -575,8 +575,8 @@
 	},
 	"Swords to Plowshares": {
 		"oracleId": "card_swords_to_plowshares",
-		"compilerVersion": 7,
-		"textHash": "4b95d180",
+		"compilerVersion": 41,
+		"textHash": "6beb79e6",
 		"name": "Swords to Plowshares",
 		"faces": [
 			{
@@ -661,8 +661,8 @@
 	},
 	"Counterspell": {
 		"oracleId": "card_counterspell",
-		"compilerVersion": 7,
-		"textHash": "d86d3ca0",
+		"compilerVersion": 41,
+		"textHash": "226abcbe",
 		"name": "Counterspell",
 		"faces": [
 			{
@@ -717,8 +717,8 @@
 	},
 	"Cyclonic Rift": {
 		"oracleId": "card_cyclonic_rift",
-		"compilerVersion": 7,
-		"textHash": "7dd3cb4f",
+		"compilerVersion": 41,
+		"textHash": "2468ee4d",
 		"name": "Cyclonic Rift",
 		"faces": [
 			{
@@ -788,8 +788,8 @@
 	},
 	"Wrath of God": {
 		"oracleId": "card_wrath_of_god",
-		"compilerVersion": 7,
-		"textHash": "eb8e805b",
+		"compilerVersion": 41,
+		"textHash": "837bf0e9",
 		"name": "Wrath of God",
 		"faces": [
 			{
@@ -816,15 +816,18 @@
 								"subject": {
 									"k": "all",
 									"filter": {
+										"zone": "battlefield",
 										"types": [
 											"Creature"
-										],
-										"zone": "battlefield"
+										]
 									}
 								},
 								"span": {
 									"start": 0,
 									"end": 21
+								},
+								"params": {
+									"cantBeRegenerated": true
 								}
 							}
 						],
@@ -840,8 +843,8 @@
 	},
 	"Toxic Deluge": {
 		"oracleId": "card_toxic_deluge",
-		"compilerVersion": 7,
-		"textHash": "ee4cb8fb",
+		"compilerVersion": 41,
+		"textHash": "bd33a739",
 		"name": "Toxic Deluge",
 		"faces": [
 			{
@@ -875,10 +878,10 @@
 								"subject": {
 									"k": "all",
 									"filter": {
+										"zone": "battlefield",
 										"types": [
 											"Creature"
-										],
-										"zone": "battlefield"
+										]
 									}
 								},
 								"amount": {
@@ -914,8 +917,8 @@
 	},
 	"Farewell": {
 		"oracleId": "card_farewell",
-		"compilerVersion": 7,
-		"textHash": "0cd82709",
+		"compilerVersion": 41,
+		"textHash": "1dffa987",
 		"name": "Farewell",
 		"faces": [
 			{
@@ -949,10 +952,10 @@
 											"subject": {
 												"k": "all",
 												"filter": {
+													"zone": "battlefield",
 													"types": [
 														"Artifact"
-													],
-													"zone": "battlefield"
+													]
 												}
 											},
 											"span": {
@@ -974,10 +977,10 @@
 											"subject": {
 												"k": "all",
 												"filter": {
+													"zone": "battlefield",
 													"types": [
 														"Creature"
-													],
-													"zone": "battlefield"
+													]
 												}
 											},
 											"span": {
@@ -999,10 +1002,10 @@
 											"subject": {
 												"k": "all",
 												"filter": {
+													"zone": "battlefield",
 													"types": [
 														"Enchantment"
-													],
-													"zone": "battlefield"
+													]
 												}
 											},
 											"span": {
@@ -1052,8 +1055,8 @@
 	},
 	"Cultivate": {
 		"oracleId": "card_cultivate",
-		"compilerVersion": 7,
-		"textHash": "4a773009",
+		"compilerVersion": 41,
+		"textHash": "398e4ff3",
 		"name": "Cultivate",
 		"faces": [
 			{
@@ -1128,8 +1131,8 @@
 	},
 	"Ponder": {
 		"oracleId": "card_ponder",
-		"compilerVersion": 7,
-		"textHash": "63c3c96a",
+		"compilerVersion": 41,
+		"textHash": "c71e5be8",
 		"name": "Ponder",
 		"faces": [
 			{
@@ -1201,8 +1204,8 @@
 	},
 	"Final Fortune": {
 		"oracleId": "card_final_fortune",
-		"compilerVersion": 7,
-		"textHash": "f57e3f86",
+		"compilerVersion": 41,
+		"textHash": "efad4720",
 		"name": "Final Fortune",
 		"faces": [
 			{
@@ -1284,8 +1287,8 @@
 	},
 	"Rift Bolt": {
 		"oracleId": "card_rift_bolt",
-		"compilerVersion": 7,
-		"textHash": "96014176",
+		"compilerVersion": 41,
+		"textHash": "6d9f0408",
 		"name": "Rift Bolt",
 		"faces": [
 			{
@@ -1364,8 +1367,8 @@
 	},
 	"Lightning Greaves": {
 		"oracleId": "card_lightning_greaves",
-		"compilerVersion": 7,
-		"textHash": "78d62bb0",
+		"compilerVersion": 41,
+		"textHash": "a92edff6",
 		"name": "Lightning Greaves",
 		"faces": [
 			{
@@ -1420,8 +1423,8 @@
 	},
 	"Craterhoof Behemoth": {
 		"oracleId": "card_craterhoof_behemoth",
-		"compilerVersion": 7,
-		"textHash": "950c93b3",
+		"compilerVersion": 41,
+		"textHash": "28bd9419",
 		"name": "Craterhoof Behemoth",
 		"faces": [
 			{
@@ -1468,10 +1471,10 @@
 								"subject": {
 									"k": "all",
 									"filter": {
+										"zone": "battlefield",
 										"types": [
 											"Creature"
 										],
-										"zone": "battlefield",
 										"controller": "you"
 									}
 								},
@@ -1491,20 +1494,20 @@
 								"subject": {
 									"k": "all",
 									"filter": {
+										"zone": "battlefield",
 										"types": [
 											"Creature"
 										],
-										"zone": "battlefield",
 										"controller": "you"
 									}
 								},
 								"amount": {
 									"k": "count",
 									"of": {
+										"zone": "battlefield",
 										"types": [
 											"Creature"
 										],
-										"zone": "battlefield",
 										"controller": "you"
 									}
 								},
@@ -1512,10 +1515,10 @@
 									"toughness": {
 										"k": "count",
 										"of": {
+											"zone": "battlefield",
 											"types": [
 												"Creature"
 											],
-											"zone": "battlefield",
 											"controller": "you"
 										}
 									},
@@ -1540,8 +1543,8 @@
 	},
 	"Lathril, Blade of the Elves": {
 		"oracleId": "cmd_lathril",
-		"compilerVersion": 7,
-		"textHash": "ae19645b",
+		"compilerVersion": 41,
+		"textHash": "5431216d",
 		"name": "Lathril, Blade of the Elves",
 		"faces": [
 			{
@@ -1694,8 +1697,8 @@
 	},
 	"Atraxa, Praetors' Voice": {
 		"oracleId": "cmd_atraxa",
-		"compilerVersion": 7,
-		"textHash": "14c19e13",
+		"compilerVersion": 41,
+		"textHash": "17c9a3d1",
 		"name": "Atraxa, Praetors' Voice",
 		"faces": [
 			{
@@ -1798,8 +1801,8 @@
 	},
 	"Nether Shadow": {
 		"oracleId": "card_nether_shadow",
-		"compilerVersion": 7,
-		"textHash": "17f689a9",
+		"compilerVersion": 41,
+		"textHash": "66ed5173",
 		"name": "Nether Shadow",
 		"faces": [
 			{
@@ -1884,8 +1887,8 @@
 	},
 	"Felidar Sovereign": {
 		"oracleId": "card_felidar_sovereign",
-		"compilerVersion": 7,
-		"textHash": "e7a3b7ab",
+		"compilerVersion": 41,
+		"textHash": "1a772431",
 		"name": "Felidar Sovereign",
 		"faces": [
 			{
@@ -1979,8 +1982,8 @@
 	},
 	"Guttersnipe": {
 		"oracleId": "card_guttersnipe",
-		"compilerVersion": 7,
-		"textHash": "70f96721",
+		"compilerVersion": 41,
+		"textHash": "f48f2363",
 		"name": "Guttersnipe",
 		"faces": [
 			{
@@ -2051,8 +2054,8 @@
 	},
 	"Veyran, Voice of Duality": {
 		"oracleId": "cmd_veyran",
-		"compilerVersion": 7,
-		"textHash": "b045a127",
+		"compilerVersion": 41,
+		"textHash": "cb3b8a55",
 		"name": "Veyran, Voice of Duality",
 		"faces": [
 			{
@@ -2161,8 +2164,8 @@
 	},
 	"Bramblecrest, Warden of Ash": {
 		"oracleId": "synthetic_bramblecrest_warden_of_ash",
-		"compilerVersion": 7,
-		"textHash": "d696e9e8",
+		"compilerVersion": 41,
+		"textHash": "152cd88a",
 		"name": "Bramblecrest, Warden of Ash",
 		"faces": [
 			{
@@ -2340,8 +2343,8 @@
 	},
 	"Glimmerfen Overseer": {
 		"oracleId": "synthetic_glimmerfen_overseer",
-		"compilerVersion": 7,
-		"textHash": "82e62bd9",
+		"compilerVersion": 41,
+		"textHash": "a3a54a0f",
 		"name": "Glimmerfen Overseer",
 		"faces": [
 			{
@@ -2366,10 +2369,10 @@
 							"event": "zoneChange",
 							"filter": {
 								"object": {
-									"controller": "you",
 									"types": [
 										"Land"
-									]
+									],
+									"controller": "you"
 								},
 								"to": "battlefield"
 							}
@@ -2446,29 +2449,36 @@
 						}
 					},
 					{
-						"kind": "unsupported",
-						"reason": "static_not_compiled",
-						"text": "~'s power is equal to the number of cards in your hand.",
+						"kind": "static",
+						"static": {
+							"k": "continuous",
+							"layer": "7a",
+							"affected": "self",
+							"mod": {
+								"k": "setBasePower",
+								"power": {
+									"k": "cardsIn",
+									"zone": "hand",
+									"of": {
+										"k": "you"
+									}
+								}
+							}
+						},
 						"span": {
 							"start": 144,
 							"end": 199
-						},
-						"unparsed": [
-							{
-								"start": 144,
-								"end": 199
-							}
-						]
+						}
 					}
 				]
 			}
 		],
-		"fullySupported": false
+		"fullySupported": true
 	},
 	"Twinned Lantern Wardens": {
 		"oracleId": "synthetic_twinned_lantern_wardens",
-		"compilerVersion": 7,
-		"textHash": "a21395a4",
+		"compilerVersion": 41,
+		"textHash": "7369e68a",
 		"name": "Twinned Lantern Wardens",
 		"faces": [
 			{
@@ -2487,18 +2497,84 @@
 				},
 				"abilities": [
 					{
-						"kind": "unsupported",
-						"reason": "multiface",
-						"text": "Ward {2}\nKicker {1}{W}",
+						"kind": "keyword",
+						"keyword": {
+							"name": "ward",
+							"cost": "{2}",
+							"costDefs": [
+								{
+									"k": "mana",
+									"cost": "{2}"
+								}
+							]
+						},
 						"span": {
 							"start": 0,
-							"end": 22
+							"end": 8
+						}
+					},
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "kicker",
+							"cost": "{1}{W}",
+							"kickerCosts": [
+								{
+									"cost": "{1}{W}",
+									"costDefs": [
+										{
+											"k": "mana",
+											"cost": "{1}{W}"
+										}
+									],
+									"tags": [
+										"{1}{W}",
+										"white"
+									]
+								}
+							],
+							"costDefs": [
+								{
+									"k": "mana",
+									"cost": "{1}{W}"
+								}
+							]
 						},
-						"unparsed": []
+						"span": {
+							"start": 9,
+							"end": 22
+						}
+					}
+				]
+			},
+			{
+				"name": "Lantern Wardens Ascendant",
+				"characteristics": {
+					"manaCost": "",
+					"types": [
+						"Creature"
+					],
+					"subtypes": [
+						"Human",
+						"Soldier"
+					],
+					"supertypes": [],
+					"colors": []
+				},
+				"abilities": [
+					{
+						"kind": "keyword",
+						"keyword": {
+							"name": "flying"
+						},
+						"span": {
+							"start": 0,
+							"end": 6
+						}
 					}
 				]
 			}
 		],
-		"fullySupported": false
+		"fullySupported": true
 	}
 }

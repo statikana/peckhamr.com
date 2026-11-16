@@ -1,4 +1,8 @@
 # Rules audit: 702.1–702.84 Keyword Abilities, Part 1 (rules.txt lines 3912–4654)
+
+> [!WARNING]
+> **Stale (checked 2026-11-12).** This report was written at `917180b` and hasn't been reconciled with the ~136 commits since. Many rows it lists as missing or partial have since been fixed, it still cites the deleted `compiler/adapter.ts` and old line numbers, and its counts don't add up. Rows marked **Updated 2026-11-12** were re-checked; treat every other row as a lead to verify against the code, not as current status. Details: [`../audits/`](../audits/README.md).
+
 Audited at engine-rewrite 917180b on 2026-11-09.
 
 ## Summary
@@ -7,14 +11,14 @@ Audited at engine-rewrite 917180b on 2026-11-09.
   1. **CR 702.16e — Protection does not prevent combat damage** (`engine.ts:6007-6356`): `executeCombatDamageStep` never checks `hasProtectionFrom` or `permanentProtectedFromSource`, so creatures and planeswalkers with Protection take full combat damage from sources of the protected quality — **S**.
   2. **CR 702.80a — Wither is not applied during combat damage and is rejected on keyword lines** (`engine.ts:6014-6348`, `compiler/adapter.ts:100-153`): `executeCombatDamageStep` only checks `hasInfect`, not `hasWither` (unlike non-combat damage in `runtime/effects.ts:1163`), and `'wither'` is omitted from `IMPLEMENTED_KEYWORDS` even though `compiler/statics.ts:110` and `runtime/layers.ts:186` grant it — **S**.
   3. **CR 702.13, 702.28, 702.31, 702.36 — Intimidate, Shadow, Horsemanship, and Fear compile as supported in static grants but are never enforced in combat** (`compiler/statics.ts:93-107`, `runtime/layers.ts:184-188`, `engine.ts:1939-1968`): Static abilities like `"Creatures you control have fear/intimidate/shadow/horsemanship"` compile as fully supported, but `declare_blockers` in `engine.ts` never checks any of those four evasion keywords — **S**.
-  4. **CR 702.14, 702.29, 702.33, 702.34, 702.40, 702.41, 702.49, 702.51, 702.66, 702.74, 702.79, 702.83, 702.84 — Major Commander staples (Landwalk, Cycling, Kicker, Flashback, Storm, Affinity, Ninjutsu, Convoke, Delve, Evoke, Persist, Exalted, Unearth) are unimplemented** (`compiler/adapter.ts:128-153`): Recognised in `KNOWN_KEYWORDS` and flagged `keyword_not_implemented`, with no runtime rules enforcement — **L**.
+  4. **CR 702.14, 702.29, 702.33, ~~702.34~~, 702.40, 702.41, 702.49, 702.51, 702.66, 702.74, 702.79, 702.83, 702.84 — Major Commander staples (Landwalk, Cycling, Kicker, ~~Flashback~~ [implemented 2026-11-12], Storm, Affinity, Ninjutsu, Convoke, Delve, Evoke, Persist, Exalted, Unearth) are unimplemented** (`compiler/adapter.ts:128-153`): Recognised in `KNOWN_KEYWORDS` and flagged `keyword_not_implemented`, with no runtime rules enforcement — **L**.
   5. **CR 702.21a–b — Ward auto-pays without prompting the opponent, ignores non-mana/non-life costs, never triggers on triggered abilities, and ignores dynamically granted Ward** (`engine.ts:4613-4670`, `engine.ts:3636-3747`, `runtime/triggers.ts:326-358`, `compiler/triggers.ts:516-533`): Resolving `ward_trigger` auto-taps mana or deducts life without prompting; non-mana/non-life Ward costs parse as `{0}` via `parseManaCost` and succeed for free; `putTriggerOnStack` never emits `BecameTarget`; `triggersOf(card)` ignores Layer 6 granted Ward — **M**.
   6. **CR 702.62a,c — Suspend skips stack triggers, auto-casts and auto-resolves without player choice or priority, and ignores cast-prohibition effects when suspending from hand** (`engine.ts:3166-3182`, `engine.ts:5432-5579`): Upkeep counter removal and the final-counter cast bypass the stack; `executeSuspendFreeCastFromExile` forces the "may play" choice, auto-picks targets, and immediately calls `resolveTopOfStack(state)`; `checkSuspendLegality` ignores `globalCheck.ok` — **M**.
   7. **CR 702.11d–g — "Hexproof from [quality]" is parsed in static grants and layer labels but never enforced by targeting checks** (`compiler/statics.ts:132-135`, `runtime/layers.ts:210-212`, `engine.ts:502-512`, `engine.ts:7538`): `hasKeyword(inst, 'Hexproof', state)` checks exact canonical key `'hexproof'` and ignores `'hexproof from ...'` — **S**.
   8. **CR 702.19b–c — Trample combat damage assignment is hardcoded to minimum lethal in blocker array order with no controller choice, and "trample over planeswalkers" is unimplemented** (`engine.ts:6190-6294`): The attacking player cannot choose blocker damage assignment order or assign more than lethal damage to a blocker before trampling over — **M**.
   9. **CR 702.5c–d — "Enchant player" Auras never attach on resolution and immediately die to SBAs; multi-Enchant and subtype/type Enchant targeting on cast are incomplete** (`engine.ts:4241-4243`, `engine.ts:6615-6635`, `oracle.ts:972-990`, `engine.ts:6486-6498`) — **M**.
   10. **CR 702.6a,c,e — Equip is legacy-only (`oracle.ts`/`ruleTree.ts`), only parses mana-symbol costs, enforces creature-only targets regardless of `[quality]` on activation, and unattaches `Equip planeswalker` during SBAs** (`oracle.ts:409-439`, `compiler/adapter.ts:568`, `engine.ts:6636-6646`) — **M**.
-  11. **CR 702.26a — Phasing keyword is enforced in the untap step but missing from `IMPLEMENTED_KEYWORDS` and `compiler/statics.ts`** (`engine.ts:983`, `compiler/adapter.ts:100-153`): Cards with printed `Phasing` are flagged `keyword_not_implemented` even though `executeUntapTurnBasedActions` implements the Phasing turn-based action — **S**.
+  11. ~~**CR 702.26a — Phasing keyword is enforced in the untap step but missing from `IMPLEMENTED_KEYWORDS` and `compiler/statics.ts`**~~ — **Fixed 2026-11-12:** `'phasing'` added to `IMPLEMENTED_KEYWORDS` (`compiler/card.ts`), `GRANTABLE_KEYWORDS` (`compiler/effects.ts`), `KEYWORDS` (`compiler/statics.ts`), and `KEYWORD_LABELS` (`runtime/layers.ts`), with `CR 702.26h` simultaneous direct+indirect phase-out fixed in `engine.ts` / `runtime/effects.ts` and covered in `runtime/keywords-phasing.test.ts`.
   12. **CR 702.15b,e — Lifelink mutates `player.life` directly without emitting life-gain events (`LifeGained` does not exist in `runtime/events.ts`), and non-combat LKI (`702.2e`, `702.15c`, `702.80b`) falls back to printed card text instead of battlefield LKI** (`engine.ts:6296-6304`, `engine.ts:6337-6339`, `runtime/effects.ts:1053-1080`, `runtime/effects.ts:1228-1234`) — **M**.
 
 ---
@@ -128,7 +132,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.14 Landwalk
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.14a–e | Landwalk (`[type]walk`) evasion ability | missing | Recognised in `KNOWN_KEYWORDS` (`compiler/adapter.ts:140,150`: `landwalk`, `plainswalker` [typo for `plainswalk`], `islandwalk`, `swampwalk`, `mountainwalk`, `forestwalk`) as `keyword_not_implemented`; not enforced in `engine.ts`. |
+| 702.14a–e | Landwalk (`[type]walk`) evasion ability | implemented (standard & nonbasic) | **Updated 2026-11-13:** `landwalk`, `plainswalk`, `islandwalk`, `swampwalk`, `mountainwalk`, `forestwalk`, and `nonbasic landwalk` are implemented in `KEYWORD_REGISTRY` (`keywords.ts`) with declarative `landwalkFilter`s, enforced in `getBlockerRestrictionReason` (`engine.ts`) using `evaluatePermanent` + `matchesObjectFilter` on the defending player's battlefield (obeying Layer 4 land types and `CR 702.14d` non-cancellation). Exotic compound prefixes (`snow swampwalk`, `artifact landwalk`) remain outside the core registry list. |
 
 ### 702.15 Lifelink
 | CR | Rule (short) | Status | Evidence / notes |
@@ -189,8 +193,8 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.21 Ward
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.21a | Ward [cost]: triggered ability when permanent becomes target of spell/ability an opponent controls; counter unless opponent pays [cost] | partial | Parsed in `compiler/adapter.ts:124,318-335` and `compiler/triggers.ts:516-533`; matched in `runtime/triggers.ts:754-775`; resolved in `engine.ts:4613-4670`. Four major gaps: (1) Resolution does not prompt the opponent—it auto-pays mana/life unless `targetItem.declineWard` was pre-set (`engine.ts:4619-4648`); (2) Only mana costs and `Pay N life` are supported—any other Ward cost (e.g. `Discard a card`, `Sacrifice a permanent`) is passed to `parseManaCost(wardCost)` (`engine.ts:4634`), which parses `{0}` and succeeds for free; (3) `BecameTarget` is only emitted on `cast_spell` (`engine.ts:1574`) and `activate_ability` (`engine.ts:1685`), never when a triggered ability chooses targets (`engine.ts:3639-3673,3731-3748`), and `engine.ts:4660-4669` calls `moveStackSpellToZone` assuming a spell; (4) `triggersOf(card)` (`runtime/triggers.ts:326-358`) only checks printed card abilities, so Ward granted in Layer 6 never triggers. |
-| 702.21b | Ward {X} cost determined on resolution | missing | `engine.ts:4634` calls `parseManaCost(wardCost)` without evaluating X, so `{X}` evaluates to 0. |
+| 702.21a | Ward [cost]: triggered ability when permanent becomes target of spell/ability an opponent controls; counter unless opponent pays [cost] | partial | **Updated 2026-11-12:** targeted triggered abilities now emit `BecameTarget`, granted Ward triggers, each Ward instance triggers separately, and ability loss stops Ward. Ward costs other than mana without {X} or a fixed life payment compile as unsupported and resolve manually. Tests: `runtime/keywords-protection-attachments.test.ts`. *Earlier audit (may be stale):* Parsed in `compiler/adapter.ts:124,318-335` and `compiler/triggers.ts:516-533`; matched in `runtime/triggers.ts:754-775`; resolved in `engine.ts:4613-4670`. Four major gaps: (1) Resolution does not prompt the opponent—it auto-pays mana/life unless `targetItem.declineWard` was pre-set (`engine.ts:4619-4648`); (2) Only mana costs and `Pay N life` are supported—any other Ward cost (e.g. `Discard a card`, `Sacrifice a permanent`) is passed to `parseManaCost(wardCost)` (`engine.ts:4634`), which parses `{0}` and succeeds for free; (3) `BecameTarget` is only emitted on `cast_spell` (`engine.ts:1574`) and `activate_ability` (`engine.ts:1685`), never when a triggered ability chooses targets (`engine.ts:3639-3673,3731-3748`), and `engine.ts:4660-4669` calls `moveStackSpellToZone` assuming a spell; (4) `triggersOf(card)` (`runtime/triggers.ts:326-358`) only checks printed card abilities, so Ward granted in Layer 6 never triggers. |
+| 702.21b | Ward {X} cost determined on resolution | missing | **Updated 2026-11-12:** still not automated, but no longer silently wrong: a Ward cost containing {X} compiles as unsupported (`compiler/card.ts` `keywordLine`) instead of being charged as 0. *Earlier audit (may be stale):* `engine.ts:4634` calls `parseManaCost(wardCost)` without evaluating X, so `{X}` evaluates to 0. |
 
 ### 702.22 Banding
 | CR | Rule (short) | Status | Evidence / notes |
@@ -215,14 +219,14 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.26 Phasing
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.26a | Phasing keyword: during untap step before untapping, phased-in permanents with phasing phase out and phased-out permanents phase in simultaneously | partial | The turn-based action in `executeUntapTurnBasedActions` (`engine.ts:948-1042`) checks `hasKeyword(perm, 'Phasing', state)` and phases permanents in and out simultaneously! However, `'phasing'` is missing from `IMPLEMENTED_KEYWORDS` (`compiler/adapter.ts:100-125`) and `KEYWORDS` in `compiler/statics.ts:88-112`, so cards with printed `Phasing` compile as `keyword_not_implemented`. |
+| 702.26a | Phasing keyword: during untap step before untapping, phased-in permanents with phasing phase out and phased-out permanents phase in simultaneously | implemented | **Updated 2026-11-12:** `'phasing'` is now in `IMPLEMENTED_KEYWORDS` (`compiler/card.ts`), `GRANTABLE_KEYWORDS` (`compiler/effects.ts`), `KEYWORDS` (`compiler/statics.ts`), and `KEYWORD_LABELS` (`runtime/layers.ts`), and `executeUntapTurnBasedActions` (`engine.ts`) phases permanents in and out simultaneously before untapping. Tests: `runtime/keywords-phasing.test.ts`, `runtime/turn-combat.test.ts`. *Earlier audit (may be stale):* The turn-based action in `executeUntapTurnBasedActions` (`engine.ts:948-1042`) checks `hasKeyword(perm, 'Phasing', state)` and phases permanents in and out simultaneously! However, `'phasing'` is missing from `IMPLEMENTED_KEYWORDS` (`compiler/adapter.ts:100-125`) and `KEYWORDS` in `compiler/statics.ts:88-112`, so cards with printed `Phasing` compile as `keyword_not_implemented`. |
 | 702.26b | Phased-out permanent is treated as though it does not exist and is removed from combat | implemented | `phaseOutPermanent` (`engine.ts:5360-5379`) sets `perm.phasedOut = true` and removes from `state.combat.attackers` and `blockerInstanceIds`; board scans across `engine.ts`, `runtime/layers.ts`, `runtime/triggers.ts`, `runtime/effects.ts`, and `runtime/objectFilter.ts` filter out `perm.phasedOut`. |
 | 702.26c | Phased-in permanent is treated as existing again | implemented | `engine.ts:1012-1015` clears `perm.phasedOut = false` and `perm.phasedOutIndirectly = false`. |
 | 702.26d | Phasing doesn't change zones; no ETB/LTB triggers; tokens, counters, and history remain | implemented | `engine.ts:948-1042` and `engine.ts:5360-5379` keep phased-out permanents in `player.battlefield` with their counters, token status, and `instanceId` intact without emitting `ZoneChange`. |
 | 702.26e | Continuous effects from resolving spells/abilities ignore phased-out permanents | implemented | `runtime/effects.ts` and `engine.ts` skip `perm.phasedOut` when resolving effects. |
 | 702.26f | Continuous effects may expire while phased out; "for as long as" tracking ends | partial | End-of-turn / until-next-turn effects expire normally while phased out (`engine.ts:1098-1102,6362-6369`), though `clearEndOfTurnAndDamage` clears `damageMarked` on phased-out permanents too (which matches cleanup rules); general `"for as long as"` tracking durations are not implemented. |
 | 702.26g | Attached Auras/Equipment/Fortifications phase out indirectly and phase in with host | implemented | `engine.ts:951-975`, `engine.ts:987-1025`, and `engine.ts:5363-5371` track `phasedOutIndirectly` and phase attachments out/in with their host. |
-| 702.26h | Simultaneously phasing out directly and indirectly phases out indirectly | partial | In `engine.ts:980-1025`, `phasingOutDirectIds` is populated before `phasingOutIndirectIds`, and line 997 skips permanents already in `phasingOutDirectIds`, so an attachment with Phasing attached to a permanent with Phasing gets `phasedOutIndirectly = false` (direct) instead of `true` (indirect). |
+| 702.26h | Simultaneously phasing out directly and indirectly phases out indirectly | implemented | **Updated 2026-11-12:** `executeUntapTurnBasedActions` (`engine.ts`) deletes any indirectly phasing-out attachment from `phasingOutDirectIds`, and `case 'phaseOut'` (`runtime/effects.ts`) skips direct `phaseOut` on attachments whose host is simultaneously phasing out in the same batch so they phase out indirectly via `phaseOutPermanent` (`engine.ts`). Tests: `runtime/keywords-phasing.test.ts`. *Earlier audit (may be stale):* In `engine.ts:980-1025`, `phasingOutDirectIds` is populated before `phasingOutIndirectIds`, and line 997 skips permanents already in `phasingOutDirectIds`, so an attachment with Phasing attached to a permanent with Phasing gets `phasedOutIndirectly = false` (direct) instead of `true` (indirect). |
 | 702.26i | Directly phased-out attachment phases in attached if host still in zone, else unattached (and SBA applies) | implemented | `perm.attachedToId` is preserved while phased out; when it phases in, `checkStateBasedActions` (`engine.ts:6607-6655`) unattaches or puts it into the graveyard if `findPermanentOnBoard(state, perm.attachedToId)` is missing. |
 | 702.26j | Attach/unattach triggers don't trigger on phasing in or out | implemented | `engine.ts:948-1042` and `5360-5379` do not emit `Attached` events. |
 | 702.26k, 702.26n | Multiplayer: phased-out permanents when a player leaves the game | partial | Players who lose have `p.lost = true` and their battlefield is skipped; control-change cleanup of phased-out permanents controlled by an eliminated player is not specially handled. |
@@ -242,7 +246,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.29 Cycling
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.29a–f | Cycling and Typecycling (`[Cost], Discard this card: Draw a card` / search for `[type]`) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:134,151`) as `keyword_not_implemented` and stripped in `oracle.ts:1062`; no hand-activated ability support in `engine.ts`. |
+| 702.29a–f | Cycling and Typecycling (`[Cost], Discard this card: Draw a card` / search for `[type]`) | implemented | **Updated 2026-11-13:** Hand-zone `ActivatedAbility` (`activationZones: ['hand']`), `{ k: 'discard', filter: 'self' }`, generic `[quality]cycling` compilation in `keywords.ts` / `compiler/card.ts` / `ruleTree.ts`, `CR 702.29f` cycling cost modifiers (`compiler/statics.ts`, `runtime/costs.ts`), and `CardDiscarded` cycling/discard triggers (`CR 702.29c–d`: `"When you cycle ~"` with `fromZone: 'any'`, `"cycles or discards"` single-trigger match, `CR 702.29f` typecycling trigger integration). Keyword-blind UI (`ArenaTable.svelte`) and bot AI (`ai.ts`). *(Note: cleanup-step `discard_to_hand_size` does not yet emit `CardDiscarded`.)* |
 
 ### 702.30 Echo
 | CR | Rule (short) | Status | Evidence / notes |
@@ -263,13 +267,13 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.33 Kicker
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.33a–g | Kicker and Multikicker optional additional costs and "if it was kicked" linked abilities | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:140,142`) as `keyword_not_implemented`; `StackItem` and `cast_spell` have no `kicked` / `kickerCount` support. |
+| 702.33a–g | Kicker and Multikicker optional additional costs and "if it was kicked" linked abilities | partial | **Updated 2026-11-13:** `kicker` (including `and/or` dual costs `CR 702.33b`) and `multikicker` (`CR 702.33c`) compile into `KEYWORD_REGISTRY` / `CastOption.optionalAdditionalCosts`, validate & merge mana/non-mana total costs (`CR 601.2f–h`), evaluate `{ k: 'kicked' }` / `{ k: 'kickedCount' }` across ETB replacements, triggers, and conditional spell effects, validate conditional kicker targets (`CR 702.33g`), and reset kicked state on zone changes (`CR 400.7`, `runtime/zones.ts`). Kicked spells with replacement `"instead"` clauses remain `unsupported` (`unparsed`). |
 | 702.33h | Sticker kicker | N/A (Un-set / stickers) | Sticker mechanic is outside standard Commander scope. |
 
 ### 702.34 Flashback
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.34a | Flashback [cost]: cast instant/sorcery from graveyard for [cost], exile when leaving stack | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:137`) as `keyword_not_implemented`; `cast_spell` (`engine.ts:1423-1456`) only searches `hand`, `command`, and `playableFromExileBy`, never `graveyard`. |
+| 702.34a | Flashback [cost]: cast instant/sorcery from graveyard for [cost], exile when leaving stack | implemented | **Updated 2026-11-12:** `'flashback'` is in `IMPLEMENTED_KEYWORDS` (`compiler/card.ts`, supporting both `Flashback {mana}` and composite dash `Flashback—[cost].` via `parseCost`) and `ALTERNATIVE_COST_KEYWORDS` (`runtime/costs.ts`, `'alt:flashback'`). Enumerated via `getCastOptions(..., 'graveyard')` (`ownerId === actorId`, Instant/Sorcery only) and `moveStackSpellToZone` redirects all stack exits with `spellMods.exileOnLeaveStack` to `'exile'`. Tested in `runtime/keywords-casting.test.ts` and verified in live `ArenaTable.svelte`. |
 
 ### 702.35 Madness
 | CR | Rule (short) | Status | Evidence / notes |
@@ -284,7 +288,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.37 Morph
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.37a–g | Morph and Megamorph: cast face-down for `{3}`, turn face up special action | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:141,142`) as `keyword_not_implemented`. Although `CardInstance.isFaceDown` is respected by layers/filters/SBAs (`runtime/layers.ts:865`, `engine.ts:6683`), there is no action to cast a card face-down with Morph or turn it face up. |
+| 702.37a–g | Morph and Megamorph: cast face-down for `{3}`, turn face up special action | implemented | **Updated 2026-11-13:** Implemented via `KEYWORD_REGISTRY` (`keywords.ts`), `CastOption.spellMods.castFaceDown` (`engine.ts`, `runtime/costs.ts`), composite cost support (`revealFromHand` in `compiler/costs.ts`), `{X}` preservation (`CR 702.37f`), Megamorph `+1/+1` counter (`CR 702.37b`), `turn_face_up` special action (`CR 116.2b`, `708.7–8`), and `turnFaceUp` triggers (`runtime/transform-flip-facedown.test.ts`). |
 
 ### 702.38 Amplify
 | CR | Rule (short) | Status | Evidence / notes |
@@ -304,7 +308,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.41 Affinity
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.41a–b | Affinity for [text] cost reduction | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:130`) as `keyword_not_implemented`. |
+| 702.41a–b | Affinity for [text] cost reduction | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`) via `affinityFilter` (`parseAffinityQuality` in `compiler/card.ts`) expanding to `StaticDef` `costModifier` (`affects: { k: 'self' }`) in `runtime/costs.ts`, with multiple instances stacking per `CR 702.41b`. |
 
 ### 702.42 Entwine
 | CR | Rule (short) | Status | Evidence / notes |
@@ -324,7 +328,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.45 Bushido
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.45a–b | Bushido N combat trigger | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:132`) as `keyword_not_implemented`. |
+| 702.45a–b | Bushido N combat trigger | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`) expanding to a `blocks` / `becomesBlocked` self-pump `+N/+N` until EOT trigger; multiple instances trigger separately (`CR 702.45b`). |
 
 ### 702.46 Soulshift
 | CR | Rule (short) | Status | Evidence / notes |
@@ -354,7 +358,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.51 Convoke
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.51a–d | Convoke (tap creatures to pay colored/generic mana in spell's total cost) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:133`) as `keyword_not_implemented`. |
+| 702.51a–d | Convoke (tap creatures to pay colored/generic mana in spell's total cost) | implemented | Implemented via generic `CastCostAid` (`id: 'aid:convoke'`, `kind: 'tapPermanent'`) in `keywords.ts`, `runtime/costs.ts`, `engine.ts`, keyword-blind UI/AI (`ArenaTable.svelte`, `ai.ts`), and tested in `runtime/convoke-delve.test.ts` (colored/generic matching, double-tap prevention `CR 118.10`, `BecomesTapped` trigger ordering `CR 702.51c`, redundant multiples `CR 702.51d`, cost modifications applied first `CR 601.2f–h`). |
 
 ### 702.52 Dredge
 | CR | Rule (short) | Status | Evidence / notes |
@@ -409,9 +413,9 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.62 Suspend
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.62a | Suspend N—[cost]: special action to exile from hand with N time counters; upkeep trigger removes a time counter; last-counter trigger lets owner play without paying mana cost and grants haste to creatures until control is lost | partial | Recognised in `compiler/adapter.ts:121,328-329`; hand special action in `engine.ts:1337-1381`, upkeep in `engine.ts:3166-3182`, free cast in `engine.ts:5432-5530`, haste in `runtime/layers.ts:1636-1639`. Major deviations: (1) Upkeep counter removal and last-counter free cast are executed inline during `PhaseBegin` (`engine.ts:3166-3182,3325`) instead of using the stack as triggered abilities; (2) `executeSuspendFreeCastFromExile` (`engine.ts:5459-5529`) does not offer the `"you may play it"` choice (since March of the Machine CR update, casting a suspended card is optional), auto-picks targets without prompting (`engine.ts:5459-5483`), and immediately calls `resolveTopOfStack(state)` (`engine.ts:5522`) so players cannot respond; (3) `castViaSuspend` (`engine.ts:5526`, `runtime/layers.ts:1637`) is never cleared if another player gains control of the creature; (4) `parseSuspendClause` (`oracle.ts`) is legacy. |
+| 702.62a | Suspend N—[cost]: special action to exile from hand with N time counters; upkeep trigger removes a time counter; last-counter trigger lets owner play without paying mana cost and grants haste to creatures until control is lost | partial | **Updated 2026-11-12:** haste from suspend now ends when control changes (`transferBattlefieldControl` clears `castViaSuspend`). Still partial: the upkeep counter removal and free cast happen inline, not as triggered abilities on the stack, and the free cast isn't optional (todo in `runtime/keywords-casting.test.ts`). *Earlier audit (may be stale):* Recognised in `compiler/adapter.ts:121,328-329`; hand special action in `engine.ts:1337-1381`, upkeep in `engine.ts:3166-3182`, free cast in `engine.ts:5432-5530`, haste in `runtime/layers.ts:1636-1639`. Major deviations: (1) Upkeep counter removal and last-counter free cast are executed inline during `PhaseBegin` (`engine.ts:3166-3182,3325`) instead of using the stack as triggered abilities; (2) `executeSuspendFreeCastFromExile` (`engine.ts:5459-5529`) does not offer the `"you may play it"` choice (since March of the Machine CR update, casting a suspended card is optional), auto-picks targets without prompting (`engine.ts:5459-5483`), and immediately calls `resolveTopOfStack(state)` (`engine.ts:5522`) so players cannot respond; (3) `castViaSuspend` (`engine.ts:5526`, `runtime/layers.ts:1637`) is never cleared if another player gains control of the creature; (4) `parseSuspendClause` (`oracle.ts`) is legacy. |
 | 702.62b | Card is "suspended" if in exile, has suspend, and has a time counter | implemented | `engine.ts:1356,3167-3169` checks `c.isSuspended && (c.counters.time || 0) > 0` in `exile`. |
-| 702.62c | Consider effects that prohibit casting when determining if you could begin to cast a card with suspend | missing | `checkSuspendLegality` (`engine.ts:5554-5570`) calls `const globalCheck = checkGlobalCastPermissionsAndRestrictions(state, actorId, inst, 'hand')`, reads `globalCheck.grantsFlash`, and **never checks `if (!globalCheck.ok)`**—allowing players to suspend cards even when an effect (e.g. Teferi, Time Raveler / Rule of Law / Silence) prohibits casting them! |
+| 702.62c | Consider effects that prohibit casting when determining if you could begin to cast a card with suspend | implemented | **Updated 2026-11-12:** `checkSuspendLegality` now rejects suspending when a global cast restriction applies (Rule of Law, Grand Abolisher). Tests: `runtime/keywords-casting.test.ts`. *Earlier audit (may be stale):* `checkSuspendLegality` (`engine.ts:5554-5570`) calls `const globalCheck = checkGlobalCastPermissionsAndRestrictions(state, actorId, inst, 'hand')`, reads `globalCheck.grantsFlash`, and **never checks `if (!globalCheck.ok)`**—allowing players to suspend cards even when an effect (e.g. Teferi, Time Raveler / Rule of Law / Silence) prohibits casting them! |
 | 702.62d | Casting via suspend follows alternative cost rules | partial | Casts without paying mana cost (`engine.ts:5491-5514`), but bypasses `cast_spell` additional costs, target prompts, and cost modifiers. |
 
 ### 702.63 Vanishing
@@ -432,7 +436,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.66 Delve
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.66a–c | Delve (exile cards from graveyard to pay generic mana) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:134`) as `keyword_not_implemented`. |
+| 702.66a–c | Delve (exile cards from graveyard to pay generic mana) | implemented | Implemented via generic `CastCostAid` (`id: 'aid:delve'`, `kind: 'exileCard'`) in `keywords.ts`, `runtime/costs.ts`, `engine.ts`, keyword-blind UI/AI (`ArenaTable.svelte`, `ai.ts`), and tested in `runtime/convoke-delve.test.ts` (generic-only payment, graveyard-cast exclusion, redundant multiples `CR 702.66c`, cost modifications applied first `CR 601.2f–h`, `PendingCostPayment` pause/resume on `zone_replacement_choice`). |
 
 ### 702.67 Fortify
 | CR | Rule (short) | Status | Evidence / notes |
@@ -521,7 +525,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.83 Exalted
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.83a–b | Exalted ("Whenever a creature you control attacks alone, that creature gets +1/+1 until end of turn") | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:137`) as `keyword_not_implemented`. |
+| 702.83a–b | Exalted ("Whenever a creature you control attacks alone, that creature gets +1/+1 until end of turn") | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`, `grantable: true`) expanding to an `attacks` trigger with `EventFilter.alone` (`matchAttack` in `runtime/triggers.ts` checks `attackers.length === 1` and binds `eventObject`), including Layer 6 grants on non-attacking permanents and separate stacking per instance. |
 
 ### 702.84 Unearth
 | CR | Rule (short) | Status | Evidence / notes |
@@ -542,7 +546,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 8. **Suspend upkeep and final-counter cast bypass the stack, force the optional cast, auto-pick targets, immediately resolve the spell, and ignore cast prohibitions when suspending** (`engine.ts:3166-3182`, `engine.ts:5432-5579`):
    - `runSuspendUpkeep` removes time counters and casts the card inline during `PhaseBegin` before priority.
    - `executeSuspendFreeCastFromExile` never asks the owner whether they want to play the card (`"you may play it"` in CR 702.62a), auto-selects the first opponent/target (`engine.ts:5459-5483`), and immediately calls `resolveTopOfStack(state)` (`engine.ts:5522`).
-   - `checkSuspendLegality` (`engine.ts:5554-5570`) calls `checkGlobalCastPermissionsAndRestrictions` but never checks `globalCheck.ok`, allowing players to suspend cards through casting locks (CR 702.62c).
+   - *(Fixed 2026-11-12.)* `checkSuspendLegality` (`engine.ts:5554-5570`) calls `checkGlobalCastPermissionsAndRestrictions` but never checks `globalCheck.ok`, allowing players to suspend cards through casting locks (CR 702.62c).
 9. **`Enchant player` Auras silently fail to attach on resolution and immediately go to the graveyard as an SBA** (`engine.ts:4241-4243`, `engine.ts:6615-6635`).
 
 ---

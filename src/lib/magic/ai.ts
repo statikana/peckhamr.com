@@ -1,30 +1,67 @@
-import { compileCard, compileSpellEffects } from './compiler/index.ts';
+import { abilityById, compileSpellEffects, effectOf } from './compiler/index.ts';
+import { effectiveCardForObject } from './scryfall.ts';
+import {
+	activeAbilityDefs,
+	activeCharacteristics,
+	instanceFaceOptions
+} from './runtime/faces.ts';
 import {
 	addLog,
 	applyGameAction,
 	checkAbilityActivationLegality,
+	checkHandSpecialActionLegality,
 	checkSpellCastLegality,
+	checkTurnFaceUpLegality,
+	chooseBotAbilityCostPayment,
 	chooseBotAttackAssignments,
 	chooseBotBlockAssignments,
+	chooseBotHandSpecialActionCostPayment,
 	chooseBotSpellCostPayment,
+	chooseBotTurnFaceUpPayment,
 	evaluatePermanent,
+	getCastOptions,
 	getCreaturePower,
 	getCreatureToughness,
 	getEffectiveActivatedAbilities,
+	getHandSpecialActions,
+	getLandPlayOptions,
 	getPlayerCommanderIdentity,
+	getSpellOptionCostRequirement,
+	getSpellTargetRequirement,
+	getTurnFaceUpDisplay,
 	hasKeyword,
-	specTargetCandidates
+	planCastCostAids,
+	specTargetCandidates,
+	spellSpendContext
 } from './engine.ts';
-import type { EffectStep, RestrictionKind, TargetSpec } from './ir.ts';
+import type { EffectStep, ModalDef, RestrictionKind, TargetSpec } from './ir.ts';
 import { chooseBotAnswer, effectivePromptChoice, effectivePromptPurpose } from './runtime/choices.ts';
 import { withStableLayerInputs } from './runtime/layerCache.ts';
-import { evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
+// --- Track P7 ---
+import { evaluateAmount, evaluateCondition, matchesObjectFilter } from './runtime/objectFilter.ts';
+// --- End Track P7 ---
+// --- Track P18b ---
+import {
+	checkCompanionSpecialActionLegality,
+	collectSelfCastRestrictions,
+	getEffectiveUsedModalModes,
+	pickPawprintModesWithinBudget
+} from './runtime/framesModalsWave6.ts';
+// --- End Track P18b ---
+// --- Track P17a ---
+import { getRequiredFlagbearerIdsForActor } from './runtime/staticsWave6.ts';
+// --- End Track P17a ---
+// --- Track P22c ---
+import { resolveWave8ModalEffectiveBounds } from './runtime/framesWave8.ts';
+// --- End Track P22c ---
 import type {
 	BotSpeed,
 	CardInstance,
+	CastOption,
 	ChoiceAnswer,
 	GamePhase,
 	GameState,
+	ManaColor,
 	PendingPrompt,
 	PlayerGameState,
 	ScryfallCard,
@@ -57,13 +94,13 @@ function hasRestrictionInner(
 		for (const source of player.battlefield) {
 			if (source.phasedOut || source.isFaceDown) continue;
 			if (evaluatePermanent(state, source).losesAllAbilities) continue;
-			const card = source.copiableCard ?? source.card;
+			const card = effectiveCardForObject(source);
 			const ctx = {
 				state,
 				controllerId: source.controllerId || player.playerId,
 				source
 			};
-			for (const ab of compileCard(card).faces[0].abilities) {
+			for (const ab of activeAbilityDefs(card, instanceFaceOptions(source, 'battlefield'))) {
 				if (ab.kind !== 'static' || ab.static.k !== 'restriction') continue;
 				const def = ab.static;
 				if (!kinds.includes(def.restriction)) continue;
@@ -82,11 +119,16 @@ function hasRestrictionInner(
 	return false;
 }
 
-function cardSpellSteps(card: ScryfallCard): EffectStep[] {
-	const face = compileCard(card).faces[0];
-	const parsed = compileSpellEffects(card);
+function cardSpellSteps(card: ScryfallCard, faceIndex = 0, fused = false): EffectStep[] {
+	const abilities = fused
+		? [
+				...activeAbilityDefs(card, { zone: 'stack', faceIndex: 0 }),
+				...activeAbilityDefs(card, { zone: 'stack', faceIndex: 1 })
+			]
+		: activeAbilityDefs(card, { zone: 'stack', faceIndex });
+	const parsed = compileSpellEffects(card, faceIndex, fused);
 	return [
-		...face.abilities.flatMap((a) =>
+		...abilities.flatMap((a) =>
 			a.kind === 'spell' ? [...a.effect, ...(a.modal?.modes.flatMap((m) => m.effect) ?? [])] : []
 		),
 		...(parsed?.steps ?? []),
@@ -94,22 +136,22 @@ function cardSpellSteps(card: ScryfallCard): EffectStep[] {
 	];
 }
 
-function isCounterSpellCard(card: ScryfallCard): boolean {
-	return cardSpellSteps(card).some((s) => s.verb === 'counterSpell');
+function isCounterSpellCard(card: ScryfallCard, faceIndex = 0, fused = false): boolean {
+	return cardSpellSteps(card, faceIndex, fused).some((s) => s.verb === 'counterSpell');
 }
 
-function isProtectionTrickCard(card: ScryfallCard): boolean {
-	const types = compileCard(card).faces[0].characteristics.types;
+function isProtectionTrickCard(card: ScryfallCard, faceIndex = 0, fused = false): boolean {
+	const types = activeCharacteristics(card, { zone: 'stack', faceIndex }).types;
 	if (!types.includes('Instant')) return false;
-	return cardSpellSteps(card).some((s) => {
+	return cardSpellSteps(card, faceIndex, fused).some((s) => {
 		if (s.verb !== 'grant') return false;
 		const kws = (s.params?.keywords ?? []).map((k) => k.toLowerCase());
 		return kws.includes('hexproof') && kws.includes('indestructible');
 	});
 }
 
-function isCreatureBoardWipeCard(card: ScryfallCard): boolean {
-	return cardSpellSteps(card).some(
+function isCreatureBoardWipeCard(card: ScryfallCard, faceIndex = 0, fused = false): boolean {
+	return cardSpellSteps(card, faceIndex, fused).some(
 		(s) =>
 			(s.verb === 'destroy' || s.verb === 'exile') &&
 			s.subject.k === 'all' &&
@@ -118,9 +160,8 @@ function isCreatureBoardWipeCard(card: ScryfallCard): boolean {
 	);
 }
 
-function cardSpellTargetSpec(card: ScryfallCard): TargetSpec | undefined {
-	const face = compileCard(card).faces[0];
-	for (const ab of face.abilities) {
+function cardSpellTargetSpec(card: ScryfallCard, faceIndex = 0): TargetSpec | undefined {
+	for (const ab of activeAbilityDefs(card, { zone: 'stack', faceIndex })) {
 		if (ab.kind === 'spell' && ab.targets.length > 0) return ab.targets[0];
 		if (ab.kind === 'keyword') {
 			const { name: kwName, enchantFilter } = ab.keyword;
@@ -135,53 +176,180 @@ function cardSpellTargetSpec(card: ScryfallCard): TargetSpec | undefined {
 	return undefined;
 }
 
-function chooseBotModalSpell(
+function chooseBotModesForModal(
 	state: GameState,
 	bot: PlayerGameState,
-	cardInst: CardInstance
+	sourceCard: ScryfallCard,
+	sourceInst: CardInstance | undefined,
+	modal: ModalDef,
+	usedModes?: number[],
+	activeSpecFilter: (sp: TargetSpec) => boolean = () => true,
+	enforceHarmfulFilter = true,
+	forceAllModes = false
 ): { modes: number[]; targets: TargetRef[] } | null {
-	const modal = compileSpellEffects(cardInst.card)?.modal;
-	if (!modal) return null;
-	const modes: number[] = [];
-	const targets: TargetRef[] = [];
 	const ownerOf = (t: TargetRef): string | undefined => {
 		if (t.kind === 'player') return t.id;
 		for (const p of state.players) {
-			if (p.battlefield.some((c) => c.instanceId === t.id)) {
-				return p.battlefield.find((c) => c.instanceId === t.id)!.controllerId;
-			}
+			const bf = p.battlefield.find((c) => c.instanceId === t.id);
+			if (bf) return bf.controllerId;
 			if (p.graveyard.some((c) => c.instanceId === t.id)) return p.playerId;
 		}
 		return undefined;
 	};
-	for (let i = 0; i < modal.modes.length && modes.length < modal.max; i++) {
-		const mode = modal.modes[i];
-		if (mode.targets.length === 0) {
-			modes.push(i);
-			continue;
-		}
+	// --- Track P17a: CR 115.1 Flagbearer requirement when choosing spell/ability mode targets ---
+	const fbIds = getRequiredFlagbearerIdsForActor(state, bot.playerId);
+	// --- End Track P17a ---
+	const pickTargetsForMode = (modeIndex: number): TargetRef[] | null => {
+		const mode = modal.modes[modeIndex];
+		if (!mode) return null;
+		const specs = mode.targets.filter(activeSpecFilter);
+		if (specs.length === 0) return [];
 		const modeTargets: TargetRef[] = [];
-		let ok = true;
-		for (let sIdx = 0; sIdx < mode.targets.length; sIdx++) {
-			const spec = mode.targets[sIdx];
+		for (let sIdx = 0; sIdx < specs.length; sIdx++) {
+			const spec = specs[sIdx];
+			const allCandidates = specTargetCandidates(state, bot.playerId, sourceCard, sourceInst, spec);
 			const harmful = targetIsHarmed(mode.effect, sIdx);
-			const legal = specTargetCandidates(state, bot.playerId, cardInst.card, cardInst, spec).filter(
-				(t) => (ownerOf(t) === bot.playerId) !== harmful
-			);
-			const chosen = chooseBotTriggerTargets(state, bot, mode.effect, sIdx, spec, legal);
-			if (chosen.length < spec.min) {
-				ok = false;
-				break;
+			const legal = enforceHarmfulFilter
+				? allCandidates.filter((t) => (ownerOf(t) === bot.playerId) !== harmful)
+				: allCandidates;
+			let chosen = chooseBotTriggerTargets(state, bot, mode.effect, sIdx, spec, legal);
+			// --- Track P17a ---
+			if (
+				fbIds.size > 0 &&
+				(spec.min > 0 || chosen.length > 0) &&
+				!modeTargets.some((t) => t.kind === 'permanent' && fbIds.has(t.id)) &&
+				!chosen.some((t) => t.kind === 'permanent' && fbIds.has(t.id))
+			) {
+				const fbCand = allCandidates.find((t) => t.kind === 'permanent' && fbIds.has(t.id));
+				if (fbCand) {
+					chosen = [fbCand, ...chosen.filter((t) => t.id !== fbCand.id)].slice(
+						0,
+						Math.max(1, chosen.length)
+					);
+				}
 			}
+			// --- End Track P17a ---
+			if (chosen.length < spec.min) return null;
 			modeTargets.push(...chosen);
 		}
-		if (ok) {
-			modes.push(i);
-			targets.push(...modeTargets);
+		return modeTargets;
+	};
+
+	// --- Track P18b ---
+	const effectiveUsedModes = usedModes ?? getEffectiveUsedModalModes(modal, sourceInst);
+	const fctx = { state, controllerId: bot.playerId, source: sourceInst };
+	const chooseAllByCond = Boolean(
+		modal.conditionalChooseAll && evaluateCondition(modal.conditionalChooseAll, fctx)
+	);
+	const evaluatedDynMax =
+		modal.dynamicMax && modal.dynamicMax.k !== 'x'
+			? evaluateAmount(modal.dynamicMax, fctx)
+			: undefined;
+	const condRangeMet = Boolean(
+		modal.conditionalChooseRange &&
+			evaluateCondition(modal.conditionalChooseRange.condition, fctx)
+	);
+	const { min: effectiveMin, max: effectiveMax } = resolveWave8ModalEffectiveBounds(
+		modal,
+		forceAllModes || chooseAllByCond,
+		0,
+		evaluatedDynMax,
+		condRangeMet
+	);
+	// --- End Track P18b ---
+
+	const eligible: Array<{ index: number; targets: TargetRef[] }> = [];
+	for (let i = 0; i < modal.modes.length; i++) {
+		if ((modal.oncePerTurnUnique || modal.unchosenPermanent) && effectiveUsedModes?.includes(i)) continue;
+		const picked = pickTargetsForMode(i);
+		if (picked !== null) eligible.push({ index: i, targets: picked });
+	}
+
+	if (forceAllModes || chooseAllByCond) {
+		if (eligible.length !== modal.modes.length) return null;
+		return {
+			modes: eligible.map((e) => e.index),
+			targets: eligible.flatMap((e) => e.targets)
+		};
+	}
+
+	// --- Track P18b: Season pawprint budget mode selection (CR 700.2i) ---
+	if (modal.pawprintBudget !== undefined && modal.pawprintCosts) {
+		const pawModes = pickPawprintModesWithinBudget(
+			modal,
+			eligible.map((e) => e.index)
+		);
+		const pawTargets: TargetRef[] = [];
+		const outPawModes: number[] = [];
+		for (const mIdx of pawModes) {
+			const pickedT = pickTargetsForMode(mIdx);
+			if (pickedT === null) continue;
+			outPawModes.push(mIdx);
+			pawTargets.push(...pickedT);
+		}
+		if (outPawModes.length < effectiveMin) return null;
+		return { modes: outPawModes, targets: pawTargets };
+	}
+	// --- End Track P18b ---
+
+	const modes: number[] = [];
+	const targets: TargetRef[] = [];
+	for (const entry of eligible) {
+		if (modes.length >= effectiveMax) break;
+		modes.push(entry.index);
+		targets.push(...entry.targets);
+	}
+	if (
+		modal.allowRepeat &&
+		!modal.oncePerTurnUnique &&
+		!modal.unchosenPermanent &&
+		eligible.length > 0 &&
+		modes.length < effectiveMax
+	) {
+		const targetCount = Math.min(20, Math.max(effectiveMin, effectiveMax));
+		for (let guard = 0; guard < 20 && modes.length < targetCount; guard++) {
+			const entry = eligible[guard % eligible.length];
+			const freshTargets = pickTargetsForMode(entry.index);
+			if (freshTargets === null) break;
+			modes.push(entry.index);
+			targets.push(...freshTargets);
 		}
 	}
-	if (modes.length < modal.min) return null;
+	if (modes.length < effectiveMin) return null;
 	return { modes, targets };
+}
+
+function chooseBotModalSpell(
+	state: GameState,
+	bot: PlayerGameState,
+	cardInst: CardInstance,
+	faceIndex = 0,
+	fused = false
+): { modes: number[]; targets: TargetRef[] } | null {
+	const modal = compileSpellEffects(cardInst.card, faceIndex, fused)?.modal;
+	if (!modal) return null;
+	return chooseBotModesForModal(state, bot, cardInst.card, cardInst, modal);
+}
+
+/**
+ * Picks mode indices for a bot's modal triggered ability (CR 700.2b), preferring beneficial
+ * targets and falling back to any legal mode combination when a mandatory trigger requires it.
+ */
+export function chooseBotModalTriggerModes(
+	state: GameState,
+	bot: PlayerGameState,
+	item: StackItem,
+	modal: ModalDef,
+	usedModes?: number[]
+): number[] {
+	const srcInst = state.players
+		.flatMap((p) => p.battlefield)
+		.find((c) => c.instanceId === item.sourceInstanceId);
+	const preferred = chooseBotModesForModal(state, bot, item.card, srcInst, modal, usedModes, () => true, true);
+	if (preferred) return preferred.modes;
+	if (modal.min === 0) return [];
+	const fallback = chooseBotModesForModal(state, bot, item.card, srcInst, modal, usedModes, () => true, false);
+	return fallback?.modes ?? [];
 }
 
 export function hasAnyLegalInstantResponse(state: GameState, player: PlayerGameState): boolean {
@@ -190,23 +358,62 @@ export function hasAnyLegalInstantResponse(state: GameState, player: PlayerGameS
 }
 
 function hasAnyLegalInstantResponseInner(state: GameState, player: PlayerGameState): boolean {
+	const cmdId = getPlayerCommanderIdentity(player);
 	for (const cardInst of player.hand) {
-		const types = compileCard(cardInst.card).faces[0].characteristics.types;
-		if (types.includes('Land') && !types.includes('Creature')) {
-			continue;
+		const handAbs = getEffectiveActivatedAbilities(state, player, cardInst, cmdId).filter(
+			(ab) => !ab.isManaAbility && Boolean(ab.activationZones?.includes('hand'))
+		);
+		for (const ab of handAbs) {
+			if (checkAbilityActivationLegality(state, player.playerId, cardInst, ab).ok) {
+				return true;
+			}
 		}
-		if (checkSpellCastLegality(state, player.playerId, cardInst, 'hand', 0).ok) {
+		if (getCastOptions(state, player.playerId, cardInst, 'hand').length > 0) {
+			return true;
+		}
+		if (
+			getHandSpecialActions(state, player.playerId, cardInst).some(
+				(sa) => checkHandSpecialActionLegality(state, player.playerId, cardInst, sa.id).ok
+			)
+		) {
+			return true;
+		}
+	}
+	for (const exInst of player.exile) {
+		if (getCastOptions(state, player.playerId, exInst, 'exile').length > 0) {
 			return true;
 		}
 	}
 	for (const cmdInst of player.command) {
-		if (checkSpellCastLegality(state, player.playerId, cmdInst, 'command', 0).ok) {
+		if (getCastOptions(state, player.playerId, cmdInst, 'command').length > 0) {
 			return true;
 		}
 	}
-	const cmdId = getPlayerCommanderIdentity(player);
+	for (const gyInst of player.graveyard) {
+		const gyAbs = getEffectiveActivatedAbilities(state, player, gyInst, cmdId).filter(
+			(ab) => !ab.isManaAbility && Boolean(ab.activationZones?.includes('graveyard'))
+		);
+		for (const ab of gyAbs) {
+			if (checkAbilityActivationLegality(state, player.playerId, gyInst, ab).ok) {
+				return true;
+			}
+		}
+		if (getCastOptions(state, player.playerId, gyInst, 'graveyard').length > 0) {
+			return true;
+		}
+	}
+	// --- Track P8 ---
+	if (
+		player.library[0] &&
+		getCastOptions(state, player.playerId, player.library[0], 'library').length > 0
+	) {
+		return true;
+	}
 	for (const perm of player.battlefield) {
 		if (perm.phasedOut) continue;
+		if (getTurnFaceUpDisplay(state, player.playerId, perm)?.legal) {
+			return true;
+		}
 		const abilities = getEffectiveActivatedAbilities(state, player, perm, cmdId);
 		for (const ab of abilities) {
 			if (ab.isManaAbility) continue;
@@ -598,15 +805,68 @@ export function executeBotStep(
 
 	// 2. If it's the bot's Main Phase and Stack is empty: play land, cast Commander or spells
 	if (isBotsTurn && (state.phase === 'main1' || state.phase === 'main2') && state.stack.length === 0) {
-		// 2a. Play a land if available
+		// 2a. Play a land if available (using engine getLandPlayOptions for single- and multi-face cards)
+		// Prefer impulse-exiled lands expiring at end of turn so the permission isn't wasted at cleanup.
 		if (bot.landsPlayedThisTurn < bot.maxLandsPerTurn) {
-			const land = bot.hand.find((c) =>
-				compileCard(c.card).faces[0].characteristics.types.includes('Land')
-			);
-			if (land) {
+			for (const card of bot.exile) {
+				if (card.playableFromExileBy?.playerId !== bot.playerId || !card.playableFromExileBy.expiresAtEndOfTurn) {
+					continue;
+				}
+				const landOpts = getLandPlayOptions(state, bot.playerId, card, 'exile');
+				if (landOpts.length === 0) continue;
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'play_land',
-					instanceId: land.instanceId
+					instanceId: card.instanceId,
+					fromZone: 'exile',
+					faceIndex: landOpts[0].faceIndex
+				});
+				if (res.ok) return 'visible';
+			}
+			// --- Track P8: Play lands from top of library or graveyard first for free card advantage ---
+			if (bot.library[0]) {
+				const topCard = bot.library[0];
+				const landOpts = getLandPlayOptions(state, bot.playerId, topCard, 'library');
+				if (landOpts.length > 0) {
+					const res = applyGameAction(state, bot.playerId, {
+						type: 'play_land',
+						instanceId: topCard.instanceId,
+						fromZone: 'library',
+						faceIndex: landOpts[0].faceIndex
+					});
+					if (res.ok) return 'visible';
+				}
+			}
+			for (const card of bot.graveyard) {
+				const landOpts = getLandPlayOptions(state, bot.playerId, card, 'graveyard');
+				if (landOpts.length === 0) continue;
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'play_land',
+					instanceId: card.instanceId,
+					fromZone: 'graveyard',
+					faceIndex: landOpts[0].faceIndex
+				});
+				if (res.ok) return 'visible';
+			}
+			for (const card of bot.hand) {
+				const landOpts = getLandPlayOptions(state, bot.playerId, card, 'hand');
+				if (landOpts.length === 0) continue;
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'play_land',
+					instanceId: card.instanceId,
+					fromZone: 'hand',
+					faceIndex: landOpts[0].faceIndex
+				});
+				if (res.ok) return 'visible';
+			}
+			for (const card of bot.exile) {
+				if (card.playableFromExileBy?.playerId !== bot.playerId) continue;
+				const landOpts = getLandPlayOptions(state, bot.playerId, card, 'exile');
+				if (landOpts.length === 0) continue;
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'play_land',
+					instanceId: card.instanceId,
+					fromZone: 'exile',
+					faceIndex: landOpts[0].faceIndex
 				});
 				if (res.ok) return 'visible';
 			}
@@ -615,23 +875,59 @@ export function executeBotStep(
 		// 2b. Try casting Commander from Command Zone if affordable and legal
 		for (const cmd of bot.command) {
 			// Read-only decision (Phase 6d); the cast is applied outside the scope.
-			const plan = withStableLayerInputs(state, () =>
-				checkSpellCastLegality(state, bot.playerId, cmd, 'command', 0).ok
-					? {
-							targets: chooseBotTargetsForCard(state, bot, cmd),
-							costPayment: chooseBotSpellCostPayment(state, bot, cmd, 0)
-						}
-					: null
-			);
+			const plan = withStableLayerInputs(state, () => {
+				const options = getCastOptions(state, bot.playerId, cmd, 'command');
+				const opt = options.find((o) => !o.spellMods.targetsBecomeEach) ?? options[0];
+				if (!opt) return null;
+				const faceIndex = opt.faceIndex ?? 0;
+				const optionalCostCounts = chooseBotOptionalCostCounts(state, bot, cmd, 'command', opt);
+				const targetReq = getSpellTargetRequirement(cmd.card, opt, optionalCostCounts);
+				const targets = targetReq.requiresTarget
+					? chooseBotTargetsForCard(state, bot, cmd, opt, optionalCostCounts)
+					: [];
+				if (targetReq.minTargets > 0 && targets.length < targetReq.minTargets) return null;
+				const costAids = chooseBotCostPaymentAids(state, bot, cmd, opt, optionalCostCounts);
+				return {
+					optionId: opt.id,
+					faceIndex: opt.faceIndex,
+					fused: opt.fused,
+					optionalCostCounts,
+					targets,
+					costPayment: chooseBotSpellCostPayment(
+						state,
+						bot,
+						cmd,
+						faceIndex,
+						opt.id,
+						optionalCostCounts
+					),
+					...(costAids ? costAids : {})
+				};
+			});
 			if (plan) {
-				const { targets, costPayment } = plan;
+				const {
+					optionId,
+					faceIndex,
+					fused,
+					optionalCostCounts,
+					targets,
+					costPayment,
+					costAidIds,
+					costAidColorChoices
+				} = plan;
 				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 				const res = applyGameAction(state, bot.playerId, {
 					type: 'cast_spell',
 					instanceId: cmd.instanceId,
 					fromZone: 'command',
+					optionId,
+					...(faceIndex !== undefined ? { faceIndex } : {}),
+					...(fused ? { fused: true } : {}),
+					...(optionalCostCounts ? { optionalCostCounts } : {}),
 					targets,
-					...(costPayment ? { costPayment } : {})
+					...(costPayment ? { costPayment } : {}),
+					...(costAidIds ? { costAidIds } : {}),
+					...(costAidColorChoices ? { costAidColorChoices } : {})
 				});
 				if (res.ok) {
 					return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
@@ -655,65 +951,283 @@ export function executeBotStep(
 				(b) => !b.phasedOut && !evaluatePermanent(state, b).isLand
 			).length;
 
-			return bot.hand
-				.filter((c) => {
-					const types = compileCard(c.card).faces[0].characteristics.types;
-					if (types.includes('Land')) return false;
-					if (isCounterSpellCard(c.card)) return false;
-					// Do not waste pure protection tricks on an empty board / proactive main phase
-					if (isProtectionTrickCard(c.card)) {
-						return false;
-					}
-					// Do not cast board wipes if opponents control fewer than 2 creatures
-					if (isCreatureBoardWipeCard(c.card) && opponentCreatureCount < 2) {
-						return false;
-					}
-					return checkSpellCastLegality(state, bot.playerId, c, 'hand', 0).ok;
-				})
-				.sort((a, b) => a.card.cmc - b.card.cmc);
+			const isCandidateSpell = (
+				c: CardInstance,
+				zone: 'hand' | 'graveyard' | 'exile' | 'library'
+			): boolean => {
+				const options = getCastOptions(state, bot.playerId, c, zone);
+				if (options.length === 0) return false;
+				return options.some((opt) => {
+					if (opt.spellMods.castFaceDown) return true;
+					const fi = opt.faceIndex ?? 0;
+					const fused = opt.fused ?? false;
+					if (isCounterSpellCard(c.card, fi, fused)) return false;
+					if (isProtectionTrickCard(c.card, fi, fused)) return false;
+					if (isCreatureBoardWipeCard(c.card, fi, fused) && opponentCreatureCount < 2) return false;
+					return true;
+				});
+			};
+
+			return [
+				// --- Track P8 ---
+				...(bot.library[0] && isCandidateSpell(bot.library[0], 'library')
+					? [{ cardInst: bot.library[0], fromZone: 'library' as const }]
+					: []),
+				...bot.hand
+					.filter((c) => isCandidateSpell(c, 'hand'))
+					.sort((a, b) => a.card.cmc - b.card.cmc)
+					.map((cardInst) => ({ cardInst, fromZone: 'hand' as const })),
+				...bot.graveyard
+					.filter((c) => isCandidateSpell(c, 'graveyard'))
+					.sort((a, b) => a.card.cmc - b.card.cmc)
+					.map((cardInst) => ({ cardInst, fromZone: 'graveyard' as const })),
+				...bot.exile
+					.filter((c) => isCandidateSpell(c, 'exile'))
+					.sort((a, b) => a.card.cmc - b.card.cmc)
+					.map((cardInst) => ({ cardInst, fromZone: 'exile' as const }))
+			];
 		});
 
-		for (const cardInst of castable) {
-			const modal = compileSpellEffects(cardInst.card)?.modal;
-			if (modal) {
-				// Read-only decision (Phase 6d).
-				const planned = withStableLayerInputs(state, () => {
-					const chosen = chooseBotModalSpell(state, bot, cardInst);
-					return chosen
-						? { chosen, costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0) }
-						: null;
-				});
-				if (!planned) continue;
-				const { chosen, costPayment } = planned;
-				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
-				const res = applyGameAction(state, bot.playerId, {
-					type: 'cast_spell',
-					instanceId: cardInst.instanceId,
-					targets: chosen.targets,
-					modes: chosen.modes,
-					...(costPayment ? { costPayment } : {})
-				});
-				if (res.ok) {
-					return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
-				}
-				continue;
-			}
+		for (const { cardInst, fromZone } of castable) {
 			// Read-only decision (Phase 6d).
 			const planned = withStableLayerInputs(state, () => {
-				const targets = chooseBotTargetsForCard(state, bot, cardInst);
-				const spec = cardSpellTargetSpec(cardInst.card);
-				const minTargets = spec ? spec.min : 0;
-				if (minTargets > 0 && targets.length < minTargets) return null;
-				return { targets, costPayment: chooseBotSpellCostPayment(state, bot, cardInst, 0) };
+				const options = getCastOptions(state, bot.playerId, cardInst, fromZone).filter((opt) => {
+					if (opt.spellMods.castFaceDown) return true;
+					const fi = opt.faceIndex ?? 0;
+					const fused = opt.fused ?? false;
+					return !isCounterSpellCard(cardInst.card, fi, fused) && !isProtectionTrickCard(cardInst.card, fi, fused);
+				});
+				if (options.length === 0) return null;
+				const nonEachOpt = options.find((o) => !o.spellMods.targetsBecomeEach) ?? options[0];
+				const optFace = nonEachOpt.faceIndex ?? 0;
+				const optFused = nonEachOpt.fused ?? false;
+				const modal = nonEachOpt.spellMods.castFaceDown
+					? undefined
+					: compileSpellEffects(cardInst.card, optFace, optFused)?.modal;
+				if (modal) {
+					if (nonEachOpt.optionalAdditionalCosts?.some((oc) => oc.chooseAllModes)) {
+						const allModesCounts = chooseBotOptionalCostCounts(
+							state,
+							bot,
+							cardInst,
+							fromZone,
+							nonEachOpt,
+							true
+						);
+						const pickedAllModesCost = Boolean(
+							nonEachOpt.optionalAdditionalCosts.some(
+								(oc) => oc.chooseAllModes && (allModesCounts?.[oc.id] ?? 0) > 0
+							)
+						);
+						if (pickedAllModesCost) {
+							const allChosen = chooseBotModesForModal(
+								state,
+								bot,
+								cardInst.card,
+								cardInst,
+								modal,
+								undefined,
+								() => true,
+								true,
+								true
+							);
+							if (allChosen) {
+								const costAids = chooseBotCostPaymentAids(
+									state,
+									bot,
+									cardInst,
+									nonEachOpt,
+									allModesCounts
+								);
+								return {
+									targets: allChosen.targets,
+									modes: allChosen.modes,
+									optionId: nonEachOpt.id,
+									faceIndex: nonEachOpt.faceIndex,
+									fused: nonEachOpt.fused,
+									optionalCostCounts: allModesCounts,
+									costPayment: chooseBotSpellCostPayment(
+										state,
+										bot,
+										cardInst,
+										optFace,
+										nonEachOpt.id,
+										allModesCounts
+									),
+									...(costAids ? costAids : {})
+								};
+							}
+						}
+					}
+					const chosen = chooseBotModalSpell(state, bot, cardInst, optFace, optFused);
+					if (!chosen) return null;
+					const optionalCostCounts = chooseBotOptionalCostCounts(
+						state,
+						bot,
+						cardInst,
+						fromZone,
+						nonEachOpt,
+						false
+					);
+					const costAids = chooseBotCostPaymentAids(state, bot, cardInst, nonEachOpt, optionalCostCounts);
+					return {
+						targets: chosen.targets,
+						modes: chosen.modes,
+						optionId: nonEachOpt.id,
+						faceIndex: nonEachOpt.faceIndex,
+						fused: nonEachOpt.fused,
+						optionalCostCounts,
+						costPayment: chooseBotSpellCostPayment(
+							state,
+							bot,
+							cardInst,
+							optFace,
+							nonEachOpt.id,
+							optionalCostCounts
+						),
+						...(costAids ? costAids : {})
+					};
+				}
+
+				const eachOpt = options.find((o) => o.spellMods.targetsBecomeEach);
+				if (eachOpt) {
+					const eachFace = eachOpt.faceIndex ?? 0;
+					const eachFused = eachOpt.fused ?? false;
+					const spec = cardSpellTargetSpec(cardInst.card, eachFace);
+					const harmful = targetIsHarmed(cardSpellSteps(cardInst.card, eachFace, eachFused), 0);
+					let oppMatches = 0;
+					let ownMatches = 0;
+					if (spec?.kind === 'object') {
+						const fctx = { state, controllerId: bot.playerId, source: cardInst };
+						for (const p of state.players) {
+							if (p.lost) continue;
+							for (const perm of p.battlefield) {
+								if (perm.phasedOut) continue;
+								if (!matchesObjectFilter(perm, spec.filter, fctx)) continue;
+								if (p.playerId === bot.playerId) ownMatches += 1;
+								else oppMatches += 1;
+							}
+						}
+					}
+					const normalLegal = Boolean(options.find((o) => !o.spellMods.targetsBecomeEach));
+					const shouldUseEach = harmful
+						? oppMatches > ownMatches && (oppMatches >= 2 || (!normalLegal && oppMatches >= 1))
+						: ownMatches >= 2 || (!normalLegal && ownMatches >= 1);
+					if (shouldUseEach) {
+						const optionalCostCounts = chooseBotOptionalCostCounts(
+							state,
+							bot,
+							cardInst,
+							fromZone,
+							eachOpt
+						);
+						const costAids = chooseBotCostPaymentAids(state, bot, cardInst, eachOpt, optionalCostCounts);
+						return {
+							targets: [] as TargetRef[],
+							modes: undefined as number[] | undefined,
+							optionId: eachOpt.id,
+							faceIndex: eachOpt.faceIndex,
+							fused: eachOpt.fused,
+							optionalCostCounts,
+							costPayment: chooseBotSpellCostPayment(
+								state,
+								bot,
+								cardInst,
+								eachFace,
+								eachOpt.id,
+								optionalCostCounts
+							),
+							...(costAids ? costAids : {})
+						};
+					}
+				}
+				const normalOpt = options.find((o) => !o.spellMods.targetsBecomeEach);
+				if (!normalOpt) {
+					return null;
+				}
+				const normalFace = normalOpt.faceIndex ?? 0;
+				const optionalCostCounts = chooseBotOptionalCostCounts(
+					state,
+					bot,
+					cardInst,
+					fromZone,
+					normalOpt
+				);
+				const targetReq = getSpellTargetRequirement(cardInst.card, normalOpt, optionalCostCounts);
+				const targets = targetReq.requiresTarget
+					? chooseBotTargetsForCard(state, bot, cardInst, normalOpt, optionalCostCounts)
+					: [];
+				if (targetReq.minTargets > 0 && targets.length < targetReq.minTargets) return null;
+				// --- Track P18b: respect X can't be 0 on spells/permanents ---
+				let botXValue: number | undefined;
+				if (normalOpt.choosesX && collectSelfCastRestrictions(cardInst.card, normalFace).xCantBeZero) {
+					for (const candX of [3, 2, 1]) {
+						if (
+							checkSpellCastLegality(
+								state,
+								bot.playerId,
+								cardInst,
+								fromZone,
+								candX,
+								normalOpt.id,
+								optionalCostCounts
+							).ok
+						) {
+							botXValue = candX;
+							break;
+						}
+					}
+					if (botXValue === undefined) return null;
+				}
+				// --- End Track P18b ---
+				const costAids = chooseBotCostPaymentAids(state, bot, cardInst, normalOpt, optionalCostCounts);
+				return {
+					targets,
+					modes: undefined as number[] | undefined,
+					optionId: normalOpt.id,
+					faceIndex: normalOpt.faceIndex,
+					fused: normalOpt.fused,
+					optionalCostCounts,
+					xValue: botXValue,
+					costPayment: chooseBotSpellCostPayment(
+						state,
+						bot,
+						cardInst,
+						normalFace,
+						normalOpt.id,
+						optionalCostCounts
+					),
+					...(costAids ? costAids : {})
+				};
 			});
 			if (!planned) continue;
-			const { targets, costPayment } = planned;
+			const {
+				targets,
+				modes,
+				optionId,
+				faceIndex,
+				fused,
+				optionalCostCounts,
+				costPayment,
+				costAidIds,
+				costAidColorChoices
+			} = planned;
+			const plannedXValue = 'xValue' in planned ? planned.xValue : undefined;
 			const costBefore = countBotCostChoicePrompts(state, bot.playerId);
 			const res = applyGameAction(state, bot.playerId, {
 				type: 'cast_spell',
 				instanceId: cardInst.instanceId,
+				fromZone,
 				targets,
-				...(costPayment ? { costPayment } : {})
+				...(modes ? { modes } : {}),
+				optionId,
+				...(faceIndex !== undefined ? { faceIndex } : {}),
+				...(fused ? { fused: true } : {}),
+				...(optionalCostCounts ? { optionalCostCounts } : {}),
+				...(plannedXValue !== undefined ? { xValue: plannedXValue } : {}),
+				...(costPayment ? { costPayment } : {}),
+				...(costAidIds ? { costAidIds } : {}),
+				...(costAidColorChoices ? { costAidColorChoices } : {})
 			});
 			if (res.ok) {
 				return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
@@ -773,6 +1287,147 @@ export function executeBotStep(
 				}
 			}
 		}
+
+		// 2d2. Turn face-down permanents face up when affordable.
+		for (const perm of [...bot.battlefield]) {
+			if (perm.phasedOut || !perm.isFaceDown) continue;
+			const turnUp = getTurnFaceUpDisplay(state, bot.playerId, perm);
+			if (!turnUp?.legal) continue;
+			let xValue = 0;
+			if (turnUp.choosesX) {
+				for (const candidateX of [3, 2, 1, 0]) {
+					if (checkTurnFaceUpLegality(state, bot.playerId, perm, candidateX).ok) {
+						xValue = candidateX;
+						break;
+					}
+				}
+			}
+			const costPayment = chooseBotTurnFaceUpPayment(state, bot, perm, xValue);
+			const costBefore = countBotCostChoicePrompts(state, bot.playerId);
+			const res = applyGameAction(state, bot.playerId, {
+				type: 'turn_face_up',
+				instanceId: perm.instanceId,
+				...(turnUp.choosesX ? { xValue } : {}),
+				...(costPayment ? { costPayment } : {})
+			});
+			if (res.ok) {
+				return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+			}
+		}
+
+		// 2d3. Activate non-free modal activated abilities on the battlefield when beneficial
+		{
+			const cmdId = getPlayerCommanderIdentity(bot);
+			const modalCandidate = withStableLayerInputs(state, () => {
+				for (const perm of bot.battlefield) {
+					if (perm.phasedOut) continue;
+					const abilities = getEffectiveActivatedAbilities(state, bot, perm, cmdId);
+					for (const ab of abilities) {
+						if (!ab.modal || ab.isManaAbility || ab.id.startsWith('equip_')) continue;
+						const hasCostOrCap =
+							ab.requiresTap ||
+							ab.requiresSacrificeSelf ||
+							ab.manaCost !== '' ||
+							ab.loyaltyCost !== null ||
+							Boolean(ab.activationRestrictions?.includes('onceEachTurn')) ||
+							Boolean(ab.modal.oncePerTurnUnique);
+						if (!hasCostOrCap) continue;
+						if (!checkAbilityActivationLegality(state, bot.playerId, perm, ab).ok) continue;
+						const picked = chooseBotModesForModal(
+							state,
+							bot,
+							perm.card,
+							perm,
+							ab.modal,
+							getEffectiveUsedModalModes(ab.modal, perm) ?? perm.usedModalModesThisTurn
+						);
+						if (!picked) continue;
+						return { perm, ab, picked };
+					}
+				}
+				return null;
+			});
+			if (modalCandidate) {
+				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'activate_ability',
+					instanceId: modalCandidate.perm.instanceId,
+					abilityId: modalCandidate.ab.id,
+					chosenModes: modalCandidate.picked.modes,
+					targets: modalCandidate.picked.targets
+				});
+				if (res.ok) {
+					return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+				}
+			}
+		}
+
+		// 2d4. Animate non-creature permanents before combat when an animation ability can be paid cleanly
+		if (state.phase === 'main1') {
+			const cmdId = getPlayerCommanderIdentity(bot);
+			const animCandidate = withStableLayerInputs(state, () => {
+				for (const perm of bot.battlefield) {
+					if (perm.phasedOut || perm.tapped) continue;
+					if (perm.summoningSick && !hasKeyword(perm, 'Haste', state)) continue;
+					const ev = evaluatePermanent(state, perm);
+					if (ev.isCreature) continue;
+					const abilities = getEffectiveActivatedAbilities(state, bot, perm, cmdId);
+					for (const ab of abilities) {
+						if (ab.isManaAbility || ab.modal || ab.requiresTarget || ab.manaCost !== '') continue;
+						if (!checkAbilityActivationLegality(state, bot.playerId, perm, ab).ok) continue;
+						const eff = effectOf(abilityById(perm.card, ab.id, ab.faceIndex ?? 0));
+						if (!eff?.steps.some((s) => s.verb === 'animate')) continue;
+						const payment = chooseBotAbilityCostPayment(state, bot, perm, ab);
+						if (!payment) continue;
+						return { perm, ab, payment };
+					}
+				}
+				return null;
+			});
+			if (animCandidate) {
+				const costBefore = countBotCostChoicePrompts(state, bot.playerId);
+				const res = applyGameAction(state, bot.playerId, {
+					type: 'activate_ability',
+					instanceId: animCandidate.perm.instanceId,
+					abilityId: animCandidate.ab.id,
+					targets: [],
+					costPayment: animCandidate.payment
+				});
+				if (res.ok) {
+					return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+				}
+			}
+		}
+
+		// 2e. Conservative fallback on bot's own main phase: activate hand-zone or graveyard-zone abilities
+		// after land drops / spells / equips.
+		const mainHandRes = tryBotHandActivatedAbility(state, bot, true);
+		if (mainHandRes) return mainHandRes;
+		const mainGyRes = tryBotGraveyardActivatedAbility(state, bot, true);
+		if (mainGyRes) return mainGyRes;
+		if (state.phase === 'main2') {
+			const mainSpecialRes = tryBotHandSpecialAction(state, bot);
+			if (mainSpecialRes) return mainSpecialRes;
+			// --- Track P18b: CR 116.2g Companion {3} special action once per game ---
+			if (checkCompanionSpecialActionLegality(state, bot.playerId).ok) {
+				const compRes = applyGameAction(state, bot.playerId, { type: 'companion_to_hand' });
+				if (compRes.ok) return 'visible';
+			}
+			// --- End Track P18b ---
+		}
+	}
+
+	if (isBotsTurn && state.phase === 'end_step' && state.stack.length === 0) {
+		const ownEndSpecialRes = tryBotHandSpecialAction(state, bot);
+		if (ownEndSpecialRes) return ownEndSpecialRes;
+	}
+
+	// 2f. Opponent's end step: spend leftover mana on instant-speed hand-zone or graveyard-zone abilities.
+	if (!isBotsTurn && state.phase === 'end_step' && state.stack.length === 0) {
+		const endStepHandRes = tryBotHandActivatedAbility(state, bot, false);
+		if (endStepHandRes) return endStepHandRes;
+		const endStepGyRes = tryBotGraveyardActivatedAbility(state, bot, false);
+		if (endStepGyRes) return endStepGyRes;
 	}
 
 	// 3. If it's the bot's Declare Attackers step and Stack is empty
@@ -795,14 +1450,304 @@ export function executeBotStep(
 	return 'quiet';
 }
 
-function chooseBotTargetsForCard(
+function tryBotHandActivatedAbility(
 	state: GameState,
 	bot: PlayerGameState,
-	cardInst: CardInstance
-): TargetRef[] {
-	const spec = cardSpellTargetSpec(cardInst.card);
-	if (!spec) return [];
+	isMainPhase: boolean
+): BotStepResult | null {
+	const ownLandsCount = withStableLayerInputs(state, () =>
+		bot.battlefield.filter((b) => !b.phasedOut && evaluatePermanent(state, b).isLand).length
+	);
+	const cmdId = getPlayerCommanderIdentity(bot);
 
+	for (let i = 0; i < bot.hand.length; i++) {
+		const cardInst = bot.hand[i];
+		const types = activeCharacteristics(cardInst.card, instanceFaceOptions(cardInst)).types;
+		const isLand = types.includes('Land') && !types.includes('Creature');
+		if (isMainPhase) {
+			const excessLand = isLand && (bot.landsPlayedThisTurn >= bot.maxLandsPerTurn || ownLandsCount >= 5);
+			const uncastableHighCmc = !isLand && cardInst.card.cmc >= 5 && ownLandsCount <= 3;
+			const floodedNonTrick =
+				ownLandsCount >= 6 &&
+				bot.hand.length >= 2 &&
+				!isCounterSpellCard(cardInst.card) &&
+				!isProtectionTrickCard(cardInst.card);
+			if (!excessLand && !uncastableHighCmc && !floodedNonTrick) {
+				continue;
+			}
+		}
+
+		const candidate = withStableLayerInputs(state, () => {
+			const abilities = getEffectiveActivatedAbilities(state, bot, cardInst, cmdId);
+			for (const ab of abilities) {
+				if (ab.isManaAbility || !ab.activationZones?.includes('hand')) continue;
+				if (!checkAbilityActivationLegality(state, bot.playerId, cardInst, ab).ok) continue;
+				if (ab.modal) {
+					const picked = chooseBotModesForModal(
+						state,
+						bot,
+						cardInst.card,
+						cardInst,
+						ab.modal,
+						cardInst.usedModalModesThisTurn
+					);
+					if (!picked) continue;
+					return { ab, targets: picked.targets, chosenModes: picked.modes };
+				}
+				let targets: TargetRef[] = [];
+				if (ab.requiresTarget) {
+					const spec = ab.targetInfo.targetSpecs?.[0];
+					if (!spec) continue;
+					targets = chooseBotTargetsForSpec(state, bot, cardInst, spec);
+					if (ab.targetInfo.minTargets > 0 && targets.length < ab.targetInfo.minTargets) {
+						continue;
+					}
+				}
+				return { ab, targets, chosenModes: undefined as number[] | undefined };
+			}
+			return null;
+		});
+		if (!candidate) continue;
+
+		const costBefore = countBotCostChoicePrompts(state, bot.playerId);
+		const res = applyGameAction(state, bot.playerId, {
+			type: 'activate_ability',
+			instanceId: cardInst.instanceId,
+			abilityId: candidate.ab.id,
+			...(candidate.chosenModes ? { chosenModes: candidate.chosenModes } : {}),
+			targets: candidate.targets
+		});
+		if (res.ok) {
+			return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+		}
+	}
+	return null;
+}
+
+function tryBotGraveyardActivatedAbility(
+	state: GameState,
+	bot: PlayerGameState,
+	isMainPhase: boolean
+): BotStepResult | null {
+	const cmdId = getPlayerCommanderIdentity(bot);
+
+	for (let i = 0; i < bot.graveyard.length; i++) {
+		const cardInst = bot.graveyard[i];
+		const candidate = withStableLayerInputs(state, () => {
+			const abilities = getEffectiveActivatedAbilities(state, bot, cardInst, cmdId);
+			for (const ab of abilities) {
+				if (ab.isManaAbility || !ab.activationZones?.includes('graveyard')) continue;
+				if (!isMainPhase && ab.sorcerySpeedOnly) continue;
+				if (!checkAbilityActivationLegality(state, bot.playerId, cardInst, ab).ok) continue;
+
+				const eff = effectOf(abilityById(cardInst.card, ab.id, ab.faceIndex ?? 0));
+				const returnsSelfToHand = Boolean(
+					eff?.steps.some(
+						(s) => s.verb === 'move' && s.subject?.k === 'self' && s.params?.to === 'hand'
+					)
+				);
+				if (returnsSelfToHand && bot.hand.length > 4) continue;
+
+				const payment = chooseBotAbilityCostPayment(state, bot, cardInst, ab);
+				if (!payment) continue;
+				const hasRealCostOrCap =
+					ab.manaCost !== '' ||
+					Boolean(ab.activationRestrictions?.includes('onceEachTurn')) ||
+					Boolean(payment.objects && payment.objects.length > 0) ||
+					Boolean(payment.options && payment.options.length > 0);
+				if (!hasRealCostOrCap) continue;
+
+				if (ab.modal) {
+					const picked = chooseBotModesForModal(
+						state,
+						bot,
+						cardInst.card,
+						cardInst,
+						ab.modal,
+						cardInst.usedModalModesThisTurn
+					);
+					if (!picked) continue;
+					return { ab, targets: picked.targets, chosenModes: picked.modes, payment };
+				}
+				let targets: TargetRef[] = [];
+				if (ab.requiresTarget) {
+					const spec = ab.targetInfo.targetSpecs?.[0];
+					if (!spec) continue;
+					targets = chooseBotTargetsForSpec(state, bot, cardInst, spec);
+					if (ab.targetInfo.minTargets > 0 && targets.length < ab.targetInfo.minTargets) {
+						continue;
+					}
+				}
+				return { ab, targets, chosenModes: undefined as number[] | undefined, payment };
+			}
+			return null;
+		});
+		if (!candidate) continue;
+
+		const costBefore = countBotCostChoicePrompts(state, bot.playerId);
+		const res = applyGameAction(state, bot.playerId, {
+			type: 'activate_ability',
+			instanceId: cardInst.instanceId,
+			abilityId: candidate.ab.id,
+			...(candidate.chosenModes ? { chosenModes: candidate.chosenModes } : {}),
+			targets: candidate.targets,
+			costPayment: candidate.payment
+		});
+		if (res.ok) {
+			return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+		}
+	}
+	return null;
+}
+
+function chooseBotCostPaymentAids(
+	state: GameState,
+	bot: PlayerGameState,
+	cardInst: CardInstance,
+	option: CastOption,
+	optionalCostCounts?: Record<string, number>
+):
+	| { costAidIds: Record<string, string[]>; costAidColorChoices: Record<string, ManaColor | 'generic'> }
+	| undefined {
+	if (!option.paymentAids || option.paymentAids.length === 0) return undefined;
+	const costReq = getSpellOptionCostRequirement(state, bot.playerId, cardInst, option, 0, optionalCostCounts);
+	if (!costReq) return undefined;
+	const hasExtraNonMana =
+		(option.baseCost.kind === 'alternative' && (option.baseCost.costDefs?.length ?? 0) > 0) ||
+		(option.mandatoryAdditionalCosts?.length ?? 0) > 0;
+	const planned = planCastCostAids(
+		state,
+		bot,
+		option,
+		costReq,
+		spellSpendContext(cardInst, {
+			faceIndex: option.faceIndex ?? 0,
+			fused: Boolean(option.fused),
+			isFaceDown: Boolean(option.spellMods?.castFaceDown)
+		}),
+		undefined,
+		undefined,
+		!hasExtraNonMana
+	);
+	if (Object.keys(planned.costAidIds).length === 0) return undefined;
+	return {
+		costAidIds: planned.costAidIds,
+		costAidColorChoices: planned.costAidColorChoices
+	};
+}
+
+function tryBotHandSpecialAction(state: GameState, bot: PlayerGameState): BotStepResult | null {
+	for (let i = 0; i < bot.hand.length; i++) {
+		const cardInst = bot.hand[i];
+		const candidate = withStableLayerInputs(state, () => {
+			if (isCounterSpellCard(cardInst.card) || isProtectionTrickCard(cardInst.card)) {
+				return null;
+			}
+			const specialOpts = getHandSpecialActions(state, bot.playerId, cardInst);
+			for (const sa of specialOpts) {
+				if (!checkHandSpecialActionLegality(state, bot.playerId, cardInst, sa.id).ok) continue;
+				const costPayment = chooseBotHandSpecialActionCostPayment(state, bot, cardInst, sa.id);
+				return { actionId: sa.id, costPayment };
+			}
+			return null;
+		});
+		if (!candidate) continue;
+		const costBefore = countBotCostChoicePrompts(state, bot.playerId);
+		const res = applyGameAction(state, bot.playerId, {
+			type: 'hand_special_action',
+			instanceId: cardInst.instanceId,
+			actionId: candidate.actionId,
+			...(candidate.costPayment ? { costPayment: candidate.costPayment } : {})
+		});
+		if (res.ok) {
+			return countBotCostChoicePrompts(state, bot.playerId) > costBefore ? 'quiet' : 'visible';
+		}
+	}
+	return null;
+}
+
+function chooseBotOptionalCostCounts(
+	state: GameState,
+	bot: PlayerGameState,
+	cardInst: CardInstance,
+	fromZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library',
+	option: CastOption,
+	allowChooseAllModes = false
+): Record<string, number> | undefined {
+	const optionals = option.optionalAdditionalCosts;
+	if (!optionals || optionals.length === 0) return undefined;
+	const altCount =
+		option.baseCost.kind === 'alternative' ? (option.baseCost.costDefs?.length ?? 0) : 0;
+	const mandatoryCount = option.mandatoryAdditionalCosts?.length ?? 0;
+	const counts: Record<string, number> = {};
+	for (const oc of optionals) {
+		if (oc.chooseAllModes && !allowChooseAllModes) {
+			continue;
+		}
+		if (/\{X\}/i.test(oc.costDisplay) || JSON.stringify(oc.costDefs).includes('"k":"x"')) {
+			continue;
+		}
+		if (oc.returnToHandOnResolve) {
+			if (option.spellMods.exileOnLeaveStack) continue;
+			if (oc.costDefs.every((d) => d.k !== 'mana') && (bot.spellsCastThisTurn ?? 0) >= 2) {
+				continue;
+			}
+		}
+		const maxTry = Math.min(oc.maxCount, 5);
+		const hasNonManaDef = oc.costDefs.some((d) => d.k !== 'mana');
+		const faceIdx = option.faceIndex ?? 0;
+		for (let step = 1; step <= maxTry; step++) {
+			const candidate: Record<string, number> = { ...counts, [oc.id]: step };
+			if (!checkSpellCastLegality(state, bot.playerId, cardInst, fromZone, 0, option.id, candidate, faceIdx, option.fused).ok) {
+				break;
+			}
+			const hasAnyNonMana = altCount > 0 || mandatoryCount > 0 || hasNonManaDef;
+			if (hasAnyNonMana && !chooseBotSpellCostPayment(state, bot, cardInst, faceIdx, option.id, candidate)) {
+				break;
+			}
+			if (!option.spellMods.targetsBecomeEach) {
+				const targetReq = getSpellTargetRequirement(cardInst.card, option, candidate);
+				if (targetReq.requiresTarget && targetReq.minTargets > 0) {
+					const picked = chooseBotTargetsForCard(state, bot, cardInst, option, candidate);
+					if (picked.length < targetReq.minTargets) break;
+				}
+			}
+			counts[oc.id] = step;
+		}
+	}
+	return Object.keys(counts).length > 0 ? counts : undefined;
+}
+
+function chooseBotTargetsForSpec(
+	state: GameState,
+	bot: PlayerGameState,
+	cardInst: CardInstance,
+	spec: TargetSpec
+): TargetRef[] {
+	// --- Track P7 ---
+	if (spec.divideTotal) {
+		const divCap =
+			spec.divideTotal.k === 'const'
+				? spec.divideTotal.n
+				: spec.divideTotal.k === 'x'
+					? 0
+					: evaluateAmount(spec.divideTotal, { state, controllerId: bot.playerId, source: cardInst });
+		if (divCap <= 0 || divCap < spec.min) return [];
+	}
+	// --- End Track P7 ---
+	// --- Track P17a: CR 115.1 Flagbearer targeting requirement ---
+	const fbIds = getRequiredFlagbearerIdsForActor(state, bot.playerId);
+	if (fbIds.size > 0) {
+		const legalCands = specTargetCandidates(state, bot.playerId, cardInst.card, cardInst, spec);
+		const fbCand = legalCands.find((t) => t.kind === 'permanent' && fbIds.has(t.id));
+		if (fbCand) {
+			const needed = Math.max(1, spec.min);
+			const others = legalCands.filter((t) => !(t.kind === fbCand.kind && t.id === fbCand.id));
+			const picked = [fbCand, ...others].slice(0, needed);
+			if (picked.length >= spec.min) return picked;
+		}
+	}
+	// --- End Track P17a ---
 	const isControlledCreature =
 		spec.kind === 'object' &&
 		spec.filter.controller === 'you' &&
@@ -865,16 +1810,16 @@ function chooseBotTargetsForCard(
 
 	enemyPermanents.sort((a, b) => b.inst.card.cmc - a.inst.card.cmc);
 	if (enemyPermanents.length > 0) {
-		return [
-			{
-				kind: 'permanent',
-				id: enemyPermanents[0].inst.instanceId,
-				label: enemyPermanents[0].inst.card.name
-			}
-		];
+		const count = Math.max(1, spec.min);
+		const picked = enemyPermanents.slice(0, count).map((e) => ({
+			kind: 'permanent' as const,
+			id: e.inst.instanceId,
+			label: e.inst.card.name
+		}));
+		if (picked.length >= spec.min) return picked;
 	}
 
-	if (spec.kind === 'objectOrPlayer') {
+	if (spec.kind === 'objectOrPlayer' && spec.min <= 1) {
 		const topOpp = opponents.sort((a, b) => b.life - a.life)[0];
 		return [{ kind: 'player', id: topOpp.playerId, label: topOpp.username }];
 	}
@@ -888,10 +1833,33 @@ function chooseBotTargetsForCard(
 		return true;
 	});
 	if (allLegal.length > 0 && allLegal.length >= spec.min) {
-		return allLegal.slice(0, spec.min);
+		return allLegal.slice(0, Math.max(1, spec.min));
 	}
 
 	return [];
+}
+
+function chooseBotTargetsForCard(
+	state: GameState,
+	bot: PlayerGameState,
+	cardInst: CardInstance,
+	option?: CastOption,
+	optionalCostCounts?: Record<string, number>
+): TargetRef[] {
+	const req = getSpellTargetRequirement(cardInst.card, option, optionalCostCounts);
+	const activeSpecs = req.targetSpecs?.filter((sp) => sp.max > 0);
+	if (activeSpecs && activeSpecs.length > 0) {
+		const out: TargetRef[] = [];
+		for (const sp of activeSpecs) {
+			const picked = chooseBotTargetsForSpec(state, bot, cardInst, sp);
+			if (sp.min > 0 && picked.length < sp.min) return [];
+			out.push(...picked.slice(0, Math.max(sp.min, Math.min(sp.max, picked.length))));
+		}
+		return out;
+	}
+	const spec = cardSpellTargetSpec(cardInst.card, option?.faceIndex ?? 0);
+	if (!spec) return [];
+	return chooseBotTargetsForSpec(state, bot, cardInst, spec);
 }
 
 // ---- Triggered abilities (steps C+D) -----------------------------------------------------------
@@ -961,11 +1929,13 @@ function chooseBotTriggerTargetsInner(
 	const harmful = targetIsHarmed(steps, index);
 	const ownerOf = (t: TargetRef): string | undefined => {
 		if (t.kind === 'player') return t.id;
+		if (t.kind === 'stack') return state.stack.find((s) => s.id === t.id)?.controllerId;
 		for (const p of state.players) {
 			if (p.battlefield.some((c) => c.instanceId === t.id)) {
 				return p.battlefield.find((c) => c.instanceId === t.id)!.controllerId;
 			}
 			if (p.graveyard.some((c) => c.instanceId === t.id)) return p.playerId;
+			if (p.exile.some((c) => c.instanceId === t.id)) return p.playerId;
 		}
 		return undefined;
 	};
@@ -988,8 +1958,22 @@ function chooseBotTriggerTargetsInner(
 		// On the wrong side, prefer the least valuable; on the right side, the most.
 		return ga ? value(b) - value(a) : value(a) - value(b);
 	});
-	const wanted = Math.max(spec.min, Math.min(spec.max, ranked.filter(good).length));
-	return ranked.slice(0, Math.min(wanted, spec.max));
+	// --- Track P7 ---
+	let effectiveMax = spec.max;
+	if (spec.divideTotal) {
+		const divCap =
+			spec.divideTotal.k === 'const'
+				? spec.divideTotal.n
+				: spec.divideTotal.k === 'x'
+					? 0
+					: evaluateAmount(spec.divideTotal, { state, controllerId: bot.playerId });
+		if (divCap <= 0) return [];
+		if (divCap < spec.min) return [];
+		effectiveMax = Math.min(spec.max, divCap);
+	}
+	// --- End Track P7 ---
+	const wanted = Math.max(spec.min, Math.min(effectiveMax, ranked.filter(good).length));
+	return ranked.slice(0, Math.min(wanted, effectiveMax));
 }
 
 /**

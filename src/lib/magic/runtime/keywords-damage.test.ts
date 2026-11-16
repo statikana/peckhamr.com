@@ -160,7 +160,7 @@ function makeDummyItem(
 		oracleText: sourceCard.oracleText,
 		targets,
 		xValue: 0,
-		castMode: 'normal',
+		castOptionId: 'normal',
 		requiresGuidedResolution: false,
 		createdAt: Date.now()
 	};

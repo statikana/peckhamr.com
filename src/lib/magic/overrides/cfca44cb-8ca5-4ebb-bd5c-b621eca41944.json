@@ -1,0 +1,80 @@
+{
+	"oracleId": "cfca44cb-8ca5-4ebb-bd5c-b621eca41944",
+	"expectedTextHash": "ea123a66",
+	"faces": [
+		{
+			"name": "Space Beleren",
+			"characteristics": {
+				"manaCost": "{2}{W}{U}",
+				"types": ["Planeswalker"],
+				"subtypes": ["Jace"],
+				"supertypes": ["Legendary"],
+				"colors": ["U", "W"],
+				"loyalty": 3
+			},
+			"abilities": [
+				{
+					"kind": "static",
+					"static": {
+						"k": "spaceSculptorSectors"
+					},
+					"span": { "start": 0, "end": 14 }
+				},
+				{
+					"kind": "activated",
+					"id": "loyalty_1",
+					"cost": [{ "k": "loyalty", "delta": 1 }],
+					"targets": [],
+					"effect": [
+						{
+							"verb": "reveal",
+							"subject": { "k": "none" },
+							"params": { "wave7Effect": "spaceSectorLock" },
+							"span": { "start": 19, "end": 106 }
+						}
+					],
+					"timing": "sorcery",
+					"isMana": false,
+					"text": "+1: Creatures in each sector can be blocked this turn only by creatures in the same sector.",
+					"span": { "start": 15, "end": 106 }
+				},
+				{
+					"kind": "activated",
+					"id": "loyalty_2",
+					"cost": [{ "k": "loyalty", "delta": -1 }],
+					"targets": [],
+					"effect": [
+						{
+							"verb": "reveal",
+							"subject": { "k": "none" },
+							"params": { "wave7Effect": "spaceSectorCounters" },
+							"span": { "start": 111, "end": 177 }
+						}
+					],
+					"timing": "sorcery",
+					"isMana": false,
+					"text": "−1: Put a +1/+1 counter on each creature in the sector of your choice.",
+					"span": { "start": 107, "end": 177 }
+				},
+				{
+					"kind": "activated",
+					"id": "loyalty_3",
+					"cost": [{ "k": "loyalty", "delta": -5 }],
+					"targets": [],
+					"effect": [
+						{
+							"verb": "reveal",
+							"subject": { "k": "none" },
+							"params": { "wave7Effect": "spaceSectorDestroy" },
+							"span": { "start": 182, "end": 233 }
+						}
+					],
+					"timing": "sorcery",
+					"isMana": false,
+					"text": "−5: Destroy all creatures in the sector of your choice.",
+					"span": { "start": 178, "end": 233 }
+				}
+			]
+		}
+	]
+}

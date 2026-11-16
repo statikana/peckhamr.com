@@ -1,0 +1,1724 @@
+#LyX file created by tex2lyx 2.5
+\lyxformat 643
+\begin_document
+\begin_header
+\save_transient_properties true
+\origin /home/ryan/Documents/github/statikana/peckhamr.com/static/
+\textclass article
+\begin_preamble
+
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{fancyhdr}
+\PassOptionsToPackage{english}{babel}
+\usepackage{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.7in}
+\addtolength{\textheight}{1.3in}
+
+\urlstyle{same}
+
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+\vspace{-8pt}\scshape\raggedright\large
+}{}{0em}{}[\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{
+\item\small{#1 \vspace{-2pt}}
+}
+
+\newcommand{\resumeSubheading}[4]{
+\vspace{-5pt}\item
+\begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+\textbf{#1} & #2 \\
+\small#3 & \small #4 \\
+\end{tabular*}\vspace{-5pt}
+}
+
+\newcommand{\resumeSubheadingSoftTwo}[2]{
+\vspace{-8pt}\item
+\begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+#1 & #2 \\
+\end{tabular*}\vspace{-20pt}
+}
+
+\newcommand{\resumeSubheadingSoftFour}[4]{
+\vspace{-2pt}\item
+\begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+#1 & #2 \\
+\small#3 & \small #4 \\
+\end{tabular*}\vspace{-4pt}
+}
+\newcommand{\resumeSubSubheading}[2]{
+\item
+\begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+\textit{\small#1} & \textit{\small #2} \\
+\end{tabular*}\vspace{-4pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+\item
+\begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+\small#1 & #2 \\
+\end{tabular*}\vspace{-4pt}
+}
+
+\renewcommand{\labelitemii}{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\setlist[itemize]{itemsep=1pt, topsep=2pt, parsep=0pt, partopsep=0pt}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=0.15in]}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+
+\end_preamble
+\use_default_options false
+\begin_modules
+enumitem
+\end_modules
+\maintain_unincluded_children no
+\language english
+\language_package default
+\inputencoding auto-legacy
+\fontencoding default
+\font_roman "default" "default"
+\font_sans "default" "default"
+\font_typewriter "default" "default"
+\font_math "auto" "auto"
+\font_default_family default
+\use_non_tex_fonts false
+\font_sc false
+\font_roman_osf false
+\font_sans_osf false
+\font_typewriter_osf false
+\font_sf_scale 100 100
+\font_tt_scale 100 100
+\use_microtype false
+\use_dash_ligatures true
+\graphics default
+\default_output_format default
+\output_sync 0
+\bibtex_command default
+\index_command default
+\paperfontsize 11
+\spacing single
+\use_hyperref true
+\pdf_bookmarks 0
+\pdf_bookmarksnumbered 0
+\pdf_bookmarksopen 0
+\pdf_bookmarksopenlevel 1
+\pdf_breaklinks 0
+\pdf_pdfborder 0
+\pdf_colorlinks 0
+\pdf_backref false
+\pdf_pdfusetitle 0
+\papersize letter
+\use_geometry false
+\use_package amsmath 1
+\use_package amssymb 0
+\use_package cancel 0
+\use_package esint 1
+\use_package mathdots 0
+\use_package mathtools 0
+\use_package mhchem 0
+\use_package stackrel 0
+\use_package stmaryrd 0
+\use_package undertilde 0
+\cite_engine basic
+\cite_engine_type default
+\biblio_style plain
+\use_bibtopic false
+\use_indices false
+\paperorientation portrait
+\suppress_date false
+\justification true
+\crossref_package prettyref
+\use_minted 0
+\use_lineno false
+\fontcolor black
+\index Index
+\shortcut idx
+\color #008000
+\end_index
+\secnumdepth 3
+\tocdepth 3
+\paragraph_separation indent
+\paragraph_indentation default
+\is_math_indent 0
+\math_numbering_side default
+\quotes_style english
+\dynamic_quotes 0
+\papercolumns 1
+\papersides 1
+\paperpagestyle fancy
+\tracking_changes false
+\output_changes false
+\change_bars false
+\html_math_output 0
+\html_css_as_file 0
+\html_be_strict false
+\docbook_table_output 0
+\docbook_mathml_prefix 1
+\docbook_mathml_version 0
+\end_header
+
+\begin_body
+
+\begin_layout Standard
+\align center
+
+\series bold
+
+\size giant
+
+\shape smallcaps
+Ryan Peckham
+\series default
+ 
+\begin_inset Newline newline
+\end_inset
+
+ 
+\begin_inset VSpace 2pt
+\end_inset
+
+ 
+\size small
+
+\begin_inset CommandInset href
+LatexCommand href
+target "peckhamr@umich.edu"
+type "mailto:"
+literal "false"
+
+\end_inset
+
+
+\begin_inset Formula $\cdot$
+\end_inset
+
+ 
+\begin_inset CommandInset href
+LatexCommand href
+name "peckhamr.com"
+target "[https://peckhamr.com](https://peckhamr.com)"
+literal "false"
+
+\end_inset
+
+
+\begin_inset Formula $\cdot$
+\end_inset
+
+ +1 (616) 834-2160 
+\begin_inset Formula $\cdot$
+\end_inset
+
+ Ann Arbor, MI 
+\end_layout
+
+\begin_layout Section
+Education
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubHeadingListStart
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubheading{
+\end_layout
+
+\end_inset
+
+University of Michigan
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+Ann Arbor, MI
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+B.S. Computer Engineering; GPA: 3.35/4.0
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+Aug. 2025 – Present
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+
+\begin_inset VSpace 3pt
+\end_inset
+
+Sophomore – Anticipated Graduation May 2029
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+
+\series bold
+Coursework:
+\series default
+ Multivariable & Vector Calculus, Electricity & Magnetism, Quantum Photonics, Discrete Mathematics, Solar Energy Systems, Probability & Statistics
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubHeadingListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Section
+Skills
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubHeadingListStart
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+{
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+item 
+\end_layout
+
+\end_inset
+
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+{
+\end_layout
+
+\end_inset
+
+ 
+\series bold
+Programming Languages
+\series default
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+{
+\end_layout
+
+\end_inset
+
+: Python, Rust, C, C++, C#, Java, SQL, MATLAB
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset Newline newline
+\end_inset
+
+ 
+\series bold
+Web
+\series default
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+{
+\end_layout
+
+\end_inset
+
+: HTML, CSS, JavaScript, Svelte, Cloudflare Workers
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+
+\begin_inset Newline newline
+\end_inset
+
+ 
+\series bold
+Systems
+\series default
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+{
+\end_layout
+
+\end_inset
+
+: Git & GitHub, PostgreSQL, WSL, Docker, Database Normalization, Threading
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset Newline newline
+\end_inset
+
+ 
+\series bold
+Operating Systems
+\series default
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+{
+\end_layout
+
+\end_inset
+
+: Windows, Linux (Ubuntu, Debian, NixOS), MacOS
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset Newline newline
+\end_inset
+
+ 
+\series bold
+Hardware
+\series default
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+{
+\end_layout
+
+\end_inset
+
+: Soldering, Shielded Metal Arc Welding, CNC Machines, Lathes, Mills
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubHeadingListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Section
+Experience
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubHeadingListStart
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubheading{
+\end_layout
+
+\end_inset
+
+Michigan Autonomous Security Team (M-AST), Chief Software Engineer
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+Jan. 2026 – Present
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+University of Michigan
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListStart
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Leading and mentoring a team of engineers to install, program, and test gyroscope, magnetometer, barometer, and GPS sensors onto a prototype drone
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Maintaining the organization of a large and complex codebase and reviewing code and pull requests
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Co-designed the drone's system architecture with the M-AST President, defining data flow between subsystems and supporting software-in-the-loop (SITL) and hardware-in-the-loop (HITL) runtimes
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Integrating ROS2, OpenCV, telemetry, and path-finding modules into a cohesive flight software stack
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubheading{
+\end_layout
+
+\end_inset
+
+Michigan Hackers, Machine Learning Team, Member
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+Nov. 2025 – Present
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+University of Michigan
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListStart
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Built a foundation in machine learning theory including Markov chains, Bayes' theorem, backpropagation, regression, and neural network design
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Led peer lectures and contributed to technical discussion of modern theory and applications of machine learning
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubheading{
+\end_layout
+
+\end_inset
+
+Engineering 100
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+Aug. 2025 – Dec. 2025
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+University of Michigan
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListStart
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Built a sun-tracking solar panel on a Raspberry Pi, writing the C++ control code and wiring and soldering photoresistors, stepper motors, voltage limiters, and a battery
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Collaborated in a design team to prioritize tasks, balance planning with execution, and draw meaningful conclusions from test data
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubheading{
+\end_layout
+
+\end_inset
+
+FIRST Robotics Competition (FRC), Team 141 
+\begin_inset Quotes eld
+\end_inset
+
+WOBOT
+\begin_inset Quotes erd
+\end_inset
+
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+Aug. 2023 – Oct. 2024
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+West Ottawa High School, Programming Team
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListStart
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Developed input and movement code by implementing and tuning PIDF loops for precise control
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Contributed to a District Championship-winning team that also earned the Engineering Inspiration, Sustainability, and Entrepreneurship awards
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubheading{
+\end_layout
+
+\end_inset
+
+Cultural, Technological, and Environmental Exchange (CTEE) Club
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+Sep. 2024 – Apr. 2025
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+West Ottawa High School
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListStart
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Diagnosed and refurbished desktop systems, troubleshooting hardware-level faults on motherboards, power supplies, and storage drives
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Replaced faulty physical components and managed hardware integration, deepening practical understanding of computer architecture
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Provisioned hardware by deploying Microsoft Windows OS and configuring system drivers, preparing ready-to-use systems for shipment to Cambodia and Haiti
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubHeadingListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Section
+Personal Projects
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListStart
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Designed, built, and deployed my personal website 
+\begin_inset CommandInset href
+LatexCommand href
+name "peckhamr.com"
+target "[https://peckhamr.com](https://peckhamr.com)"
+literal "false"
+
+\end_inset
+
+with Svelte, JavaScript, HTML, and CSS, teaching modern myself web design and maintainable codebase design
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItem{
+\end_layout
+
+\end_inset
+
+Designed and built M-AST's public website, 
+\begin_inset CommandInset href
+LatexCommand href
+name "flymast.com"
+target "[https://flymast.com](https://flymast.com)"
+literal "false"
+
+\end_inset
+
+, delivering a polished, professional presence for prospective students and sponsors
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeItemListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Section
+Work Experience
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubHeadingListStart
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubheadingSoftTwo{
+\end_layout
+
+\end_inset
+
+Ace Hardware, Delivery and Assembly Technician
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+May 2026 – Aug. 2026
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+% 
+\backslash
+vspace{5pt}
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItemListStart
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItem{Completed deliveries and installations for customer orders and performed equipment assembly and repairs}
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItem{Developed comprehensive knowledge of hardware products, tools, and specifications}
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItemListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubheadingSoftTwo{
+\end_layout
+
+\end_inset
+
+Chick-fil-A, Crew Member
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+June 2025 – Jan. 2026
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+% 
+\backslash
+vspace{5pt}
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItemListStart
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItem{Crew member at Michigan's highest-volume Chick-fil-A location, managing guest service, desserts, and drive-thru operations with consistently positive customer interactions and high work standards. }
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItemListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubheadingSoftTwo{
+\end_layout
+
+\end_inset
+
+Target, Electronics Consultant & Team Leader
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}{
+\end_layout
+
+\end_inset
+
+Nov. 2022 – Aug. 2024
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+}
+\end_layout
+
+\end_inset
+
+ 
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+% 
+\backslash
+vspace{5pt}
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItemListStart
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItem{Promoted from team member to team leader after demonstrating strong performance}
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItem{Trained and supervised team members on department operations and customer service standards}
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItem{Managed inventory receiving and auditing, and maintained security protocols for high-value merchandise}
+\end_layout
+
+\begin_layout Plain Layout
+% 
+\backslash
+resumeItemListEnd
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+
+\size small
+
+\begin_inset ERT
+status collapsed
+
+\begin_layout Plain Layout
+
+\backslash
+resumeSubHeadingListEnd
+\end_layout
+
+\end_inset
+
+ 
+\end_layout
+
+\end_body
+\end_document

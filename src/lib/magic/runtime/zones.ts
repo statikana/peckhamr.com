@@ -1,11 +1,148 @@
 import { shuffleWith, uid, type RngHolder } from './random.ts';
+import { compileCard } from '../compiler/index.ts';
 import { enqueueChoicePrompt, registerPromptHandler } from './choices.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
-import type { CardInstance, CounterType, GameState, PlayerGameState, ZoneType } from '../types.ts';
+import { effectiveCardForObject } from '../scryfall.ts';
+// --- Track P13 ---
+import { withStackItemText } from '../oracle.ts';
+// --- End Track P13 ---
+import {
+	createEmptyCounterMap,
+	type CardInstance,
+	type CounterType,
+	type GameState,
+	type PlayerGameState,
+	type ScryfallCard,
+	type ZoneType
+} from '../types.ts';
 import { emitEvent, type LeftBattlefieldInfo } from './events.ts';
-import { noteLayerInputsChanged, whileLayerInputsChange } from './layerCache.ts';
-import { counterMultiplier, resolveZoneChangeReplacements } from './replace.ts';
-import { flushTriggers } from './triggers.ts';
+import { instanceFaceOptions, resolveObjectFaces } from './faces.ts';
+import { noteLayerInputsChanged, whileLayerInputsChange, withStableLayerInputs } from './layerCache.ts';
+import {
+	counterMultiplier,
+	applySelfEtbReplacements,
+	cardEntersTapped,
+	placeRegisteredCounters,
+	resolveZoneChangeReplacements,
+	selfEtbChoiceSpec,
+	type SelfEtbChoiceSpec
+} from './replace.ts';
+import { matchesObjectFilter } from './objectFilter.ts';
+// --- Track P8 ---
+import {
+	applyCopiedPermanentToInstance,
+	botShouldPayShocklandLife,
+	findLegalCloneCandidates,
+	findSelfCloneReplacementSpec,
+	markHandCardRevealedToAll,
+	playerCantPayLifeForEtb,
+	type SelfCloneReplacementSpec
+} from './staticsLayersAndRestrictions.ts';
+import {
+	buildColorChoiceOptions,
+	buildCreatureSubtypeOptions,
+	chooseBotBestColor,
+	chooseBotBestCreatureSubtype,
+	COLOR_CODE_BY_LABEL
+} from './tuckFreezeChosen.ts';
+import { flushTriggers, stashPreLeaveGrantedTriggers } from './triggers.ts';
+// --- Track P7 ---
+import {
+	recordZoneChangeTurnHistory,
+	shouldExileInsteadOfDying
+} from './copyPreventionAndEffects.ts';
+// --- Track P9 ---
+import {
+	applyBotWave3EtbChoices,
+	applyWave3EtbCounters,
+	cardHasMadness,
+	extractGrantedDeathKeywords,
+	nextWave3EtbChoice
+} from './keywordsWave3.ts';
+// --- Track P12 ---
+import {
+	applyWave4EtbCountersAndSetup,
+	executeDevourSacrifices,
+	findDevourKeywordDef,
+	legalDevourSacrificeCandidates
+} from './keywordsWave4.ts';
+// --- End Track P12 ---
+// --- Track P11 ---
+import {
+	boardMayNeedControllerSync,
+	buildCardNameChoiceOptions,
+	chooseBotBestCardName,
+	collectExternalEtbCounters,
+	externalPermanentEntersTapped,
+	peekPreLeaveGrantedReplacements,
+	stashPreLeaveGrantedReplacements
+} from './staticsDynamicAndCosts.ts';
+// --- End Track P11 ---
+// --- Track P21 ---
+import { isGraveyardOrReanimatingAura } from './framesWave7.ts';
+// --- End Track P21 ---
+// --- Track P15 ---
+import {
+	amplifyMatchingHandCards,
+	applyDayboundEtbReplacement,
+	applyWave5EtbCountersAndSetup,
+	faceHasCompleated,
+	getAmplifyTotalN,
+	sagaHasReadAhead as getSagaReadAheadSpec
+} from './framesBattlesAndKeywordsWave5.ts';
+// --- End Track P15 ---
+// --- Track P16b ---
+import { clearDoThisOnceKeysForObject } from './triggersWave6.ts';
+// --- End Track P16b ---
+// --- Track P18a ---
+import {
+	checkStoriedDesignations,
+	chooseBotTributeDecision,
+	enforceSoulbondPairs,
+	getTributeTotalN,
+	handleHauntedCreatureDies,
+	syncHideawayExilePeekPermissions
+} from './keywordsWave6.ts';
+// --- End Track P18a ---
+// --- Track P18b ---
+import { findAnchorWordChoiceSpec } from './framesModalsWave6.ts';
+// --- End Track P18b ---
+// --- Track P20a ---
+import {
+	ALL_LAND_TYPE_OPTIONS,
+	applyWave7CopyModificationExtras,
+	BASIC_LAND_TYPE_OPTIONS,
+	chooseBotLandSubtype,
+	chooseBotPlayerForEtb,
+	externalPermanentEntersUntapped,
+	findSelfOpponentDiscardToBattlefield,
+	getLegalEtbPlayerCandidates,
+	hasSelfEnterUnderOpponentControl,
+	hasSelfExileAndExtraTurnOnBattlefieldToGraveyard,
+	shouldExileCreatureDealtDamageBySourceOnDie
+} from './staticsWave7.ts';
+// --- End Track P20a ---
+// --- Track P22a ---
+import {
+	buildCardTypeChoiceOptions,
+	buildNumberChoiceBounds,
+	buildTwoPlayersCandidates,
+	cardKeepsCountersAcrossZonesWave8,
+	checkLandsCantEnterWave8,
+	chooseBotBestCardType,
+	chooseBotBestEtbObject,
+	chooseBotBestNumber,
+	chooseBotTwoColors,
+	chooseBotTwoPlayers,
+	findEtbObjectChoiceCandidates,
+	parseTwoColorPairIndex,
+	recordCreatureDiedWave8,
+	recordEnteredBattlefieldWave8,
+	revealOpponentHandForEtbLook,
+	syncMayLookAtExiledWithSelfPermissionsWave8,
+	TWO_COLOR_PAIR_LABELS
+} from './staticsWave8.ts';
+// --- End Track P22a ---
 
 /**
  * The single zone-change module (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -88,10 +225,38 @@ export interface MoveOptions {
 	emit?: boolean;
 	/** Optional SBA log metadata so deferred zone-replacement moves log only when the move finishes. */
 	sbaLog?: SbaMoveLog;
+	/** Stack item/step context propagated into downstream commander_zone_choice prompts. */
+	resumeStackItemId?: string;
+	resumeStepIndex?: number;
+	/**
+	 * When set, emits a `CardDiscarded` event once the discard move finishes (including after any
+	 * graveyard replacement choice; CR 702.29c–d).
+	 */
+	discardReason?: 'discard' | 'cycle';
+	/** Player who discarded the card (defaults to `fromPlayerId ?? obj.ownerId`). */
+	discardPlayerId?: string;
+	// --- Track P9 ---
+	/** CR 614.1c: Counters the object enters the battlefield with (e.g. Undying / Persist). */
+	withCounters?: { counter: CounterType; count: number };
+	/**
+	 * When true, defers linked-exile one-shot returns (`CR 610.3`) to the caller (used by SBA
+	 * multi-object batching so simultaneous battlefield returns happen after all SBA deaths settle).
+	 */
+	skipLinkedReturn?: boolean;
+	// --- Track P10 ---
+	/** Player who sacrificed this permanent (`CR 701.21a`), emitting a `Sacrificed` event. */
+	sacrificedByPlayerId?: string;
+	/** Suppresses per-card `GraveyardLeaveBatch` when a caller emits a single batch event for simultaneous graveyard leaves. */
+	suppressGraveyardLeaveBatch?: boolean;
+	// --- End Track P10 ---
+	// --- Track P18b ---
+	/** CR 710.1 / Homura: Permanent enters the battlefield already flipped to its alternative face. */
+	enteredFlipped?: boolean;
+	// --- End Track P18b ---
 }
 
 export interface SbaMoveLog {
-	kind: 'dying' | 'legend' | 'aura';
+	kind: 'dying' | 'legend' | 'aura' | 'saga';
 	controllerId: string;
 	controllerUsername: string;
 	legName?: string;
@@ -104,17 +269,50 @@ export function allocateTimestamp(state: GameState): number {
 	return state.nextTimestamp;
 }
 
+// --- Track P9 ---
+/**
+ * CR 702.30a Echo: Monotonic clock independent of CR 613 `state.nextTimestamp` so tracking upkeep
+ * boundaries and permanent control-gain never perturbs continuous-effect timestamps.
+ */
+export function allocateEchoTick(state: GameState): number {
+	state.echoClock = (state.echoClock ?? 0) + 1;
+	return state.echoClock;
+}
+
+/**
+ * CR 614.12 look-ahead helper: evaluates `fn` while `obj` is hypothetically present in
+ * `ctrl.battlefield` so entering-the-battlefield replacement checks stay inside `zones.ts`.
+ */
+export function withHypotheticalBattlefieldPresence<T>(
+	state: GameState,
+	ctrl: PlayerGameState,
+	obj: CardInstance,
+	fn: () => T
+): T {
+	const alreadyOnBf = ctrl.battlefield.includes(obj);
+	const prevZone = obj.zone;
+	const prevCtrl = obj.controllerId;
+	obj.zone = 'battlefield';
+	obj.controllerId = ctrl.playerId;
+	if (!alreadyOnBf) ctrl.battlefield.push(obj);
+	noteLayerInputsChanged(state);
+	try {
+		return fn();
+	} finally {
+		if (!alreadyOnBf) {
+			const idx = ctrl.battlefield.lastIndexOf(obj);
+			if (idx >= 0) ctrl.battlefield.splice(idx, 1);
+		}
+		obj.zone = prevZone;
+		obj.controllerId = prevCtrl;
+		noteLayerInputsChanged(state);
+	}
+}
+
 export function createEmptyCounters(): Record<CounterType, number> {
-	return {
-		'+1/+1': 0,
-		'-1/-1': 0,
-		loyalty: 0,
-		charge: 0,
-		shield: 0,
-		stun: 0,
-		lore: 0,
-		time: 0
-	};
+	// --- Track P11 ---
+	return createEmptyCounterMap();
+	// --- End Track P11 ---
 }
 
 /** Shuffles a copy of `items` with the game's seeded generator (ENGINE_INVARIANTS.md 7.2). */
@@ -170,6 +368,8 @@ function pushSbaLog(
 		} else {
 			text = `${obj.card.name} was put into ${dest} instead of dying${replacedBy ? ` (${replacedBy})` : ''} (State-Based Action).`;
 		}
+	} else if (sbaLog.kind === 'saga') {
+		text = `Saga SBA (CR 704.5s): ${obj.card.name} was sacrificed into ${sbaLog.controllerUsername}'s ${dest}${replacedBy ? ` (${replacedBy})` : ''}.`;
 	} else {
 		text = `Legend Rule (CR 704.5j): Duplicate ${sbaLog.legName ?? obj.card.name} was put into ${sbaLog.controllerUsername}'s ${dest}.`;
 	}
@@ -187,6 +387,932 @@ function pushSbaLog(
 	}
 }
 
+function pushEtbRuleLog(state: GameState, actorId: string, text: string): void {
+	state.log.push({
+		id: uid('log', state),
+		timestamp: Date.now(),
+		turn: state.turnNumber,
+		phase: state.phase,
+		actorId,
+		kind: 'rule',
+		text
+	});
+	if (state.log.length > 160) {
+		state.log.shift();
+	}
+}
+
+function ensureCopiedPlaneswalkerStartingLoyalty(state: GameState, obj: CardInstance): void {
+	const bfView = resolveObjectFaces(
+		effectiveCardForObject(obj),
+		instanceFaceOptions(obj, 'battlefield')
+	);
+	if (
+		!bfView.isFaceDown &&
+		bfView.types.includes('Planeswalker') &&
+		bfView.loyalty !== undefined &&
+		(obj.counters.loyalty || 0) === 0
+	) {
+		// --- Track P15 (CR 702.150a Compleated) ---
+		const compleatedDrop = faceHasCompleated(obj) ? 2 * (obj.compleatedLifePaidCount ?? 0) : 0;
+		const baseLoyalty = Math.max(0, bfView.loyalty - compleatedDrop);
+		// --- End Track P15 ---
+		if (baseLoyalty > 0) {
+			const mult = counterMultiplier(state, obj, 'loyalty');
+			obj.counters.loyalty = baseLoyalty * mult;
+		}
+	}
+}
+
+function enqueueNextEtbChoicePrompt(
+	state: GameState,
+	obj: CardInstance,
+	chooser: PlayerGameState,
+	spec: SelfEtbChoiceSpec | null,
+	baseData: Record<string, unknown>,
+	// --- Track P8 ---
+	cloneSpec?: SelfCloneReplacementSpec | null
+): boolean {
+	const objName = resolveObjectFaces(
+		effectiveCardForObject(obj),
+		instanceFaceOptions(obj, 'battlefield')
+	).name;
+	// --- Track P8: Non-stack Generalized Clone self-ETB choice ---
+	if (cloneSpec && !baseData.cloneAnswered) {
+		const candidates = findLegalCloneCandidates(state, chooser.playerId, obj, cloneSpec.copyOf);
+		if (candidates.length > 0) {
+			const description = cloneSpec.copyOptional
+				? `You may have ${objName} enter the battlefield as a copy of a legal permanent on the battlefield (CR 707.5).`
+				: `Choose a permanent on the battlefield for ${objName} to enter as a copy of (CR 707.5).`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseObjects',
+				purpose: 'etb_choice',
+				title: `${objName} — Choose Permanent to Copy`,
+				description,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...baseData,
+						choiceField: 'cloneCopy'
+					}
+				},
+				choice: {
+					kind: 'chooseObjects',
+					candidates: candidates.map((c) => c.instanceId),
+					defaultObjectIds: [candidates[0].instanceId],
+					min: cloneSpec.copyOptional ? 0 : 1,
+					max: 1,
+					zone: 'battlefield',
+					reason: description
+				}
+			});
+			return true;
+		}
+	}
+	if (spec?.chooseColor && !obj.chosenColor) {
+		const { labels } = buildColorChoiceOptions(spec.chooseColor.exclude);
+		const description = `As ${objName} enters the battlefield, choose a color${spec.chooseColor.exclude ? ` other than ${spec.chooseColor.exclude}` : ''} (CR 105.4, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Color`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'color'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: labels,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	if (spec?.chooseSubType === 'creature' && !obj.chosenSubType) {
+		const subtypeLabels = buildCreatureSubtypeOptions(state, chooser, obj);
+		const description = `As ${objName} enters the battlefield, choose a creature type (CR 205.3m, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Creature Type`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'creatureSubtype'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: subtypeLabels,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	// --- Track P20a: Basic/Land Subtype, Player, Parity, & Opponent-Control ETB Choices (CR 614.12, 616.1b) ---
+	if (
+		(spec?.chooseSubType === 'basicLand' || spec?.chooseSubType === 'land') &&
+		!obj.chosenSubType
+	) {
+		const isBasic = spec.chooseSubType === 'basicLand';
+		const landLabels = isBasic ? [...BASIC_LAND_TYPE_OPTIONS] : [...ALL_LAND_TYPE_OPTIONS];
+		const description = `As ${objName} enters the battlefield, choose a ${isBasic ? 'basic land' : 'land'} type (CR 205.3i, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a ${isBasic ? 'Basic Land' : 'Land'} Type`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'landSubtype'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: landLabels,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	if (spec?.choosePlayer && !obj.chosenPlayerId) {
+		const pCands = getLegalEtbPlayerCandidates(state, chooser.playerId, spec.choosePlayer);
+		if (pCands.length === 1) {
+			obj.chosenPlayerId = pCands[0].playerId;
+		} else if (pCands.length >= 2) {
+			const qualifier = spec.choosePlayer === 'opponent' ? 'an opponent' : 'a player';
+			const description = `As ${objName} enters the battlefield, choose ${qualifier} (CR 614.12):`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseMode',
+				purpose: 'etb_choice',
+				title: `${objName} — Choose ${spec.choosePlayer === 'opponent' ? 'an Opponent' : 'a Player'}`,
+				description,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...(baseData as Record<
+							string,
+							string | number | boolean | null | string[] | Record<string, number>
+						>),
+						choiceField: 'etbPlayer',
+						candidatePlayerIds: pCands.map((c) => c.playerId)
+					}
+				},
+				choice: {
+					kind: 'chooseMode',
+					modes: pCands.map((c) => `${c.username} (${c.life} life)`),
+					min: 1,
+					max: 1
+				}
+			});
+			return true;
+		}
+	}
+	if (spec?.chooseParity && !obj.chosenParity) {
+		const description = `As ${objName} enters the battlefield, choose odd or even (CR 107.1c, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose Odd or Even`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'parity'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: ['Odd', 'Even'],
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	// --- End Track P20a ---
+	// --- Track P11: Choose Card Name & Choose Counter ETB choices (CR 201.2a, 614.12) ---
+	if (spec?.chooseCardName && !obj.chosenCardName) {
+		// --- Track P22a ---
+		if (spec.lookAtOpponentHandBeforeCardName) {
+			revealOpponentHandForEtbLook(state, chooser.playerId);
+		}
+		// --- End Track P22a ---
+		const cardNameLabels = buildCardNameChoiceOptions(
+			state,
+			chooser,
+			obj,
+			Boolean(spec.chooseCardName.nonlandOnly)
+		);
+		const qualifier = spec.chooseCardName.nonlandOnly ? 'nonland card name' : 'card name';
+		const description = `As ${objName} enters the battlefield, choose a ${qualifier} (CR 201.2a, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Card Name`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'cardName'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: cardNameLabels,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	// --- Track P22a: CardType, Number, TwoColors, TwoPlayers, ObjectOnBattlefield, SubTypeOptions ETB choices ---
+	type EtbContinuationData = Record<
+		string,
+		string | number | boolean | null | string[] | Record<string, number>
+	>;
+	if (spec?.chooseCardType && !obj.chosenCardType) {
+		if (spec.chooseCardType.lookAtOpponentHand) {
+			revealOpponentHandForEtbLook(state, chooser.playerId);
+		}
+		const cardTypeOptions = buildCardTypeChoiceOptions(spec.chooseCardType);
+		const description = `As ${objName} enters the battlefield, choose a card type (CR 300.1, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Card Type`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...(baseData as EtbContinuationData),
+					choiceField: 'cardType',
+					cardTypeOptions
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: cardTypeOptions,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	if (spec?.chooseNumber && obj.chosenNumber === undefined) {
+		const { min, max } = buildNumberChoiceBounds(spec.chooseNumber);
+		const defaultNum = chooseBotBestNumber(state, chooser.playerId, spec.chooseNumber);
+		const description = `As ${objName} enters the battlefield, choose a number (CR 107.1, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseNumber',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Number`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...(baseData as EtbContinuationData),
+					choiceField: 'etbNumber'
+				}
+			},
+			choice: {
+				kind: 'chooseNumber',
+				min,
+				max,
+				reason: description,
+				defaultNumber: defaultNum
+			}
+		});
+		return true;
+	}
+	if (spec?.chooseTwoColors && !obj.chosenColors) {
+		const modes = [...TWO_COLOR_PAIR_LABELS];
+		const description = `As ${objName} enters the battlefield, choose two colors (CR 105.4, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose Two Colors`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...(baseData as EtbContinuationData),
+					choiceField: 'twoColors'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	if (spec?.chooseTwoPlayers && !obj.chosenPlayerIds) {
+		const candPids = buildTwoPlayersCandidates(state);
+		if (candPids.length <= 1) {
+			obj.chosenPlayerIds = candPids;
+			if (candPids[0]) obj.chosenPlayerId = candPids[0];
+		} else {
+			const countNeeded = Math.min(2, candPids.length);
+			const modes = candPids.map((pid) => {
+				const pl = state.players.find((p) => p.playerId === pid);
+				return pl ? `${pl.username} (${pl.life} life)` : pid;
+			});
+			const description = `As ${objName} enters the battlefield, choose two players (CR 614.12):`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseMode',
+				purpose: 'etb_choice',
+				title: `${objName} — Choose Two Players`,
+				description,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...(baseData as EtbContinuationData),
+						choiceField: 'twoPlayers',
+						candidatePlayerIds: candPids
+					}
+				},
+				choice: {
+					kind: 'chooseMode',
+					modes,
+					min: countNeeded,
+					max: countNeeded
+				}
+			});
+			return true;
+		}
+	}
+	if (spec?.chooseObjectOnBattlefield && !obj.chosenObjectId && !baseData.etbObjectChosen) {
+		const candidates = findEtbObjectChoiceCandidates(
+			state,
+			chooser.playerId,
+			obj,
+			spec.chooseObjectOnBattlefield.filter
+		);
+		if (candidates.length > 0) {
+			const isOpt = Boolean(spec.chooseObjectOnBattlefield.optional);
+			const description = isOpt
+				? `As ${objName} enters the battlefield, you may choose another permanent on the battlefield (CR 614.12):`
+				: `As ${objName} enters the battlefield, choose another permanent on the battlefield (CR 614.12):`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseObjects',
+				purpose: 'etb_choice',
+				title: `${objName} — Choose Permanent`,
+				description,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...(baseData as EtbContinuationData),
+						choiceField: 'etbObject'
+					}
+				},
+				choice: {
+					kind: 'chooseObjects',
+					candidates: candidates.map((c) => c.instanceId),
+					defaultObjectIds: [candidates[0].instanceId],
+					min: isOpt ? 0 : 1,
+					max: 1,
+					zone: 'battlefield',
+					reason: description
+				}
+			});
+			return true;
+		}
+	}
+	if (spec?.chooseSubTypeOptions && spec.chooseSubTypeOptions.length > 0 && !obj.chosenSubType) {
+		const subOpts = [...spec.chooseSubTypeOptions];
+		const description = `As ${objName} enters the battlefield, choose ${subOpts.join(' or ')} (CR 205.3m, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Type`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...(baseData as EtbContinuationData),
+					choiceField: 'subTypeOptions',
+					subTypeOptions: subOpts
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: subOpts,
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	// --- End Track P22a ---
+	if (spec?.chooseCounter && spec.chooseCounter.length > 0 && !obj.etbCounterChoiceDone) {
+		const counterOptions = spec.chooseCounter;
+		const description = `As ${objName} enters the battlefield, choose a counter to put on it (CR 122.1b, 614.12):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Choose a Counter`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'etbCounter',
+					counterOptions
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: counterOptions.map((c) => `Enter with a ${c} counter`),
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	// --- End Track P11 ---
+	// --- Track P8: Shocklands (`As ~ enters, you may pay N life. If you don't, it enters tapped.`) ---
+	if (spec?.payLifeOrEnterTapped !== undefined && !baseData.shocklandAnswered) {
+		const lifeCost = spec.payLifeOrEnterTapped;
+		if (playerCantPayLifeForEtb(state, chooser, lifeCost)) {
+			obj.tapped = true;
+		} else if (!obj.tapped) {
+			const description = `As ${objName} enters the battlefield, pay ${lifeCost} life? If you don't, ${objName} enters tapped (CR 614.12).`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'yesNo',
+				purpose: 'etb_choice',
+				title: `${objName} — Pay ${lifeCost} Life?`,
+				description,
+				yesLabel: `Pay ${lifeCost} life (enter untapped)`,
+				noLabel: 'Enter tapped',
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...baseData,
+						choiceField: 'payLifeOrEnterTapped',
+						lifeCost
+					}
+				},
+				choice: {
+					kind: 'yesNo',
+					question: description
+				}
+			});
+			return true;
+		}
+	}
+	// --- Track P8: Reveal lands (`As ~ enters, you may reveal a <filter> card from your hand. If you don't, ~ enters tapped.`) ---
+	if (spec?.revealFromHandOrEnterTapped && !baseData.revealLandAnswered) {
+		const revealCandidates = chooser.hand.filter(
+			(c) =>
+				c.instanceId !== obj.instanceId &&
+				matchesObjectFilter(c, spec.revealFromHandOrEnterTapped!, {
+					state,
+					controllerId: chooser.playerId,
+					source: obj,
+					zone: 'hand'
+				})
+		);
+		if (revealCandidates.length === 0) {
+			obj.tapped = true;
+		} else if (!obj.tapped) {
+			const description = `As ${objName} enters the battlefield, you may reveal a matching card from your hand. If you don't, ${objName} enters tapped (CR 614.12, 701.20a).`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseObjects',
+				purpose: 'etb_choice',
+				title: `${objName} — Reveal a Card from Hand?`,
+				description,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...baseData,
+						choiceField: 'revealFromHandOrEnterTapped'
+					}
+				},
+				choice: {
+					kind: 'chooseObjects',
+					candidates: revealCandidates.map((c) => c.instanceId),
+					defaultObjectIds: [revealCandidates[0].instanceId],
+					min: 0,
+					max: 1,
+					zone: 'hand',
+					reason: description
+				}
+			});
+			return true;
+		}
+	}
+	// --- Track P9 ---
+	const wave3Choice = nextWave3EtbChoice(state, obj, chooser);
+	if (wave3Choice?.kind === 'unleash') {
+		const description = `As ${objName} enters the battlefield, you may have it enter with a +1/+1 counter on it (CR 702.98a). It can't block as long as it has a +1/+1 counter on it.`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Unleash`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'unleash'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: ['Enter with a +1/+1 counter (Unleash)', 'Enter without a +1/+1 counter'],
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	if (wave3Choice?.kind === 'riot') {
+		const suffix =
+			(wave3Choice.riotTotal ?? 1) > 1
+				? ` (${wave3Choice.riotIndex}/${wave3Choice.riotTotal})`
+				: '';
+		const description = `As ${objName} enters the battlefield, choose one for Riot${suffix} (CR 702.136a):`;
+		enqueueChoicePrompt(state, {
+			id: uid('prm', state),
+			playerId: chooser.playerId,
+			kind: 'chooseMode',
+			purpose: 'etb_choice',
+			title: `${objName} — Riot${suffix}`,
+			description,
+			continuation: {
+				kind: 'handler',
+				name: 'etb_choice',
+				data: {
+					...baseData,
+					choiceField: 'riot'
+				}
+			},
+			choice: {
+				kind: 'chooseMode',
+				modes: ['Enter with a +1/+1 counter', 'Gain haste'],
+				min: 1,
+				max: 1
+			}
+		});
+		return true;
+	}
+	// --- Track P12: Devour (CR 702.82a) ---
+	const devourKw = findDevourKeywordDef(obj);
+	if (devourKw && obj.devouredCount === undefined) {
+		const devourCands = legalDevourSacrificeCandidates(
+			state,
+			obj,
+			chooser.playerId,
+			devourKw,
+			matchesObjectFilter
+		);
+		if (devourCands.length > 0) {
+			const nLabel = devourKw.devourX ? 'X' : String(devourKw.n ?? 1);
+			const description = `As ${objName} enters the battlefield, you may sacrifice any number of matching permanents for Devour ${nLabel} (CR 702.82a).`;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseObjects',
+				purpose: 'etb_choice',
+				title: `${objName} — Devour ${nLabel}`,
+				description,
+				candidateInstanceIds: devourCands.map((c) => c.instanceId),
+				countRequired: 0,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...(baseData as Record<string, string | number | boolean | null | string[] | Record<string, number>>),
+						choiceField: 'devour'
+					}
+				},
+				choice: {
+					kind: 'chooseObjects',
+					candidates: devourCands.map((c) => c.instanceId),
+					min: 0,
+					max: devourCands.length,
+					zone: 'battlefield',
+					reason: `Choose permanents to sacrifice for ${objName}'s Devour ${nLabel}.`
+				}
+			});
+			return true;
+		}
+		obj.devouredCount = 0;
+	}
+	// --- End Track P12 ---
+	// --- Track P15: Siege Protector (CR 310.11a), Read ahead (CR 702.155a), Amplify (CR 702.38a) ---
+	if (!obj.isFaceDown) {
+		const p15FaceView = resolveObjectFaces(
+			effectiveCardForObject(obj),
+			instanceFaceOptions(obj, 'battlefield')
+		);
+		if (p15FaceView.types.includes('Battle') && !obj.siegeProtectorChosen) {
+			const isSiege = p15FaceView.subtypes.includes('Siege');
+			const candidates = isSiege
+				? state.players.filter((p) => !p.lost && p.playerId !== chooser.playerId)
+				: state.players.filter((p) => !p.lost);
+			if (candidates.length <= 1) {
+				obj.protectorId = candidates[0]?.playerId ?? null;
+				obj.siegeProtectorChosen = true;
+			} else {
+				const description = `As ${objName} enters the battlefield, choose an opponent to protect it (CR 310.11a):`;
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: chooser.playerId,
+					kind: 'chooseMode',
+					purpose: 'etb_choice',
+					title: `${objName} — Choose a Protector`,
+					description,
+					continuation: {
+						kind: 'handler',
+						name: 'etb_choice',
+						data: {
+							...(baseData as Record<
+								string,
+								string | number | boolean | null | string[] | Record<string, number>
+							>),
+							choiceField: 'siegeProtector',
+							candidatePlayerIds: candidates.map((c) => c.playerId)
+						}
+					},
+					choice: {
+						kind: 'chooseMode',
+						modes: candidates.map((c) => `${c.username} (${c.life} life)`),
+						min: 1,
+						max: 1
+					}
+				});
+				return true;
+			}
+		}
+
+		const raSpec = getSagaReadAheadSpec(obj);
+		if (raSpec.hasReadAhead && obj.readAheadChosenChapter === undefined) {
+			if (raSpec.maxChapter <= 1) {
+				obj.readAheadChosenChapter = 1;
+			} else {
+				const modes = Array.from({ length: raSpec.maxChapter }, (_, i) => `Chapter ${i + 1}`);
+				const description = `As ${objName} enters the battlefield, choose a number from 1 to ${raSpec.maxChapter}. It enters with that many lore counters on it (Read ahead, CR 702.155a):`;
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: chooser.playerId,
+					kind: 'chooseMode',
+					purpose: 'etb_choice',
+					title: `${objName} — Read Ahead`,
+					description,
+					continuation: {
+						kind: 'handler',
+						name: 'etb_choice',
+						data: {
+							...(baseData as Record<
+								string,
+								string | number | boolean | null | string[] | Record<string, number>
+							>),
+							choiceField: 'readAhead'
+						}
+					},
+					choice: {
+						kind: 'chooseMode',
+						modes,
+						min: 1,
+						max: 1
+					}
+				});
+				return true;
+			}
+		}
+
+		const amplifyN = getAmplifyTotalN(obj);
+		if (amplifyN > 0 && !obj.amplifyDone) {
+			const ampCands = amplifyMatchingHandCards(state, obj, chooser.hand);
+			if (ampCands.length === 0) {
+				obj.amplifyDone = true;
+			} else {
+				const description = `As ${objName} enters the battlefield, you may reveal any number of creature cards from your hand that share a creature type with it for Amplify ${amplifyN} (CR 702.38a).`;
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: chooser.playerId,
+					kind: 'chooseObjects',
+					purpose: 'etb_choice',
+					title: `${objName} — Amplify ${amplifyN}`,
+					description,
+					candidateInstanceIds: ampCands.map((c) => c.instanceId),
+					countRequired: 0,
+					continuation: {
+						kind: 'handler',
+						name: 'etb_choice',
+						data: {
+							...(baseData as Record<
+								string,
+								string | number | boolean | null | string[] | Record<string, number>
+							>),
+							choiceField: 'amplify',
+							amplifyN
+						}
+					},
+					choice: {
+						kind: 'chooseObjects',
+						candidates: ampCands.map((c) => c.instanceId),
+						min: 0,
+						max: ampCands.length,
+						zone: 'hand',
+						reason: `Choose creature cards in hand to reveal for ${objName}'s Amplify ${amplifyN}.`
+					}
+				});
+				return true;
+			}
+		}
+
+		// --- Track P18a: Tribute N (CR 702.104a) ---
+		const tributeN = getTributeTotalN(obj);
+		if (tributeN > 0 && !obj.tributeDone) {
+			const opps = state.players.filter((p) => !p.lost && p.playerId !== chooser.playerId);
+			if (opps.length === 0) {
+				obj.tributeDone = true;
+				obj.tributePaid = false;
+			} else {
+				if (!obj.tributeOpponentId) {
+					if (opps.length === 1 || chooser.isBot) {
+						obj.tributeOpponentId = opps[0]!.playerId;
+					} else {
+						const description = `As ${objName} enters the battlefield, choose an opponent for Tribute ${tributeN} (CR 702.104a):`;
+						enqueueChoicePrompt(state, {
+							id: uid('prm', state),
+							playerId: chooser.playerId,
+							kind: 'chooseMode',
+							purpose: 'etb_choice',
+							title: `${objName} — Tribute ${tributeN} (Choose Opponent)`,
+							description,
+							continuation: {
+								kind: 'handler',
+								name: 'etb_choice',
+								data: {
+									...(baseData as Record<
+										string,
+										string | number | boolean | null | string[] | Record<string, number>
+									>),
+									choiceField: 'tributeOpponent',
+									candidatePlayerIds: opps.map((o) => o.playerId)
+								}
+							},
+							choice: {
+								kind: 'chooseMode',
+								modes: opps.map((o) => `${o.username} (${o.life} life)`),
+								min: 1,
+								max: 1
+							}
+						});
+						return true;
+					}
+				}
+				const opp = opps.find((o) => o.playerId === obj.tributeOpponentId) ?? opps[0]!;
+				if (opp.isBot) {
+					const pay = chooseBotTributeDecision(state, opp, obj, tributeN);
+					obj.tributeDone = true;
+					obj.tributePaid = pay;
+				} else {
+					const question = `Pay Tribute ${tributeN} for ${objName}? If Yes, ${objName} enters with ${tributeN} +1/+1 counter${tributeN === 1 ? '' : 's'} on it (CR 702.104a).`;
+					enqueueChoicePrompt(state, {
+						id: uid('prm', state),
+						playerId: opp.playerId,
+						kind: 'yesNo',
+						purpose: 'etb_choice',
+						title: `${objName} — Tribute ${tributeN}`,
+						description: question,
+						continuation: {
+							kind: 'handler',
+							name: 'etb_choice',
+							data: {
+								...(baseData as Record<
+									string,
+									string | number | boolean | null | string[] | Record<string, number>
+								>),
+								choiceField: 'tributePay',
+								tributeN,
+								tributeOpponentId: opp.playerId
+							}
+						},
+						choice: {
+							kind: 'yesNo',
+							question
+						}
+					});
+					return true;
+				}
+			}
+		}
+		// --- End Track P18a ---
+	}
+	// --- End Track P15 ---
+	// --- Track P18b: Siege / Anchor Word ETB Choice ("As ~ enters, choose Khans or Dragons.") ---
+	if (!obj.isFaceDown && !obj.chosenAnchorWord) {
+		const anchorSpec = findAnchorWordChoiceSpec(obj);
+		if (anchorSpec) {
+			const objName = resolveObjectFaces(
+				effectiveCardForObject(obj),
+				instanceFaceOptions(obj, 'battlefield')
+			).name;
+			const [wordA, wordB] = anchorSpec;
+			enqueueChoicePrompt(state, {
+				id: uid('prm', state),
+				playerId: chooser.playerId,
+				kind: 'chooseMode',
+				purpose: 'etb_choice',
+				title: `${objName} — Choose ${wordA} or ${wordB}`,
+				description: `As ${objName} enters the battlefield, choose ${wordA} or ${wordB} (CR 614.12c):`,
+				continuation: {
+					kind: 'handler',
+					name: 'etb_choice',
+					data: {
+						...(baseData as Record<
+							string,
+							string | number | boolean | null | string[] | Record<string, number>
+						>),
+						choiceField: 'anchorWord',
+						anchorOptions: [wordA, wordB]
+					}
+				},
+				choice: {
+					kind: 'chooseMode',
+					modes: [wordA, wordB],
+					min: 1,
+					max: 1
+				}
+			});
+			return true;
+		}
+	}
+	// --- End Track P18b ---
+	return false;
+}
+
 function finalizeZoneMove(
 	state: GameState,
 	obj: CardInstance,
@@ -198,11 +1324,60 @@ function finalizeZoneMove(
 	replacedBy: string | null,
 	lki: LeftBattlefieldInfo | undefined,
 	opts: MoveOptions
-): ZoneType {
+): MoveResult {
 	const owner = state.players.find((p) => p.playerId === obj.ownerId);
 	let dest: ZoneType = initialDest;
 	let shuffleDestLibrary = initialShuffle;
+	let effectiveReplacedBy = replacedBy;
 	let promptCommanderRedirect = false;
+
+	// CR 702.84a: "If it would leave the battlefield, exile it instead of putting it anywhere else."
+	// Note: an effect already moving it directly to 'exile' is NOT replaced (CR 702.84a ruling).
+	if (fromZone === 'battlefield' && obj.unearthLeaveExile && dest !== 'exile' && dest !== 'battlefield') {
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		effectiveReplacedBy = effectiveReplacedBy ?? 'Unearth';
+	}
+	// --- Track P7 (CR 614.1a): "If that creature would die this turn, exile it instead." ---
+	if (fromZone === 'battlefield' && dest === 'graveyard' && shouldExileInsteadOfDying(state, obj)) {
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		effectiveReplacedBy = effectiveReplacedBy ?? 'Exile instead of dying';
+	}
+	// --- End Track P7 ---
+	// --- Track P11 (CR 122.1d): Finality counter exiles instead of dying ---
+	if (
+		fromZone === 'battlefield' &&
+		dest === 'graveyard' &&
+		((lki?.counters?.finality ?? 0) > 0 || (obj.counters.finality ?? 0) > 0)
+	) {
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		effectiveReplacedBy = effectiveReplacedBy ?? 'Finality counter';
+	}
+	// --- End Track P11 ---
+	// --- Track P20a (CR 614.1a): Dealt-damage exile-on-die & self exile+extra-turn replacements ---
+	if (
+		fromZone === 'battlefield' &&
+		dest === 'graveyard' &&
+		hasSelfExileAndExtraTurnOnBattlefieldToGraveyard(state, obj)
+	) {
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		effectiveReplacedBy = effectiveReplacedBy ?? obj.card.name;
+		const extraTurnPlayerId = lki?.controllerId || obj.controllerId || obj.ownerId;
+		(state.extraTurnQueue ??= []).push(extraTurnPlayerId);
+	}
+	if (
+		fromZone === 'battlefield' &&
+		dest === 'graveyard' &&
+		shouldExileCreatureDealtDamageBySourceOnDie(state, obj)
+	) {
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		effectiveReplacedBy = effectiveReplacedBy ?? 'Exile instead of dying';
+	}
+	// --- End Track P20a ---
 
 	if (
 		opts.commanderRedirect &&
@@ -218,17 +1393,64 @@ function finalizeZoneMove(
 	}
 
 	// CR 400.3: A card moving to hand, graveyard, library, or command zone always goes to its owner's zone.
-	const effectiveReceiver =
-		(dest === 'hand' || dest === 'graveyard' || dest === 'library' || dest === 'command') && owner
+	let effectiveReceiver =
+		(dest === 'hand' ||
+			dest === 'graveyard' ||
+			dest === 'library' ||
+			dest === 'command' ||
+			(dest === 'exile' && effectiveReplacedBy === 'Madness')) &&
+		owner
 			? owner
 			: receiver;
 
+	const leavingFaceDownLabel =
+		fromZone === 'battlefield' && dest !== 'battlefield' && obj.isFaceDown
+			? (obj.faceDownLabel || 'Face-Down Permanent')
+			: null;
+
+	// --- Track P13: capture earthbentReturn before leaveBattlefieldReset clears it ---
+	const hadEarthbentReturn = Boolean(fromZone === 'battlefield' && obj.earthbentReturn);
+	// --- End Track P13 ---
+	// --- Track P18a: capture merged permanent components before LTB reset clears them (CR 731.3) ---
+	const savedMergedCards =
+		fromZone === 'battlefield' &&
+		dest !== 'battlefield' &&
+		obj.mergedComponents &&
+		obj.mergedComponents.length > 1
+			? [...obj.mergedComponents]
+			: null;
+	const savedMergedTokens =
+		savedMergedCards &&
+		obj.mergedComponentIsToken &&
+		obj.mergedComponentIsToken.length === savedMergedCards.length
+			? [...obj.mergedComponentIsToken]
+			: savedMergedCards
+				? savedMergedCards.map((_, idx) => (idx === 0 ? Boolean(obj.isToken) : false))
+				: null;
+	if (savedMergedCards && savedMergedTokens) {
+		obj.card = savedMergedCards[0]!;
+		obj.printedCard = undefined;
+		obj.isToken = Boolean(savedMergedTokens[0]);
+	}
+	// --- End Track P18a ---
+	// --- Track P18b (CR 713.8): capture melded component pair before LTB reset ---
+	const leavingMeldedComponents =
+		fromZone === 'battlefield' && dest !== 'battlefield' && obj.meldedComponents?.length === 2
+			? obj.meldedComponents
+			: undefined;
+	// --- End Track P18b ---
+	// --- Track P21: preserve pre-exit battlefield objectVersion for LTB linked-object lookups ---
+	if (fromZone === 'battlefield' && dest !== 'battlefield') {
+		obj.lastBattlefieldVersion = obj.objectVersion ?? 1;
+	}
+	// --- End Track P21 ---
 	if (opts.leaveBattlefieldReset) {
 		if (obj.printedCard) {
 			obj.card = obj.printedCard;
 			obj.printedCard = undefined;
 		}
 		if (obj.copiableCard) obj.copiableCard = undefined;
+		obj.copiableState = undefined;
 	}
 	if (opts.setZone !== false) obj.zone = dest;
 	if (opts.leaveBattlefieldReset) {
@@ -240,7 +1462,16 @@ function finalizeZoneMove(
 		obj.tempToughnessMod = 0;
 		obj.grantedKeywords = [];
 		obj.attachedToId = null;
-		obj.counters = createEmptyCounters();
+		// --- Track P22a (CR 122.2): Zone-persistent counters (*Skullbriar* / *Me, the Immortal*) ---
+		if (
+			dest === 'hand' ||
+			dest === 'library' ||
+			Boolean(lki?.lostAllAbilities) ||
+			!cardKeepsCountersAcrossZonesWave8(obj, state)
+		) {
+			obj.counters = createEmptyCounters();
+		}
+		// --- End Track P22a ---
 		obj.phasedOut = false;
 		obj.phasedOutIndirectly = false;
 		obj.isSuspended = false;
@@ -248,24 +1479,413 @@ function finalizeZoneMove(
 		obj.switchedPTCount = 0;
 		obj.usedLoyaltyThisTurn = false;
 		obj.activatedAbilityIdsThisTurn = undefined;
+		obj.usedModalModesThisTurn = undefined;
 		obj.transformed = false;
+		obj.activeFaceIndex = undefined;
+		obj.unlockedFaces = undefined;
 		obj.isFaceDown = false;
+		obj.faceDownSpec = undefined;
+		obj.faceDownLabel = undefined;
 		obj.goadedByPlayerIds = undefined;
+		obj.goadExpirations = undefined;
 		obj.playableFromExileBy = undefined;
 		obj.enteredWithX = undefined;
+		obj.kickedCount = undefined;
+		obj.kickedTags = undefined;
+		obj.kickedTagCounts = undefined;
+		obj.prototyped = undefined;
+		obj.evoked = undefined;
+		obj.escaped = undefined;
+		obj.manaColorsSpent = undefined;
+		obj.foretold = undefined;
+		obj.blitzed = undefined;
+		obj.saddledThisTurn = undefined;
+		obj.saddledThisTurnByIds = undefined;
+		obj.unearthLeaveExile = undefined;
+		obj.regenerationShields = undefined;
+		obj.cantBeRegeneratedThisTurn = undefined;
+		obj.crewedThisTurnByIds = undefined;
+		obj.defaultControllerId = undefined;
+		// --- Track P4 (CR 400.7) ---
+		obj.doesntUntapNextUntapStep = undefined;
+		obj.exertedThisTurn = undefined;
+		obj.chosenSubType = undefined;
+		obj.chosenColor = undefined;
+		// --- Track P5 (CR 701.37b / 400.7) ---
+		obj.isMonstrous = undefined;
+		obj.monstrosityX = undefined;
+		// --- Track P7 (CR 400.7) ---
+		obj.wasCast = undefined;
+		obj.castFromZone = undefined;
+		// --- Track P14 (CR 400.7 / 723.3b) ---
+		obj.isPrepared = undefined;
+		// --- End Track P14 ---
+		// --- Track P9 (CR 400.7) ---
+		obj.cameUnderControlAt = undefined;
+		obj.dashed = undefined;
+		obj.riotHaste = undefined;
+		obj.riotChoicesDone = undefined;
+		obj.unleashChoiceDone = undefined;
+		// --- Track P10 (CR 400.7) ---
+		obj.isSuspected = undefined;
+		obj.detainedByPlayerIds = undefined;
+		obj.damagedByThisTurn = undefined;
+		obj.manaSpentCount = undefined;
+		// --- End Track P10 ---
+		// --- Track P11 (CR 400.7) ---
+		obj.chosenCardName = undefined;
+		obj.etbCounterChoiceDone = undefined;
+		obj.counterTimestamps = undefined;
+		// --- End Track P11 ---
+		// --- Track P13 (CR 400.7) ---
+		delete obj.enteredThisTurn;
+		delete obj.dealtDamageThisTurn;
+		delete obj.targetedByControllerIdsThisTurn;
+		delete obj.earthbentReturn;
+		delete obj.canAttackAsThoughNoDefenderThisTurn;
+		delete obj.ringBlockedForPlayerIds;
+		// --- End Track P13 ---
+		// --- Track P14 & P15 (CR 400.7) ---
+		delete obj.protectorId;
+		delete obj.siegeProtectorChosen;
+		obj.isPrepared = undefined;
+		delete obj.enteredTurnSerial;
+		delete obj.readAheadChosenChapter;
+		delete obj.castWithImpending;
+		delete obj.compleatedLifePaidCount;
+		delete obj.giftPromised;
+		delete obj.giftRecipientId;
+		delete obj.craftedWithCards;
+		delete obj.encodedSpellCards;
+		delete obj.provokeMustBlockId;
+		delete obj.usedOncePerGameAbilityIds;
+		delete obj.amplifyDone;
+		// --- End Track P14 & P15 ---
+		// --- Track P18a (CR 400.7 / 731.3 / 702.95e) ---
+		delete obj.mergedComponents;
+		delete obj.mergedComponentIsToken;
+		delete obj.mutateCount;
+		delete obj.pairedWithId;
+		delete obj.tributeDone;
+		delete obj.tributeOpponentId;
+		delete obj.tributePaid;
+		delete obj.hauntedByCards;
+		delete obj.hasEnduringStory;
+		// --- End Track P18a ---
+		// --- Track P18b (CR 400.7 / 710.2 / 713.8) ---
+		delete obj.isFlipped;
+		delete obj.isHarnessed;
+		delete obj.meldedComponents;
+		delete obj.usedModalModesPermanent;
+		delete obj.chosenAnchorWord;
+		delete obj.loyaltyActivationsThisTurn;
+		if (leavingMeldedComponents) {
+			obj.card = leavingMeldedComponents[0];
+			obj.printedCard = undefined;
+		}
+		// --- End Track P18b ---
+		// --- Track P16a (CR 400.7) ---
+		delete obj.assimilatedBy;
+		delete obj.doesntUntapWhileSource;
+		delete obj.assignsNoCombatDamageThisTurn;
+		delete obj.mustAttackThisTurn;
+		delete obj.mustBeBlockedThisTurn;
+		delete obj.mustBlockThisTurn;
+		delete obj.cantBlockAttackerIdsThisTurn;
+		// --- End Track P16a ---
+		// --- Track P20a (CR 400.7) ---
+		delete obj.chosenPlayerId;
+		delete obj.chosenParity;
+		// --- End Track P20a ---
+		// --- Track P21 (CR 400.7) ---
+		delete obj.auraReanimatedHostId;
+		delete obj.reanimatedByAura;
+		delete obj.castAtNonSorceryTiming;
+		delete obj.sacrificeAtNextCleanupStep;
+		delete obj.spaceSector;
+		// --- End Track P21 ---
+		// --- Track P22a (CR 400.7 / CR 903.4) ---
+		delete obj.chosenCardType;
+		delete obj.chosenNumber;
+		delete obj.chosenColors;
+		delete obj.chosenPlayerIds;
+		delete obj.chosenObjectId;
+		delete obj.dealtDamageEver;
+		delete obj.attackedPlayerIdsThisTurn;
+		if (obj.preGameChosenColor) obj.chosenColor = obj.preGameChosenColor;
+		// --- End Track P22a ---
+		const prevObjVersion = obj.objectVersion || 1;
+		const pruneLeftPerm = <T extends { affected: Array<{ instanceId: string; objectVersion?: number }> }>(
+			list: T[] | undefined
+		): T[] | undefined => {
+			if (!list || list.length === 0) return list;
+			const next: T[] = [];
+			for (const eff of list) {
+				const remaining = eff.affected.filter(
+					(a) => !(a.instanceId === obj.instanceId && (a.objectVersion === undefined || a.objectVersion === prevObjVersion))
+				);
+				if (remaining.length > 0) {
+					next.push(remaining.length === eff.affected.length ? eff : { ...eff, affected: remaining });
+				}
+			}
+			return next.length > 0 ? next : undefined;
+		};
+		state.timedContinuousEffects = pruneLeftPerm(state.timedContinuousEffects);
+		state.timedKeywordEffects = pruneLeftPerm(state.timedKeywordEffects);
+	}
+	if (dest !== 'battlefield') {
+		obj.kickedCount = undefined;
+		obj.kickedTags = undefined;
+		obj.kickedTagCounts = undefined;
+		obj.evoked = undefined;
+		obj.escaped = undefined;
+		obj.foretold = undefined;
+		obj.blitzed = undefined;
+		obj.saddledThisTurn = undefined;
+		obj.saddledThisTurnByIds = undefined;
+		obj.unearthLeaveExile = undefined;
+		obj.defaultControllerId = undefined;
+		// --- Track P4 (CR 400.7) ---
+		obj.doesntUntapNextUntapStep = undefined;
+		obj.exertedThisTurn = undefined;
+		obj.chosenSubType = undefined;
+		obj.chosenColor = undefined;
+		// --- Track P5 (CR 701.37b / 400.7) ---
+		obj.isMonstrous = undefined;
+		obj.monstrosityX = undefined;
+		// --- Track P7 (CR 400.7) ---
+		obj.wasCast = undefined;
+		obj.castFromZone = undefined;
+		// --- Track P14 (CR 400.7 / 723.3b) ---
+		obj.isPrepared = undefined;
+		// --- End Track P14 ---
+		// --- Track P9 (CR 400.7) ---
+		obj.cameUnderControlAt = undefined;
+		obj.riotHaste = undefined;
+		obj.riotChoicesDone = undefined;
+		obj.unleashChoiceDone = undefined;
+		// --- Track P10 (CR 400.7) ---
+		obj.isSuspected = undefined;
+		obj.detainedByPlayerIds = undefined;
+		obj.damagedByThisTurn = undefined;
+		// --- End Track P10 ---
+		// --- Track P12 (CR 400.7 / 717.2b / 720.3b) ---
+		obj.classLevel = undefined;
+		obj.isSolved = undefined;
+		obj.isRenowned = undefined;
+		obj.isBestowed = undefined;
+		obj.exhaustedAbilityIds = undefined;
+		obj.creatureAttackedThisTurn = undefined;
+		obj.devouredCount = undefined;
+		obj.encoreMustAttackPlayerId = undefined;
+		// --- End Track P12 ---
+		// --- Track P11 (CR 400.7) ---
+		obj.chosenCardName = undefined;
+		obj.etbCounterChoiceDone = undefined;
+		obj.counterTimestamps = undefined;
+		// --- End Track P11 ---
+		// --- Track P13 (CR 400.7) ---
+		delete obj.enteredThisTurn;
+		delete obj.dealtDamageThisTurn;
+		delete obj.targetedByControllerIdsThisTurn;
+		delete obj.earthbentReturn;
+		delete obj.canAttackAsThoughNoDefenderThisTurn;
+		delete obj.ringBlockedForPlayerIds;
+		// --- End Track P13 ---
+		// --- Track P14 & P15 (CR 400.7) ---
+		delete obj.protectorId;
+		delete obj.siegeProtectorChosen;
+		obj.isPrepared = undefined;
+		delete obj.enteredTurnSerial;
+		delete obj.readAheadChosenChapter;
+		delete obj.craftedWithCards;
+		delete obj.encodedSpellCards;
+		delete obj.provokeMustBlockId;
+		delete obj.usedOncePerGameAbilityIds;
+		delete obj.amplifyDone;
+		// --- End Track P14 & P15 ---
+		// --- Track P18a (CR 400.7 / 731.3 / 702.95e) ---
+		delete obj.mergedComponents;
+		delete obj.mergedComponentIsToken;
+		delete obj.mutateCount;
+		delete obj.pairedWithId;
+		delete obj.tributeDone;
+		delete obj.tributeOpponentId;
+		delete obj.tributePaid;
+		delete obj.hauntedByCards;
+		delete obj.hasEnduringStory;
+		// --- End Track P18a ---
+		// --- Track P18b (CR 400.7 / 710.2 / 713.8) ---
+		delete obj.isFlipped;
+		delete obj.isHarnessed;
+		delete obj.meldedComponents;
+		delete obj.usedModalModesPermanent;
+		delete obj.chosenAnchorWord;
+		delete obj.loyaltyActivationsThisTurn;
+		if (leavingMeldedComponents) {
+			obj.card = leavingMeldedComponents[0];
+			obj.printedCard = undefined;
+		}
+		// --- End Track P18b ---
+		// --- Track P16a (CR 400.7) ---
+		delete obj.assimilatedBy;
+		delete obj.doesntUntapWhileSource;
+		delete obj.assignsNoCombatDamageThisTurn;
+		delete obj.mustAttackThisTurn;
+		delete obj.mustBeBlockedThisTurn;
+		delete obj.mustBlockThisTurn;
+		delete obj.cantBlockAttackerIdsThisTurn;
+		// --- End Track P16a ---
+		// --- Track P20a (CR 400.7) ---
+		delete obj.chosenPlayerId;
+		delete obj.chosenParity;
+		// --- End Track P20a ---
+		// --- Track P21 (CR 400.7) ---
+		delete obj.auraReanimatedHostId;
+		delete obj.reanimatedByAura;
+		delete obj.sacrificeAtNextCleanupStep;
+		delete obj.spaceSector;
+		// --- End Track P21 ---
+		// --- Track P22a (CR 400.7 / CR 122.2 / CR 903.4) ---
+		delete obj.chosenCardType;
+		delete obj.chosenNumber;
+		delete obj.chosenColors;
+		delete obj.chosenPlayerIds;
+		delete obj.chosenObjectId;
+		delete obj.dealtDamageEver;
+		delete obj.attackedPlayerIdsThisTurn;
+		if (dest === 'hand' || dest === 'library') {
+			obj.counters = createEmptyCounters();
+		}
+		if (obj.preGameChosenColor) obj.chosenColor = obj.preGameChosenColor;
+		// --- End Track P22a ---
+		if (dest !== 'stack') {
+			delete obj.castAtNonSorceryTiming;
+			obj.manaColorsSpent = undefined;
+			// --- Track P10 ---
+			obj.manaSpentCount = undefined;
+			// --- End Track P10 ---
+			// --- Track P15 ---
+			delete obj.castWithImpending;
+			delete obj.compleatedLifePaidCount;
+			delete obj.giftPromised;
+			delete obj.giftRecipientId;
+			delete obj.enteredWithX;
+			// --- End Track P15 ---
+			obj.dashed = undefined;
+			obj.prototyped = undefined;
+			obj.activeFaceIndex = undefined;
+			obj.transformed = false;
+		}
 	}
 	if (opts.controllerId !== undefined) obj.controllerId = opts.controllerId;
+	const leavingVersion = obj.objectVersion || 1;
+	if (fromZone === 'exile') {
+		// CR 400.7: Leaving exile clears linked-exile, foretell, plot, warp, and until-source-leaves tracking.
+		obj.exiledBy = undefined;
+		obj.untilSourceLeavesReturn = undefined;
+		if (dest !== 'exile') {
+			obj.madnessOwnerId = undefined;
+			obj.foretoldByPlayerId = undefined;
+			obj.foretoldTurnNumber = undefined;
+			obj.plottedByPlayerId = undefined;
+			obj.plottedTurnNumber = undefined;
+			obj.warpedByOwnerId = undefined;
+			obj.warpedTurnSerial = undefined;
+			// --- Track P18a ---
+			delete obj.hauntingTargetId;
+			delete obj.hauntingTargetVersion;
+			// --- End Track P18a ---
+			// --- Track P22a ---
+			if (dest !== 'stack') {
+				delete obj.grantedForetellCost;
+			}
+			// --- End Track P22a ---
+			if (dest !== 'battlefield' && dest !== 'stack' && obj.isFaceDown) {
+				obj.isFaceDown = false;
+				obj.faceDownSpec = undefined;
+				obj.faceDownLabel = undefined;
+			}
+		}
+	}
+	if (fromZone !== dest) {
+		// CR 400.7 / CR 701.20d: Zone change creates a new object and clears revealed-hand visibility
+		// as well as any once-per-turn trigger tracking in the destination zone (CR 603.2i).
+		obj.knownToPlayerIds = undefined;
+		// --- Track P12 ---
+		obj.discardedByPlayerIdThisTurn = undefined;
+		obj.discardedTurnSerial = undefined;
+		// --- End Track P12 ---
+		// --- Track P13 ---
+		if (fromZone === 'graveyard') {
+			delete obj.playableFromGraveyardBy;
+		}
+		if (fromZone === 'exile') {
+			delete obj.airbentCastPermission;
+		}
+		if (fromZone === 'battlefield' && dest !== 'battlefield') {
+			for (const pl of state.players) {
+				if (pl.ringBearerId === obj.instanceId) {
+					pl.ringBearerId = null;
+					noteLayerInputsChanged(state);
+				}
+			}
+			if (lki && !lki.typeLine.split(/[\s—]+/).includes('Land')) {
+				for (const pl of state.players) {
+					pl.nonlandPermanentLeftThisTurn = true;
+				}
+				noteLayerInputsChanged(state);
+			}
+		}
+		// --- End Track P13 ---
+		if (state.triggeredOnceThisTurn?.length) {
+			const prefix = `${obj.instanceId}:${dest}:`;
+			const remaining = state.triggeredOnceThisTurn.filter((k) => !k.startsWith(prefix));
+			state.triggeredOnceThisTurn = remaining.length > 0 ? remaining : undefined;
+		}
+		// --- Track P16b ---
+		clearDoThisOnceKeysForObject(state, obj.instanceId);
+		if (fromZone === 'graveyard') {
+			const gyOwner = state.players.find((p) => p.playerId === (fromPlayerId ?? obj.ownerId));
+			if (gyOwner && !gyOwner.cardLeftGraveyardThisTurn) {
+				gyOwner.cardLeftGraveyardThisTurn = true;
+				noteLayerInputsChanged(state);
+			}
+		}
+		// --- End Track P16b ---
+	}
 	if (opts.bumpVersion) obj.objectVersion = (obj.objectVersion || 1) + 1;
 	if (opts.newTimestamp) obj.enteredTimestamp = allocateTimestamp(state);
 	// CR 306.5b: A planeswalker entering the battlefield receives starting loyalty counters (with counter multipliers).
 	if (dest === 'battlefield') {
-		const effectiveCard = obj.copiableCard ?? obj.card;
+		if (!obj.defaultControllerId) {
+			obj.defaultControllerId = opts.controllerId ?? effectiveReceiver.playerId;
+		}
+		// --- Track P15: Daybound night-ETB replacement (CR 702.145b) ---
+		if ((fromZone !== 'battlefield' || Boolean(opts.leaveBattlefieldReset)) && !obj.isFaceDown) {
+			applyDayboundEtbReplacement(state, obj);
+		}
+		// --- End Track P15 ---
+		// --- Track P18b: Entered flipped (CR 710.1 / Homura, Human Ascendant) ---
+		if (opts.enteredFlipped && !obj.isFaceDown) {
+			obj.isFlipped = true;
+			obj.activeFaceIndex = 1;
+		}
+		// --- End Track P18b ---
+		const bfView = resolveObjectFaces(
+			effectiveCardForObject(obj),
+			instanceFaceOptions(obj, 'battlefield')
+		);
 		if (
-			effectiveCard.typeLine.includes('Planeswalker') &&
-			effectiveCard.loyalty !== undefined &&
+			!bfView.isFaceDown &&
+			bfView.types.includes('Planeswalker') &&
+			bfView.loyalty !== undefined &&
 			(obj.counters.loyalty || 0) === 0
 		) {
-			const baseLoyalty = parseInt(String(effectiveCard.loyalty), 10) || 0;
+			// --- Track P15 (CR 702.150a Compleated) ---
+			const compleatedDrop = faceHasCompleated(obj) ? 2 * (obj.compleatedLifePaidCount ?? 0) : 0;
+			const baseLoyalty = Math.max(0, bfView.loyalty - compleatedDrop);
+			// --- End Track P15 ---
 			if (baseLoyalty > 0) {
 				const mult = counterMultiplier(state, obj, 'loyalty');
 				obj.counters.loyalty = baseLoyalty * mult;
@@ -277,16 +1897,608 @@ function finalizeZoneMove(
 	const ceases =
 		opts.ceaseToExist === 'always' ||
 		(opts.ceaseToExist === 'tokens' && obj.isToken && dest !== 'battlefield');
+	const isEnteringBattlefield =
+		dest === 'battlefield' &&
+		!ceases &&
+		(fromZone !== 'battlefield' || Boolean(opts.leaveBattlefieldReset));
+	let wave3ExtraCounters = 0;
+	// --- Track P11 ---
+	let chosenEtbCounter: CounterType | undefined;
+	// --- End Track P11 ---
+	// --- Track P15 ---
+	let wave5AmplifyCounters = 0;
+	// --- End Track P15 ---
+	if (isEnteringBattlefield) {
+		// --- Track P9 ---
+		obj.cameUnderControlAt = allocateEchoTick(state);
+		obj.lastKnownCounters = undefined;
+		obj.lastKnownPower = undefined;
+		obj.lastKnownToughness = undefined;
+		// --- Track P13 ---
+		obj.enteredThisTurn = true;
+		// --- End Track P13 ---
+		// --- Track P15 ---
+		if (!obj.isFaceDown) {
+			obj.enteredTurnSerial = state.turnSerial ?? state.turnNumber;
+		}
+		// --- End Track P15 ---
+	}
+	if (isEnteringBattlefield && !obj.isFaceDown) {
+		const ctrlId = opts.controllerId ?? obj.controllerId ?? effectiveReceiver.playerId;
+		let ctrl = state.players.find((p) => p.playerId === ctrlId) ?? effectiveReceiver;
+		obj.controllerId = ctrl.playerId;
+
+		const buildPendingEtbData = (): Record<string, unknown> => {
+			const resolvedInsert = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
+			const insertSpec =
+				typeof resolvedInsert === 'number' ||
+				resolvedInsert === 'start' ||
+				resolvedInsert === 'end' ||
+				resolvedInsert === 'deferred'
+					? resolvedInsert
+					: 'end';
+			return {
+				objectId: obj.instanceId,
+				toPlayerId: effectiveReceiver.playerId,
+				fromZone,
+				fromPlayerId,
+				lkiJson: lki ? JSON.stringify(lki) : null,
+				setZone: opts.setZone !== false,
+				emit: opts.emit !== false,
+				insertSpec,
+				sbaLogJson: opts.sbaLog ? JSON.stringify(opts.sbaLog) : null,
+				replacedBy: effectiveReplacedBy,
+				wave3ExtraCounters: 0,
+				withCountersJson: opts.withCounters ? JSON.stringify(opts.withCounters) : null,
+				...(opts.resumeStackItemId ? { resumeStackItemId: opts.resumeStackItemId } : {}),
+				...(opts.resumeStepIndex !== undefined ? { resumeStepIndex: opts.resumeStepIndex } : {})
+			};
+		};
+
+		// --- Track P20a (CR 616.1b): "~ enters under the control of an opponent of your choice." ---
+		if (hasSelfEnterUnderOpponentControl(obj, state, ctrl.playerId)) {
+			const oppCands = getLegalEtbPlayerCandidates(state, ctrl.playerId, 'opponent');
+			if (oppCands.length === 1 || (oppCands.length > 1 && ctrl.isBot)) {
+				const chosenOppId =
+					ctrl.isBot && oppCands.length > 1
+						? (chooseBotPlayerForEtb(state, ctrl, 'opponent') ?? oppCands[0].playerId)
+						: oppCands[0].playerId;
+				const chosenOpp = oppCands.find((o) => o.playerId === chosenOppId) ?? oppCands[0];
+				effectiveReceiver = chosenOpp;
+				ctrl = chosenOpp;
+				obj.controllerId = chosenOpp.playerId;
+				obj.defaultControllerId = chosenOpp.playerId;
+			} else if (oppCands.length >= 2) {
+				const objName = resolveObjectFaces(
+					effectiveCardForObject(obj),
+					instanceFaceOptions(obj, 'battlefield')
+				).name;
+				const baseData = buildPendingEtbData();
+				const description = `As ${objName} enters the battlefield, choose an opponent under whose control it enters (CR 616.1b):`;
+				enqueueChoicePrompt(state, {
+					id: uid('prm', state),
+					playerId: ctrl.playerId,
+					kind: 'chooseMode',
+					purpose: 'etb_choice',
+					title: `${objName} — Choose Opponent Controller`,
+					description,
+					continuation: {
+						kind: 'handler',
+						name: 'etb_choice',
+						data: {
+							...(baseData as Record<
+								string,
+								string | number | boolean | null | string[] | Record<string, number>
+							>),
+							choiceField: 'opponentControl',
+							candidatePlayerIds: oppCands.map((o) => o.playerId)
+						}
+					},
+					choice: {
+						kind: 'chooseMode',
+						modes: oppCands.map((o) => `${o.username} (${o.life} life)`),
+						min: 1,
+						max: 1
+					}
+				});
+				obj.zone = fromZone ?? 'hand';
+				(state.pendingZoneMoves ??= []).push(obj);
+				return 'pending';
+			}
+		}
+		// --- End Track P20a ---
+
+		// --- Track P8: Non-stack Generalized Clone self-ETB replacement (CR 707.5, 707.9) ---
+		if (fromZone !== 'stack' && !obj.copiableState && !obj.copiableCard) {
+			const cloneSpec = findSelfCloneReplacementSpec(
+				effectiveCardForObject(obj),
+				instanceFaceOptions(obj, 'battlefield')
+			);
+			if (cloneSpec) {
+				const cloneCandidates = findLegalCloneCandidates(
+					state,
+					ctrl.playerId,
+					obj,
+					cloneSpec.copyOf
+				);
+				if (cloneCandidates.length > 0) {
+					if (ctrl.isBot) {
+						const origCard = obj.printedCard ?? obj.card;
+						const displayName = applyCopiedPermanentToInstance(
+							obj,
+							cloneCandidates[0],
+							cloneSpec.copyModifications,
+							origCard,
+							state
+						);
+						// --- Track P20a ---
+						applyWave7CopyModificationExtras(obj, cloneSpec.copyModifications);
+						// --- End Track P20a ---
+						if (cloneSpec.tapped) obj.tapped = true;
+						ensureCopiedPlaneswalkerStartingLoyalty(state, obj);
+						applySelfEtbReplacements(state, obj);
+						pushEtbRuleLog(
+							state,
+							ctrl.playerId,
+							`${origCard.name} entered the battlefield as a copy of ${displayName} (CR 707.2).`
+						);
+					} else {
+						const baseData = buildPendingEtbData();
+						if (enqueueNextEtbChoicePrompt(state, obj, ctrl, null, baseData, cloneSpec)) {
+							obj.zone = fromZone ?? 'hand';
+							(state.pendingZoneMoves ??= []).push(obj);
+							return 'pending';
+						}
+					}
+				}
+			}
+		}
+
+		// --- Track P8: Conditional ETB tapped duals (Fast, Slow, Check, Tango, Crowd) ---
+		if (!obj.tapped && cardEntersTapped(effectiveCardForObject(obj), state, ctrl.playerId, obj)) {
+			obj.tapped = true;
+		}
+		// --- Track P11 (CR 614.12): External enters-tapped replacements ---
+		if (
+			!obj.tapped &&
+			withHypotheticalBattlefieldPresence(state, ctrl, obj, () =>
+				externalPermanentEntersTapped(state, obj, ctrl.playerId)
+			)
+		) {
+			obj.tapped = true;
+		}
+		// --- End Track P11 ---
+		// --- Track P20a (CR 614.12): External enters-untapped replacements ---
+		if (
+			obj.tapped &&
+			withHypotheticalBattlefieldPresence(state, ctrl, obj, () =>
+				externalPermanentEntersUntapped(state, obj, ctrl.playerId)
+			)
+		) {
+			obj.tapped = false;
+		}
+		// --- End Track P20a ---
+
+		const etbSpec = selfEtbChoiceSpec(state, obj);
+		if (ctrl.isBot) {
+			if (etbSpec) {
+				if (etbSpec.chooseColor && !obj.chosenColor) {
+					obj.chosenColor = chooseBotBestColor(state, ctrl, etbSpec.chooseColor.exclude, obj);
+				}
+				if (etbSpec.chooseSubType === 'creature' && !obj.chosenSubType) {
+					obj.chosenSubType = chooseBotBestCreatureSubtype(state, ctrl, obj);
+				}
+				// --- Track P20a ---
+				if (
+					(etbSpec.chooseSubType === 'basicLand' || etbSpec.chooseSubType === 'land') &&
+					!obj.chosenSubType
+				) {
+					obj.chosenSubType = chooseBotLandSubtype(state, ctrl, etbSpec.chooseSubType);
+				}
+				if (etbSpec.choosePlayer && !obj.chosenPlayerId) {
+					obj.chosenPlayerId = chooseBotPlayerForEtb(state, ctrl, etbSpec.choosePlayer);
+				}
+				if (etbSpec.chooseParity && !obj.chosenParity) {
+					obj.chosenParity = 'odd';
+				}
+				// --- End Track P20a ---
+				// --- Track P11 ---
+				if (etbSpec.chooseCardName && !obj.chosenCardName) {
+					// --- Track P22a ---
+					if (etbSpec.lookAtOpponentHandBeforeCardName) {
+						revealOpponentHandForEtbLook(state, ctrl.playerId);
+					}
+					// --- End Track P22a ---
+					obj.chosenCardName = chooseBotBestCardName(
+						state,
+						ctrl,
+						obj,
+						Boolean(etbSpec.chooseCardName.nonlandOnly)
+					);
+				}
+				// --- Track P22a ---
+				if (etbSpec.chooseCardType && !obj.chosenCardType) {
+					if (etbSpec.chooseCardType.lookAtOpponentHand) {
+						revealOpponentHandForEtbLook(state, ctrl.playerId);
+					}
+					const opts = buildCardTypeChoiceOptions(etbSpec.chooseCardType);
+					obj.chosenCardType = chooseBotBestCardType(state, ctrl.playerId, opts);
+				}
+				if (etbSpec.chooseNumber && obj.chosenNumber === undefined) {
+					obj.chosenNumber = chooseBotBestNumber(state, ctrl.playerId, etbSpec.chooseNumber);
+				}
+				if (etbSpec.chooseTwoColors && !obj.chosenColors) {
+					const pair = chooseBotTwoColors(state, ctrl.playerId);
+					obj.chosenColors = pair;
+					if (!obj.chosenColor) obj.chosenColor = pair[0];
+				}
+				if (etbSpec.chooseTwoPlayers && !obj.chosenPlayerIds) {
+					const pids = chooseBotTwoPlayers(state, ctrl.playerId);
+					obj.chosenPlayerIds = pids;
+					if (!obj.chosenPlayerId && pids.length > 0) obj.chosenPlayerId = pids[0];
+				}
+				if (etbSpec.chooseObjectOnBattlefield && !obj.chosenObjectId) {
+					obj.chosenObjectId = chooseBotBestEtbObject(
+						state,
+						ctrl.playerId,
+						obj,
+						etbSpec.chooseObjectOnBattlefield.filter
+					);
+				}
+				if (
+					etbSpec.chooseSubTypeOptions &&
+					etbSpec.chooseSubTypeOptions.length > 0 &&
+					!obj.chosenSubType
+				) {
+					obj.chosenSubType = etbSpec.chooseSubTypeOptions[0];
+				}
+				// --- End Track P22a ---
+				if (
+					etbSpec.chooseCounter &&
+					etbSpec.chooseCounter.length > 0 &&
+					!obj.etbCounterChoiceDone
+				) {
+					obj.etbCounterChoiceDone = true;
+					chosenEtbCounter = etbSpec.chooseCounter[0];
+				}
+				// --- End Track P11 ---
+				if (etbSpec.payLifeOrEnterTapped !== undefined) {
+					const lifeCost = etbSpec.payLifeOrEnterTapped;
+					const objName = resolveObjectFaces(
+						effectiveCardForObject(obj),
+						instanceFaceOptions(obj, 'battlefield')
+					).name;
+					if (
+						!playerCantPayLifeForEtb(state, ctrl, lifeCost) &&
+						!obj.tapped &&
+						botShouldPayShocklandLife(state, ctrl, obj, lifeCost)
+					) {
+						ctrl.life -= lifeCost;
+						noteLayerInputsChanged(state);
+						pushEtbRuleLog(
+							state,
+							ctrl.playerId,
+							`${ctrl.username} paid ${lifeCost} life for ${objName}.`
+						);
+					} else {
+						obj.tapped = true;
+					}
+				}
+				if (etbSpec.revealFromHandOrEnterTapped) {
+					const revealCandidates = ctrl.hand.filter(
+						(c) =>
+							c.instanceId !== obj.instanceId &&
+							matchesObjectFilter(c, etbSpec.revealFromHandOrEnterTapped!, {
+								state,
+								controllerId: ctrl.playerId,
+								source: obj,
+								zone: 'hand'
+							})
+					);
+					if (revealCandidates.length > 0 && !obj.tapped) {
+						const objName = resolveObjectFaces(
+							effectiveCardForObject(obj),
+							instanceFaceOptions(obj, 'battlefield')
+						).name;
+						markHandCardRevealedToAll(state, revealCandidates[0]);
+						pushEtbRuleLog(
+							state,
+							ctrl.playerId,
+							`${ctrl.username} revealed ${revealCandidates[0].card.name} from hand for ${objName}.`
+						);
+					} else {
+						obj.tapped = true;
+					}
+				}
+			}
+			const botWave3 = applyBotWave3EtbChoices(state, obj, ctrl);
+			wave3ExtraCounters = botWave3.unleashCounters + botWave3.riotCounters;
+			// --- Track P12 ---
+			const botDevourKw = findDevourKeywordDef(obj);
+			if (botDevourKw && obj.devouredCount === undefined) {
+				const dCands = legalDevourSacrificeCandidates(
+					state,
+					obj,
+					ctrl.playerId,
+					botDevourKw,
+					matchesObjectFilter
+				);
+				const fodder = dCands.filter((c) => c.isToken).map((c) => c.instanceId);
+				if (fodder.length > 0) {
+					executeDevourSacrifices(state, obj, ctrl, fodder);
+				} else {
+					obj.devouredCount = 0;
+				}
+			}
+			// --- End Track P12 ---
+			// --- Track P15: Bot ETB choices for Siege protector, Read ahead, and Amplify ---
+			const botP15View = resolveObjectFaces(
+				effectiveCardForObject(obj),
+				instanceFaceOptions(obj, 'battlefield')
+			);
+			if (botP15View.types.includes('Battle') && !obj.siegeProtectorChosen) {
+				const isSiege = botP15View.subtypes.includes('Siege');
+				const cands = isSiege
+					? state.players.filter((p) => !p.lost && p.playerId !== ctrl.playerId)
+					: state.players.filter((p) => !p.lost);
+				obj.siegeProtectorChosen = true;
+				if (cands.length === 0) {
+					obj.protectorId = null;
+				} else {
+					const sorted = [...cands].sort((a, b) => a.life - b.life || a.seatIndex - b.seatIndex);
+					obj.protectorId = sorted[0].playerId;
+				}
+			}
+			const botRaSpec = getSagaReadAheadSpec(obj);
+			if (botRaSpec.hasReadAhead && obj.readAheadChosenChapter === undefined) {
+				obj.readAheadChosenChapter = botRaSpec.maxChapter;
+			}
+			const botAmpN = getAmplifyTotalN(obj);
+			if (botAmpN > 0 && !obj.amplifyDone) {
+				obj.amplifyDone = true;
+				const ampCands = amplifyMatchingHandCards(state, obj, ctrl.hand);
+				for (const hc of ampCands) {
+					markHandCardRevealedToAll(state, hc);
+				}
+				wave5AmplifyCounters = botAmpN * ampCands.length;
+			}
+			// --- End Track P15 ---
+			// --- Track P18b: Bot ETB choice for Siege / Anchor Word ---
+			const botAnchorSpec = findAnchorWordChoiceSpec(obj);
+			if (botAnchorSpec && !obj.chosenAnchorWord) {
+				obj.chosenAnchorWord = botAnchorSpec[0];
+			}
+			// --- End Track P18b ---
+			// --- Track P18a: Tribute N (CR 702.104a) — opponent may be human even when caster is a bot ---
+			const botTribN = getTributeTotalN(obj);
+			if (botTribN > 0 && !obj.tributeDone) {
+				const baseData = buildPendingEtbData();
+				if (enqueueNextEtbChoicePrompt(state, obj, ctrl, null, baseData, null)) {
+					obj.zone = fromZone ?? 'hand';
+					(state.pendingZoneMoves ??= []).push(obj);
+					return 'pending';
+				}
+			}
+			// --- End Track P18a ---
+		} else {
+			const baseData = buildPendingEtbData();
+			if (enqueueNextEtbChoicePrompt(state, obj, ctrl, etbSpec, baseData, null)) {
+				obj.zone = fromZone ?? 'hand';
+				(state.pendingZoneMoves ??= []).push(obj);
+				return 'pending';
+			}
+		}
+	}
 	if (dest !== 'stack' && !ceases) {
 		const at = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
 		if (at !== 'deferred') insertInto(effectiveReceiver[dest as PlayerZone], obj, at);
+		// --- Track P12 ---
+		if (dest === 'graveyard' && fromZone !== 'graveyard') {
+			state.cardsPutIntoGraveyardThisTurn = (state.cardsPutIntoGraveyardThisTurn ?? 0) + 1;
+			noteLayerInputsChanged(state);
+		}
+		// --- End Track P12 ---
+		// --- Track P18b (CR 713.8): Melded permanent leaving battlefield puts BOTH component cards into dest ---
+		if (leavingMeldedComponents && at !== 'deferred') {
+			const secondComp: CardInstance = {
+				instanceId: uid('ci', state),
+				card: leavingMeldedComponents[1],
+				ownerId: obj.ownerId,
+				controllerId: obj.ownerId,
+				zone: dest,
+				tapped: false,
+				summoningSick: false,
+				damageMarked: 0,
+				deathtouchDamageMarked: false,
+				counters: createEmptyCounters(),
+				tempPowerMod: 0,
+				tempToughnessMod: 0,
+				grantedKeywords: [],
+				attachedToId: null,
+				isToken: false,
+				isCommander: false,
+				commanderCastCount: 0,
+				usedLoyaltyThisTurn: false,
+				transformed: false,
+				objectVersion: 1
+			};
+			insertInto(effectiveReceiver[dest as PlayerZone], secondComp, at);
+			if (dest === 'graveyard' && fromZone !== 'graveyard') {
+				state.cardsPutIntoGraveyardThisTurn = (state.cardsPutIntoGraveyardThisTurn ?? 0) + 1;
+				noteLayerInputsChanged(state);
+			}
+		}
+		// --- End Track P18b ---
+		if (isEnteringBattlefield) {
+			if (opts.withCounters && opts.withCounters.count > 0) {
+				placeRegisteredCounters(state, obj, opts.withCounters.counter, opts.withCounters.count);
+			}
+			if (!obj.isFaceDown) {
+				applyWave3EtbCounters(state, obj, placeRegisteredCounters, wave3ExtraCounters);
+				// --- Track P11 ---
+				if (chosenEtbCounter) {
+					placeRegisteredCounters(state, obj, chosenEtbCounter, 1);
+				}
+				const extEtbCounters = collectExternalEtbCounters(
+					state,
+					obj,
+					obj.controllerId || effectiveReceiver.playerId
+				);
+				for (const ec of extEtbCounters) {
+					placeRegisteredCounters(state, obj, ec.counter, ec.amount);
+				}
+				// --- End Track P11 ---
+			}
+			// --- Track P12 ---
+			applyWave4EtbCountersAndSetup(state, obj, placeRegisteredCounters);
+			// --- End Track P12 ---
+			// --- Track P13: Celebration nonland ETB count ---
+			const enteredCtrl = state.players.find(
+				(pl) => pl.playerId === (obj.controllerId || effectiveReceiver.playerId)
+			);
+			if (enteredCtrl) {
+				const enteredView = resolveObjectFaces(
+					effectiveCardForObject(obj),
+					instanceFaceOptions(obj, 'battlefield')
+				);
+				if (!enteredView.types.includes('Land')) {
+					enteredCtrl.nonlandPermanentsEnteredThisTurn =
+						(enteredCtrl.nonlandPermanentsEnteredThisTurn ?? 0) + 1;
+				}
+			}
+			// --- End Track P13 ---
+			// --- Track P15 ---
+			applyWave5EtbCountersAndSetup(
+				state,
+				obj,
+				placeRegisteredCounters,
+				wave5AmplifyCounters
+			);
+			// --- End Track P15 ---
+			// --- Track P18a ---
+			if (!obj.isFaceDown && obj.tributePaid) {
+				const tribN = getTributeTotalN(obj);
+				if (tribN > 0) {
+					placeRegisteredCounters(state, obj, '+1/+1', tribN);
+				}
+			}
+			checkStoriedDesignations(state);
+			enforceSoulbondPairs(state);
+			syncHideawayExilePeekPermissions(state);
+			// --- End Track P18a ---
+			// --- Track P22a ---
+			recordEnteredBattlefieldWave8(
+				state,
+				obj.controllerId || effectiveReceiver.playerId,
+				obj
+			);
+			syncMayLookAtExiledWithSelfPermissionsWave8(state);
+			// --- End Track P22a ---
+			noteLayerInputsChanged(state);
+		}
+		// --- Track P22a ---
+		if (dest === 'exile') {
+			syncMayLookAtExiledWithSelfPermissionsWave8(state);
+		}
+		// --- End Track P22a ---
 		if (shuffleDestLibrary && dest === 'library') {
 			shuffleLibrary(state, effectiveReceiver);
 		}
 	}
-	if (opts.sbaLog) {
-		pushSbaLog(state, obj, dest, replacedBy, opts.sbaLog);
+	// --- Track P18a: Merged permanent LTB component split (CR 731.3) & Soulbond LTB unpair (CR 702.95e) ---
+	if (savedMergedCards && savedMergedTokens && dest !== 'stack' && dest !== 'battlefield') {
+		const rawAt = typeof opts.insert === 'function' ? opts.insert(dest) : opts.insert;
+		const splitAt: Exclude<InsertAt, 'deferred'> =
+			typeof rawAt === 'number' || rawAt === 'start' || rawAt === 'end' ? rawAt : 'end';
+		const compOwner = owner ?? effectiveReceiver;
+		for (let cIdx = 1; cIdx < savedMergedCards.length; cIdx++) {
+			if (savedMergedTokens[cIdx]) continue;
+			const compCard = savedMergedCards[cIdx]!;
+			const compInst: CardInstance = {
+				instanceId: uid('inst', state),
+				objectVersion: 1,
+				enteredTimestamp: allocateTimestamp(state),
+				card: compCard,
+				ownerId: compOwner.playerId,
+				controllerId: compOwner.playerId,
+				zone: dest,
+				tapped: false,
+				summoningSick: false,
+				damageMarked: 0,
+				deathtouchDamageMarked: false,
+				tempPowerMod: 0,
+				tempToughnessMod: 0,
+				grantedKeywords: [],
+				attachedToId: null,
+				isCommander: false,
+				isToken: false,
+				commanderCastCount: 0,
+				usedLoyaltyThisTurn: false,
+				transformed: false,
+				counters: createEmptyCounters()
+			};
+			if (rawAt !== 'deferred') {
+				insertInto(compOwner[dest as PlayerZone], compInst, splitAt);
+			}
+			if (dest === 'graveyard') {
+				state.cardsPutIntoGraveyardThisTurn = (state.cardsPutIntoGraveyardThisTurn ?? 0) + 1;
+			}
+		}
+		if (shuffleDestLibrary && dest === 'library') {
+			shuffleLibrary(state, compOwner);
+		}
+		noteLayerInputsChanged(state);
 	}
+	if (fromZone === 'battlefield' && dest !== 'battlefield') {
+		enforceSoulbondPairs(state);
+	}
+	// --- End Track P18a ---
+	if (opts.sbaLog) {
+		pushSbaLog(state, obj, dest, effectiveReplacedBy, opts.sbaLog);
+	}
+	if (leavingFaceDownLabel) {
+		state.log.push({
+			id: uid('log', state),
+			timestamp: Date.now(),
+			turn: state.turnNumber,
+			phase: state.phase,
+			actorId: obj.ownerId,
+			kind: 'rule',
+			text: `CR 708.9: ${leavingFaceDownLabel} left the battlefield and is revealed as ${(obj.printedCard ?? obj.card).name}.`
+		});
+		if (state.log.length > 160) {
+			state.log.shift();
+		}
+	}
+	// --- Track P7: record Morbid / Revolt / LTB pruning BEFORE emitting ZoneChange triggers ---
+	const wasCreatureOnBf = Boolean(lki?.typeLine && lki.typeLine.split(/[\s—]+/).includes('Creature'));
+	recordZoneChangeTurnHistory(
+		state,
+		fromZone ?? 'none',
+		dest,
+		lki?.controllerId ?? fromPlayerId ?? obj.ownerId,
+		wasCreatureOnBf,
+		obj
+	);
+	// --- End Track P7 ---
+	// --- Track P15: CR 702.69a Gravestorm permanent-to-graveyard counter ---
+	if (fromZone === 'battlefield' && dest === 'graveyard' && opts.emit !== false) {
+		state.permanentsPutIntoGraveyardFromBattlefieldThisTurn =
+			(state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0) + 1;
+		// --- Track P22a ---
+		if (wasCreatureOnBf) {
+			recordCreatureDiedWave8(state, lki?.controllerId ?? fromPlayerId ?? obj.ownerId);
+		}
+		// --- End Track P22a ---
+		noteLayerInputsChanged(state);
+	}
+	// --- End Track P15 ---
+	// --- Track P12: CR 702.187b–c Mayhem discard tracking ---
+	if (opts.discardReason && dest === 'graveyard' && !ceases) {
+		obj.discardedByPlayerIdThisTurn = opts.discardPlayerId ?? fromPlayerId ?? obj.ownerId;
+		obj.discardedTurnSerial = state.turnSerial ?? state.turnNumber;
+	}
+	// --- End Track P12 ---
 	if (opts.emit !== false) {
 		emitZoneChange(
 			state,
@@ -298,6 +2510,112 @@ function finalizeZoneMove(
 			ceases,
 			lki
 		);
+		// --- Track P16b ---
+		if (
+			fromZone === 'battlefield' &&
+			dest !== 'battlefield' &&
+			opts.detachAttachments &&
+			lki?.attachedIds?.length
+		) {
+			for (const attId of lki.attachedIds) {
+				for (const pl of state.players) {
+					const att = pl.battlefield.find(
+						(c) => c.instanceId === attId && !c.phasedOut && !c.attachedToId
+					);
+					if (att) {
+						emitEvent(state, {
+							kind: 'Unattached',
+							attachmentId: att.instanceId,
+							attachment: att,
+							hostId: obj.instanceId,
+							host: obj
+						});
+						break;
+					}
+				}
+			}
+		}
+		// --- End Track P16b ---
+		if (opts.discardReason) {
+			// --- Track P16b ---
+			const causeControllerId = state.stack.findLast((s) => Boolean(s.resolutionStarted))
+				?.controllerId;
+			// --- End Track P16b ---
+			emitEvent(state, {
+				kind: 'CardDiscarded',
+				playerId: opts.discardPlayerId ?? fromPlayerId ?? obj.ownerId,
+				objectId: obj.instanceId,
+				object: obj,
+				reason: opts.discardReason,
+				destZone: dest,
+				// --- Track P16b ---
+				...(causeControllerId ? { causeControllerId } : {})
+				// --- End Track P16b ---
+			});
+		}
+		// --- Track P10 ---
+		if (fromZone === 'battlefield' && opts.sacrificedByPlayerId && lki) {
+			emitEvent(state, {
+				kind: 'Sacrificed',
+				playerId: opts.sacrificedByPlayerId,
+				objectId: obj.instanceId,
+				object: obj,
+				lki
+			});
+		}
+		if (fromZone === 'graveyard' && dest !== 'graveyard' && !opts.suppressGraveyardLeaveBatch) {
+			emitEvent(state, {
+				kind: 'GraveyardLeaveBatch',
+				ownerId: fromPlayerId ?? obj.ownerId,
+				objects: [obj]
+			});
+		}
+		// --- End Track P10 ---
+		if (dest === 'battlefield' && fromZone !== 'battlefield' && !ceases) {
+			maybePlaceSagaEtbLoreCounter(state, obj);
+		}
+		// --- Track P13 (CR 701.66a Earthbend delayed return trigger when animated land dies or is exiled) ---
+		if (
+			hadEarthbentReturn &&
+			fromZone === 'battlefield' &&
+			(dest === 'graveyard' || dest === 'exile') &&
+			!ceases &&
+			!obj.isToken
+		) {
+			const trigCtrlId = lki?.controllerId ?? fromPlayerId ?? obj.ownerId;
+			state.stack.push(
+				withStackItemText(
+					{
+						id: uid('stk', state),
+						sourceInstanceId: obj.instanceId,
+						card: obj.card,
+						ownerId: obj.ownerId,
+						controllerId: trigCtrlId,
+						kind: 'triggered',
+						title: `${obj.card.name} — Earthbend Return`,
+						targets: [],
+						xValue: 0,
+						requiresGuidedResolution: false,
+						createdAt: Date.now(),
+						inherentTrigger: {
+							kind: 'earthbendDelayedReturn',
+							cardId: obj.instanceId,
+							cardObjectVersion: obj.objectVersion ?? 1,
+							fromZone: dest,
+							ownerId: effectiveReceiver.playerId
+						}
+					},
+					'Return that card to the battlefield tapped under your control.'
+				)
+			);
+			noteLayerInputsChanged(state);
+		}
+		// --- End Track P13 ---
+		// --- Track P18a: Haunted permanent dies -> fire Haunt triggers from exile (CR 702.55c) ---
+		if (fromZone === 'battlefield' && dest === 'graveyard') {
+			handleHauntedCreatureDies(state, obj, leavingVersion, lki);
+		}
+		// --- End Track P18a ---
 	}
 	if (
 		promptCommanderRedirect &&
@@ -319,13 +2637,146 @@ function finalizeZoneMove(
 			destinationZone: dest,
 			yesLabel: 'Yes — Move to Command Zone',
 			noLabel: `No — Leave in ${dest}`,
+			continuation: {
+				kind: 'procedure',
+				procedure: {
+					kind: 'commander_zone_choice',
+					commanderInstanceId: obj.instanceId,
+					destinationZone: dest,
+					...(opts.resumeStackItemId ? { resumeStackItemId: opts.resumeStackItemId } : {}),
+					...(opts.resumeStepIndex !== undefined ? { resumeStepIndex: opts.resumeStepIndex } : {})
+				}
+			},
 			choice: {
 				kind: 'yesNo',
 				question: description
 			}
 		});
 	}
+	if (fromZone === 'battlefield' && dest !== 'battlefield' && !opts.skipLinkedReturn) {
+		returnLinkedExiledForSource(state, obj.instanceId, leavingVersion);
+		syncBattlefieldControllers(state);
+	}
 	return dest;
+}
+
+/**
+ * CR 610.3: Return all cards in exile whose `untilSourceLeavesReturn` matches
+ * `(leavingId, leavingVersion)` immediately after the source permanent leaves the battlefield.
+ * Simultaneous battlefield returns are inserted first so ETB triggers see all entrants (CR 610.3d).
+ */
+export function returnLinkedExiledForSource(
+	state: GameState,
+	leavingId: string,
+	leavingVersion: number
+): void {
+	returnLinkedExiledForSources(state, [{ leavingId, leavingVersion }]);
+}
+
+/**
+ * CR 610.3 / 610.3d: Return all cards in exile whose `untilSourceLeavesReturn` matches any of
+ * `sources` immediately after those permanents leave the battlefield. All simultaneous battlefield
+ * returns are placed onto the battlefield before any `ZoneChange` events are emitted so ETB
+ * triggers see every returning permanent (CR 610.3d).
+ */
+export function returnLinkedExiledForSources(
+	state: GameState,
+	sources: ReadonlyArray<{ leavingId: string; leavingVersion: number }>
+): void {
+	if (sources.length === 0) return;
+	const linked: Array<{
+		card: CardInstance;
+		fromPlayer: PlayerGameState;
+		returnZone: ZoneType;
+	}> = [];
+	for (const p of state.players) {
+		for (const c of p.exile) {
+			const ret = c.untilSourceLeavesReturn;
+			if (
+				ret &&
+				sources.some(
+					(s) => ret.sourceInstanceId === s.leavingId && ret.sourceObjectVersion === s.leavingVersion
+				)
+			) {
+				linked.push({ card: c, fromPlayer: p, returnZone: ret.returnZone });
+			}
+		}
+	}
+	if (linked.length === 0) return;
+
+	const bfReturns: Array<{ card: CardInstance; fromPlayer: PlayerGameState; ownerPlayer: PlayerGameState }> = [];
+	const nonBfReturns: Array<{ card: CardInstance; fromPlayer: PlayerGameState; returnZone: ZoneType }> = [];
+
+	for (const entry of linked) {
+		entry.card.exiledBy = undefined;
+		entry.card.untilSourceLeavesReturn = undefined;
+		// CR 111.8: A token that has left the battlefield cannot return to the battlefield or move zones.
+		if (entry.card.isToken) continue;
+		if (entry.returnZone === 'battlefield') {
+			const ownerPlayer = state.players.find((p) => p.playerId === entry.card.ownerId && !p.lost);
+			if (ownerPlayer) bfReturns.push({ card: entry.card, fromPlayer: entry.fromPlayer, ownerPlayer });
+		} else {
+			nonBfReturns.push(entry);
+		}
+	}
+
+	const emitAfterAll: Array<{
+		card: CardInstance;
+		fromPlayerId: string;
+		toPlayerId: string;
+	}> = [];
+	const batchEmit = bfReturns.length > 1;
+
+	for (const { card, fromPlayer, ownerPlayer } of bfReturns) {
+		const res = moveObject(state, card, 'battlefield', {
+			from: { player: fromPlayer, zone: 'exile' },
+			toPlayer: ownerPlayer,
+			controllerId: ownerPlayer.playerId,
+			bumpVersion: true,
+			newTimestamp: true,
+			emit: !batchEmit,
+			beforeInsert: (returned, d) => {
+				if (d === 'battlefield') {
+					returned.summoningSick = true;
+					applySelfEtbReplacements(state, returned);
+				}
+			}
+		});
+		if (res === 'battlefield') {
+			state.log.push({
+				id: uid('log', state),
+				timestamp: Date.now(),
+				turn: state.turnNumber,
+				phase: state.phase,
+				actorId: ownerPlayer.playerId,
+				kind: 'rule',
+				text: `${card.card.name} returns to the battlefield under ${ownerPlayer.username}'s control (CR 610.3c).`
+			});
+			if (state.log.length > 160) state.log.shift();
+			if (batchEmit) {
+				emitAfterAll.push({
+					card,
+					fromPlayerId: fromPlayer.playerId,
+					toPlayerId: ownerPlayer.playerId
+				});
+			}
+		}
+	}
+
+	for (const em of emitAfterAll) {
+		emitZoneChange(state, em.card, 'exile', 'battlefield', em.fromPlayerId, em.toPlayerId, false);
+		maybePlaceSagaEtbLoreCounter(state, em.card);
+	}
+
+	for (const { card, fromPlayer, returnZone } of nonBfReturns) {
+		if (returnZone === 'stack' || returnZone === 'exile') continue;
+		moveObject(state, card, returnZone, {
+			from: { player: fromPlayer, zone: 'exile' },
+			bumpVersion: true,
+			commanderRedirect: true,
+			emit: true
+		});
+	}
 }
 
 function moveObjectInner(
@@ -337,7 +2788,18 @@ function moveObjectInner(
 	const { from } = opts;
 	// CR 304.4 / 307.4: If an instant or sorcery would enter the battlefield, it remains in its previous zone.
 	if (to === 'battlefield') {
-		const effectiveTypeLine = (obj.copiableCard ?? obj.card).typeLine;
+		const effectiveTypeLine = resolveObjectFaces(
+			effectiveCardForObject(obj),
+			instanceFaceOptions(obj, 'battlefield')
+		).typeLine;
+		// --- Track P22a (CR 614.17c): "Lands can't enter the battlefield." (*Worms of the Earth*) ---
+		if (effectiveTypeLine.includes('Land') && checkLandsCantEnterWave8(state)) {
+			if (typeof from === 'object') return from.zone;
+			if (from === 'anyBattlefield') return 'battlefield';
+			if (from === 'stack') return 'stack';
+			return obj.zone;
+		}
+		// --- End Track P22a ---
 		const isInstantOrSorcery =
 			effectiveTypeLine.includes('Instant') || effectiveTypeLine.includes('Sorcery');
 		const hasPermanentType =
@@ -357,6 +2819,12 @@ function moveObjectInner(
 	let fromZone: ZoneType | null = null;
 	let fromPlayerId: string | null = null;
 	// CR 603.10a: leaves-the-battlefield triggers look back at the object as it was on the battlefield.
+	// --- Track P11 ---
+	if (from === 'anyBattlefield' || (typeof from === 'object' && from.zone === 'battlefield')) {
+		stashPreLeaveGrantedTriggers(state, obj);
+		stashPreLeaveGrantedReplacements(state, obj);
+	}
+	// --- End Track P11 ---
 	const lki =
 		from === 'anyBattlefield' || (typeof from === 'object' && from.zone === 'battlefield')
 			? captureLki(state, obj)
@@ -364,10 +2832,48 @@ function moveObjectInner(
 	if (lki) {
 		if (lki.power !== undefined) obj.lastKnownPower = lki.power;
 		if (lki.toughness !== undefined) obj.lastKnownToughness = lki.toughness;
+		// --- Track P16a (CR 122.8 / 608.2h): Preserve last-known counters on leaving permanent ---
+		if (lki.counters) {
+			const snap: Record<CounterType, number> = {} as Record<CounterType, number>;
+			for (const [k, v] of Object.entries(lki.counters)) {
+				if (typeof v === 'number' && v > 0) snap[k as CounterType] = v;
+			}
+			obj.lastKnownCounters = snap;
+		}
+		// --- End Track P16a ---
 		for (const stk of state.stack) {
 			if (stk.sourceInstanceId === obj.instanceId) {
 				if (lki.power !== undefined) stk.sourceLkiPower = lki.power;
 				if (lki.toughness !== undefined) stk.sourceLkiToughness = lki.toughness;
+				if (obj.exertedThisTurn) stk.sourceExertedThisTurn = true;
+				// --- Track P11 ---
+				if (obj.chosenCardName) stk.sourceChosenCardName = obj.chosenCardName;
+				// --- End Track P11 ---
+				// --- Track P22a ---
+				if (obj.chosenCardType) stk.sourceChosenCardType = obj.chosenCardType;
+				if (obj.chosenNumber !== undefined) stk.sourceChosenNumber = obj.chosenNumber;
+				// --- End Track P22a ---
+			}
+			if (
+				stk.eventObjectId === obj.instanceId &&
+				(stk.eventObjectVersion === undefined || stk.eventObjectVersion === obj.objectVersion)
+			) {
+				stk.eventLki = {
+					controllerId: lki.controllerId,
+					ownerId: stk.eventLki?.ownerId ?? obj.ownerId,
+					power: lki.power ?? stk.eventLki?.power ?? (parseInt(obj.card.power ?? '0', 10) || 0),
+					toughness:
+						lki.toughness ??
+						stk.eventLki?.toughness ??
+						(parseInt(obj.card.toughness ?? '0', 10) || 0),
+					manaValue: stk.eventLki?.manaValue ?? (obj.card.cmc ?? 0),
+					// --- Track P9 ---
+					...(lki.counters
+						? { counters: { ...lki.counters } }
+						: stk.eventLki?.counters
+							? { counters: stk.eventLki.counters }
+							: {})
+				};
 			}
 		}
 	}
@@ -414,7 +2920,88 @@ function moveObjectInner(
 	let shuffleDestLibrary = false;
 	let replacedBy: string | null = null;
 	let pendingZoneRep: ReturnType<typeof resolveZoneChangeReplacements> | undefined;
-	if (opts.graveyardReplacement && to === 'graveyard') {
+	// --- Track P20a: Opponent-caused discard-to-battlefield self replacement (CR 614.1a, 701.9) ---
+	const oppDiscardSpec =
+		fromZone === 'hand' && opts.discardReason === 'discard' && to === 'graveyard'
+			? findSelfOpponentDiscardToBattlefield(state, obj)
+			: null;
+	// --- End Track P20a ---
+	// --- Track P9 ---
+	if (oppDiscardSpec && owner) {
+		dest = 'battlefield';
+		shuffleDestLibrary = false;
+		replacedBy = obj.card.name;
+		obj.summoningSick = true;
+		obj.controllerId = owner.playerId;
+		obj.defaultControllerId = owner.playerId;
+		applySelfEtbReplacements(state, obj);
+		return finalizeZoneMove(
+			state,
+			obj,
+			fromZone,
+			fromPlayerId,
+			owner,
+			dest,
+			false,
+			replacedBy,
+			lki,
+			{
+				...opts,
+				toPlayer: owner,
+				controllerId: owner.playerId,
+				bumpVersion: true,
+				newTimestamp: true,
+				...(oppDiscardSpec.counters ? { withCounters: oppDiscardSpec.counters } : {})
+			}
+		);
+	} else if (
+		fromZone === 'hand' &&
+		opts.discardReason &&
+		to === 'graveyard' &&
+		cardHasMadness(effectiveCardForObject(obj))
+	) {
+		// CR 702.35a / CR 614.15: Madness self-replacement exiles the discarded card instead of
+		// putting it into its owner's graveyard, applying before external graveyard replacements.
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		replacedBy = 'Madness';
+		obj.madnessOwnerId = obj.ownerId;
+	} else if (fromZone === 'battlefield' && obj.unearthLeaveExile && to !== 'exile' && to !== 'battlefield') {
+		// CR 702.84a: "If it would leave the battlefield, exile it instead of putting it anywhere else."
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		replacedBy = 'Unearth';
+	} else if (
+		// --- Track P20a (CR 614.1a): "If ~ would be put into a graveyard from the battlefield, instead exile it and take an extra turn after this one." ---
+		fromZone === 'battlefield' &&
+		to === 'graveyard' &&
+		hasSelfExileAndExtraTurnOnBattlefieldToGraveyard(state, obj)
+		// --- End Track P20a ---
+	) {
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		replacedBy = obj.card.name;
+		const extraTurnPlayerId = lki?.controllerId || obj.controllerId || obj.ownerId;
+		(state.extraTurnQueue ??= []).push(extraTurnPlayerId);
+	} else if (
+		// --- Track P7 & P20a (CR 614.1a): "If that creature / a creature dealt damage by ~ this turn would die, exile it instead." ---
+		fromZone === 'battlefield' &&
+		to === 'graveyard' &&
+		(shouldExileInsteadOfDying(state, obj) ||
+			shouldExileCreatureDealtDamageBySourceOnDie(state, obj))
+		// --- End Track P7 & P20a ---
+	) {
+		dest = 'exile';
+		shuffleDestLibrary = false;
+		replacedBy = 'Exile instead of dying';
+	} else if (
+		(opts.graveyardReplacement && (to === 'graveyard' || to === 'exile')) ||
+		// --- Track P11 (CR 122.1d, CR 614.12): Finality counter & Layer 6 granted leave replacements ---
+		(fromZone === 'battlefield' &&
+			to === 'graveyard' &&
+			((obj.counters.finality ?? 0) > 0 || peekPreLeaveGrantedReplacements(obj).length > 0))
+		// --- End Track P11 ---
+	) {
 		pendingZoneRep = resolveZoneChangeReplacements(
 			state,
 			obj,
@@ -438,7 +3025,8 @@ function moveObjectInner(
 		(state.pendingZoneMoves ??= []).push(obj);
 		const insertSpec =
 			typeof opts.insert === 'function' ? 'fn_library_start' : (opts.insert ?? 'end');
-		const description = `Multiple replacement effects would modify how ${obj.card.name} moves to ${dest}. Choose which applies first (CR 616.1):`;
+		const objDisplay = obj.isFaceDown ? (obj.faceDownLabel || 'Face-Down Permanent') : obj.card.name;
+		const description = `Multiple replacement effects would modify how ${objDisplay} moves to ${dest}. Choose which applies first (CR 616.1):`;
 		enqueueChoicePrompt(state, {
 			id: uid('prm', state),
 			playerId: pendingZoneRep.chooserId,
@@ -468,7 +3056,13 @@ function moveObjectInner(
 					ceaseToExist: opts.ceaseToExist ?? null,
 					emit: opts.emit !== false,
 					insertSpec,
-					sbaLogJson: opts.sbaLog ? JSON.stringify(opts.sbaLog) : null
+					sbaLogJson: opts.sbaLog ? JSON.stringify(opts.sbaLog) : null,
+					discardReason: opts.discardReason ?? null,
+					discardPlayerId: opts.discardPlayerId ?? null,
+					// --- Track P10 ---
+					sacrificedByPlayerId: opts.sacrificedByPlayerId ?? null,
+					suppressGraveyardLeaveBatch: Boolean(opts.suppressGraveyardLeaveBatch)
+					// --- End Track P10 ---
 				}
 			},
 			choice: {
@@ -525,6 +3119,17 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 		typeof data.resumeStackItemId === 'string' ? data.resumeStackItemId : undefined;
 	const resumeStepIndex =
 		typeof data.resumeStepIndex === 'number' ? data.resumeStepIndex : undefined;
+	const discardReason =
+		data.discardReason === 'discard' || data.discardReason === 'cycle'
+			? data.discardReason
+			: undefined;
+	const discardPlayerId =
+		typeof data.discardPlayerId === 'string' ? data.discardPlayerId : undefined;
+	// --- Track P10 ---
+	const sacrificedByPlayerId =
+		typeof data.sacrificedByPlayerId === 'string' ? data.sacrificedByPlayerId : undefined;
+	const suppressGraveyardLeaveBatch = Boolean(data.suppressGraveyardLeaveBatch);
+	// --- End Track P10 ---
 
 	const pendingList = state.pendingZoneMoves;
 	if (!pendingList) return;
@@ -583,6 +3188,12 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 						emit,
 						insertSpec,
 						sbaLogJson,
+						discardReason: discardReason ?? null,
+						discardPlayerId: discardPlayerId ?? null,
+						// --- Track P10 ---
+						sacrificedByPlayerId: sacrificedByPlayerId ?? null,
+						suppressGraveyardLeaveBatch,
+						// --- End Track P10 ---
 						...(resumeStackItemId !== undefined ? { resumeStackItemId } : {}),
 						...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
 					}
@@ -632,14 +3243,718 @@ registerPromptHandler('zone_replacement_choice', (state, prompt, answer) => {
 				ceaseToExist,
 				emit,
 				insert: insertOpt,
-				sbaLog
+				sbaLog,
+				...(discardReason ? { discardReason } : {}),
+				...(discardPlayerId ? { discardPlayerId } : {}),
+				// --- Track P10 ---
+				...(sacrificedByPlayerId ? { sacrificedByPlayerId } : {}),
+				...(suppressGraveyardLeaveBatch ? { suppressGraveyardLeaveBatch: true } : {}),
+				// --- End Track P10 ---
+				...(resumeStackItemId ? { resumeStackItemId } : {}),
+				...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
 			}
 		);
 	});
 	flushTriggers(state);
 });
 
-function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
+registerPromptHandler('etb_choice', (state, prompt, answer) => {
+	if (
+		answer.kind !== 'chooseMode' &&
+		answer.kind !== 'yesNo' &&
+		answer.kind !== 'chooseObjects' &&
+		// --- Track P22a ---
+		answer.kind !== 'chooseNumber'
+		// --- End Track P22a ---
+	) {
+		return;
+	}
+	const data = prompt.continuation?.kind === 'handler' ? prompt.continuation.data : undefined;
+	if (!data) return;
+	const objectId = typeof data.objectId === 'string' ? data.objectId : '';
+	const toPlayerId = typeof data.toPlayerId === 'string' ? data.toPlayerId : '';
+	const choiceField = typeof data.choiceField === 'string' ? data.choiceField : '';
+	const fromZone = (data.fromZone as ZoneType | null | undefined) ?? null;
+	const fromPlayerId = (data.fromPlayerId as string | null | undefined) ?? null;
+	const lkiJson = typeof data.lkiJson === 'string' ? data.lkiJson : null;
+	const lki: LeftBattlefieldInfo | undefined = lkiJson
+		? (JSON.parse(lkiJson) as LeftBattlefieldInfo)
+		: undefined;
+	const setZone = data.setZone !== false;
+	const emit = data.emit !== false;
+	const insertSpec = data.insertSpec;
+	const sbaLogJson = typeof data.sbaLogJson === 'string' ? data.sbaLogJson : null;
+	const sbaLog: SbaMoveLog | undefined = sbaLogJson
+		? (JSON.parse(sbaLogJson) as SbaMoveLog)
+		: undefined;
+	const replacedBy = typeof data.replacedBy === 'string' ? data.replacedBy : null;
+	let wave3ExtraCounters = typeof data.wave3ExtraCounters === 'number' ? data.wave3ExtraCounters : 0;
+	const withCountersJson = typeof data.withCountersJson === 'string' ? data.withCountersJson : null;
+	const withCounters: { counter: CounterType; count: number } | undefined = withCountersJson
+		? (JSON.parse(withCountersJson) as { counter: CounterType; count: number })
+		: undefined;
+	const resumeStackItemId =
+		typeof data.resumeStackItemId === 'string' ? data.resumeStackItemId : undefined;
+	const resumeStepIndex =
+		typeof data.resumeStepIndex === 'number' ? data.resumeStepIndex : undefined;
+
+	const pendingList = state.pendingZoneMoves;
+	if (!pendingList) return;
+	const idx = pendingList.findIndex((c) => c.instanceId === objectId);
+	if (idx < 0) return;
+	const obj = pendingList[idx];
+
+	const owner = state.players.find((p) => p.playerId === obj.ownerId);
+	const initialReceiver = state.players.find((p) => p.playerId === toPlayerId) ?? owner;
+	if (!initialReceiver) return;
+	let receiver: PlayerGameState = initialReceiver;
+	let chooser: PlayerGameState =
+		state.players.find((p) => p.playerId === (obj.controllerId || receiver.playerId)) ?? receiver;
+
+	const nextData: Record<string, unknown> = {
+		...data,
+		objectId: obj.instanceId,
+		toPlayerId: receiver.playerId,
+		fromZone,
+		fromPlayerId,
+		lkiJson,
+		setZone,
+		emit,
+		insertSpec,
+		sbaLogJson,
+		replacedBy,
+		wave3ExtraCounters,
+		withCountersJson,
+		...(resumeStackItemId !== undefined ? { resumeStackItemId } : {}),
+		...(resumeStepIndex !== undefined ? { resumeStepIndex } : {})
+	};
+
+	let awaitingMore = false;
+	whileLayerInputsChange(state, () => {
+		let bfView = resolveObjectFaces(
+			effectiveCardForObject(obj),
+			instanceFaceOptions(obj, 'battlefield')
+		);
+		if (choiceField === 'cloneCopy' && answer.kind === 'chooseObjects') {
+			nextData.cloneAnswered = true;
+			const chosenId = answer.objectIds[0];
+			if (chosenId) {
+				let targetPerm: CardInstance | undefined;
+				for (const pl of state.players) {
+					if (pl.lost) continue;
+					const found = pl.battlefield.find((b) => !b.phasedOut && b.instanceId === chosenId);
+					if (found) {
+						targetPerm = found;
+						break;
+					}
+				}
+				const cloneSpec = findSelfCloneReplacementSpec(
+					effectiveCardForObject(obj),
+					instanceFaceOptions(obj, 'battlefield')
+				);
+				if (targetPerm) {
+					const origCard = obj.printedCard ?? obj.card;
+					const displayName = applyCopiedPermanentToInstance(
+						obj,
+						targetPerm,
+						cloneSpec?.copyModifications,
+						origCard,
+						state
+					);
+					// --- Track P20a ---
+					applyWave7CopyModificationExtras(obj, cloneSpec?.copyModifications);
+					// --- End Track P20a ---
+					if (cloneSpec?.tapped) obj.tapped = true;
+					ensureCopiedPlaneswalkerStartingLoyalty(state, obj);
+					applySelfEtbReplacements(state, obj);
+					if (
+						!obj.tapped &&
+						cardEntersTapped(effectiveCardForObject(obj), state, chooser.playerId, obj)
+					) {
+						obj.tapped = true;
+					}
+					// --- Track P11 (CR 614.12) ---
+					if (
+						!obj.tapped &&
+						withHypotheticalBattlefieldPresence(state, chooser, obj, () =>
+							externalPermanentEntersTapped(state, obj, chooser.playerId)
+						)
+					) {
+						obj.tapped = true;
+					}
+					// --- End Track P11 ---
+					// --- Track P20a (CR 614.12) ---
+					if (
+						obj.tapped &&
+						withHypotheticalBattlefieldPresence(state, chooser, obj, () =>
+							externalPermanentEntersUntapped(state, obj, chooser.playerId)
+						)
+					) {
+						obj.tapped = false;
+					}
+					// --- End Track P20a ---
+					bfView = resolveObjectFaces(
+						effectiveCardForObject(obj),
+						instanceFaceOptions(obj, 'battlefield')
+					);
+					pushEtbRuleLog(
+						state,
+						chooser.playerId,
+						`${origCard.name} entered the battlefield as a copy of ${displayName} (CR 707.2).`
+					);
+				}
+			}
+		} else if (choiceField === 'color' && answer.kind === 'chooseMode') {
+			const options = prompt.choice?.kind === 'chooseMode' ? prompt.choice.modes : [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenLabel = options[chosenIdx] ?? options[0] ?? '';
+			obj.chosenColor = COLOR_CODE_BY_LABEL[chosenLabel.toLowerCase()] ?? 'W';
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${chosenLabel} for ${bfView.name}.`
+			);
+		} else if (choiceField === 'creatureSubtype' && answer.kind === 'chooseMode') {
+			const options = prompt.choice?.kind === 'chooseMode' ? prompt.choice.modes : [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenLabel = options[chosenIdx] ?? options[0] ?? '';
+			obj.chosenSubType = chosenLabel || 'Human';
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${chosenLabel} for ${bfView.name}.`
+			);
+		// --- Track P11 ---
+		} else if (choiceField === 'cardName' && answer.kind === 'chooseMode') {
+			const options = prompt.choice?.kind === 'chooseMode' ? prompt.choice.modes : [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenLabel = options[chosenIdx] ?? options[0] ?? '';
+			obj.chosenCardName = chosenLabel || 'Construct';
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${obj.chosenCardName} for ${bfView.name}.`
+			);
+		} else if (choiceField === 'etbCounter' && answer.kind === 'chooseMode') {
+			const counterOptions = Array.isArray(data.counterOptions)
+				? (data.counterOptions as CounterType[])
+				: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenCounter = counterOptions[chosenIdx] ?? counterOptions[0];
+			obj.etbCounterChoiceDone = true;
+			if (chosenCounter) {
+				nextData.chosenEtbCounter = chosenCounter;
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose a ${chosenCounter} counter for ${bfView.name}.`
+				);
+			}
+		// --- End Track P11 ---
+		} else if (choiceField === 'payLifeOrEnterTapped' && answer.kind === 'yesNo') {
+			nextData.shocklandAnswered = true;
+			const lifeCost = typeof data.lifeCost === 'number' ? data.lifeCost : 2;
+			if (answer.yes && !playerCantPayLifeForEtb(state, chooser, lifeCost)) {
+				chooser.life -= lifeCost;
+				noteLayerInputsChanged(state);
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} paid ${lifeCost} life for ${bfView.name}.`
+				);
+			} else {
+				obj.tapped = true;
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose to have ${bfView.name} enter tapped.`
+				);
+			}
+		} else if (choiceField === 'revealFromHandOrEnterTapped' && answer.kind === 'chooseObjects') {
+			nextData.revealLandAnswered = true;
+			const chosenId = answer.objectIds[0];
+			const revealedCard = chosenId
+				? chooser.hand.find((c) => c.instanceId === chosenId)
+				: undefined;
+			if (revealedCard) {
+				markHandCardRevealedToAll(state, revealedCard);
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} revealed ${revealedCard.card.name} from hand for ${bfView.name}.`
+				);
+			} else {
+				obj.tapped = true;
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose not to reveal a card for ${bfView.name}.`
+				);
+			}
+		} else if (choiceField === 'unleash' && answer.kind === 'chooseMode') {
+			const options = prompt.choice?.kind === 'chooseMode' ? prompt.choice.modes : [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenLabel = options[chosenIdx] ?? options[0] ?? '';
+			obj.unleashChoiceDone = true;
+			if (chosenIdx === 0) {
+				wave3ExtraCounters += 1;
+				nextData.wave3ExtraCounters = wave3ExtraCounters;
+			}
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${chosenLabel} for ${bfView.name}.`
+			);
+		} else if (choiceField === 'riot' && answer.kind === 'chooseMode') {
+			const options = prompt.choice?.kind === 'chooseMode' ? prompt.choice.modes : [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenLabel = options[chosenIdx] ?? options[0] ?? '';
+			obj.riotChoicesDone = (obj.riotChoicesDone ?? 0) + 1;
+			if (chosenIdx === 0) {
+				wave3ExtraCounters += 1;
+				nextData.wave3ExtraCounters = wave3ExtraCounters;
+			} else {
+				obj.riotHaste = true;
+			}
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${chosenLabel} for ${bfView.name}.`
+			);
+		// --- Track P12 ---
+		} else if (choiceField === 'devour' && answer.kind === 'chooseObjects') {
+			executeDevourSacrifices(state, obj, chooser, answer.objectIds);
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} sacrificed ${obj.devouredCount ?? 0} permanent(s) for ${bfView.name}'s Devour (CR 702.82a).`
+			);
+		// --- End Track P12 ---
+		// --- Track P15 ---
+		} else if (choiceField === 'siegeProtector' && answer.kind === 'chooseMode') {
+			const candIds = Array.isArray(data.candidatePlayerIds)
+				? data.candidatePlayerIds.map(String)
+				: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenProtectorId = candIds[chosenIdx] ?? candIds[0] ?? null;
+			obj.protectorId = chosenProtectorId;
+			obj.siegeProtectorChosen = true;
+			const protPlayer = state.players.find((p) => p.playerId === chosenProtectorId);
+			if (protPlayer) {
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose ${protPlayer.username} to protect ${bfView.name} (CR 310.11a).`
+				);
+			}
+		} else if (choiceField === 'readAhead' && answer.kind === 'chooseMode') {
+			const chosenChapter = (answer.indices[0] ?? 0) + 1;
+			obj.readAheadChosenChapter = chosenChapter;
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose Chapter ${chosenChapter} for ${bfView.name} (Read ahead, CR 702.155a).`
+			);
+		} else if (choiceField === 'amplify' && answer.kind === 'chooseObjects') {
+			obj.amplifyDone = true;
+			const amplifyN = typeof data.amplifyN === 'number' ? data.amplifyN : getAmplifyTotalN(obj);
+			const legalMatching = new Set(
+				amplifyMatchingHandCards(state, obj, chooser.hand).map((c) => c.instanceId)
+			);
+			let revealedCount = 0;
+			for (const oid of answer.objectIds) {
+				if (!legalMatching.has(oid)) continue;
+				const hc = chooser.hand.find((c) => c.instanceId === oid);
+				if (hc) {
+					markHandCardRevealedToAll(state, hc);
+					revealedCount++;
+				}
+			}
+			nextData.wave5AmplifyCounters = amplifyN * revealedCount;
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} revealed ${revealedCount} card(s) from hand for ${bfView.name}'s Amplify ${amplifyN} (CR 702.38a).`
+			);
+		// --- End Track P15 ---
+		// --- Track P18a: Tribute N (CR 702.104a) ---
+		} else if (choiceField === 'tributeOpponent' && answer.kind === 'chooseMode') {
+			const candPids = Array.isArray(data.candidatePlayerIds)
+				? (data.candidatePlayerIds as string[])
+				: state.players
+						.filter((p) => !p.lost && p.playerId !== chooser.playerId)
+						.map((p) => p.playerId);
+			const chosenIdx = answer.indices[0] ?? 0;
+			obj.tributeOpponentId = candPids[chosenIdx] ?? candPids[0];
+		} else if (choiceField === 'tributePay' && answer.kind === 'yesNo') {
+			const pay = Boolean(answer.yes);
+			const tribN = typeof data.tributeN === 'number' ? data.tributeN : getTributeTotalN(obj);
+			const oppId =
+				typeof data.tributeOpponentId === 'string'
+					? data.tributeOpponentId
+					: obj.tributeOpponentId;
+			const opp = state.players.find((p) => p.playerId === oppId);
+			obj.tributeDone = true;
+			obj.tributePaid = pay;
+			pushEtbRuleLog(
+				state,
+				opp?.playerId ?? chooser.playerId,
+				`${opp?.username ?? 'Opponent'} ${pay ? `paid Tribute ${tribN} (${tribN} +1/+1 counter${tribN === 1 ? '' : 's'})` : `declined Tribute ${tribN}`} for ${bfView.name} (CR 702.104a).`
+			);
+		// --- End Track P18a ---
+		// --- Track P18b ---
+		} else if (choiceField === 'anchorWord' && answer.kind === 'chooseMode') {
+			const optsList = Array.isArray(data.anchorOptions)
+				? data.anchorOptions.map(String)
+				: prompt.choice?.kind === 'chooseMode'
+					? prompt.choice.modes
+					: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenWord = optsList[chosenIdx] ?? optsList[0] ?? '';
+			if (chosenWord) {
+				obj.chosenAnchorWord = chosenWord;
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose ${chosenWord} for ${bfView.name} (CR 614.12c).`
+				);
+			}
+		// --- End Track P18b ---
+		// --- Track P20a ---
+		} else if (choiceField === 'landSubtype' && answer.kind === 'chooseMode') {
+			const options = prompt.choice?.kind === 'chooseMode' ? prompt.choice.modes : [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenLabel = options[chosenIdx] ?? options[0] ?? 'Forest';
+			obj.chosenSubType = chosenLabel || 'Forest';
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${obj.chosenSubType} for ${bfView.name}.`
+			);
+		} else if (choiceField === 'etbPlayer' && answer.kind === 'chooseMode') {
+			const candPids = Array.isArray(data.candidatePlayerIds)
+				? data.candidatePlayerIds.map(String)
+				: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenPid = candPids[chosenIdx] ?? candPids[0];
+			if (chosenPid) {
+				obj.chosenPlayerId = chosenPid;
+				const chosenPl = state.players.find((p) => p.playerId === chosenPid);
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose ${chosenPl?.username ?? chosenPid} for ${bfView.name}.`
+				);
+			}
+		} else if (choiceField === 'parity' && answer.kind === 'chooseMode') {
+			const chosenIdx = answer.indices[0] ?? 0;
+			obj.chosenParity = chosenIdx === 1 ? 'even' : 'odd';
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${obj.chosenParity} for ${bfView.name}.`
+			);
+		} else if (choiceField === 'opponentControl' && answer.kind === 'chooseMode') {
+			const candPids = Array.isArray(data.candidatePlayerIds)
+				? data.candidatePlayerIds.map(String)
+				: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenPid = candPids[chosenIdx] ?? candPids[0];
+			const chosenOpp = state.players.find((p) => p.playerId === chosenPid && !p.lost);
+			if (chosenOpp) {
+				receiver = chosenOpp;
+				chooser = chosenOpp;
+				obj.controllerId = chosenOpp.playerId;
+				obj.defaultControllerId = chosenOpp.playerId;
+				nextData.toPlayerId = chosenOpp.playerId;
+				pushEtbRuleLog(
+					state,
+					prompt.playerId,
+					`${bfView.name} enters the battlefield under ${chosenOpp.username}'s control (CR 616.1b).`
+				);
+				if (chosenOpp.isBot) {
+					const botSpec = selfEtbChoiceSpec(state, obj);
+					if (botSpec) {
+						if (botSpec.chooseColor && !obj.chosenColor) {
+							obj.chosenColor = chooseBotBestColor(state, chosenOpp, botSpec.chooseColor.exclude, obj);
+						}
+						if (botSpec.chooseSubType === 'creature' && !obj.chosenSubType) {
+							obj.chosenSubType = chooseBotBestCreatureSubtype(state, chosenOpp, obj);
+						}
+						if (
+							(botSpec.chooseSubType === 'basicLand' || botSpec.chooseSubType === 'land') &&
+							!obj.chosenSubType
+						) {
+							obj.chosenSubType = chooseBotLandSubtype(state, chosenOpp, botSpec.chooseSubType);
+						}
+						if (botSpec.choosePlayer && !obj.chosenPlayerId) {
+							obj.chosenPlayerId = chooseBotPlayerForEtb(state, chosenOpp, botSpec.choosePlayer);
+						}
+						if (botSpec.chooseParity && !obj.chosenParity) {
+							obj.chosenParity = 'odd';
+						}
+						// --- Track P22a ---
+						if (botSpec.chooseCardType && !obj.chosenCardType) {
+							if (botSpec.chooseCardType.lookAtOpponentHand) {
+								revealOpponentHandForEtbLook(state, chosenOpp.playerId);
+							}
+							const opts = buildCardTypeChoiceOptions(botSpec.chooseCardType);
+							obj.chosenCardType = chooseBotBestCardType(state, chosenOpp.playerId, opts);
+						}
+						if (botSpec.chooseNumber && obj.chosenNumber === undefined) {
+							obj.chosenNumber = chooseBotBestNumber(state, chosenOpp.playerId, botSpec.chooseNumber);
+						}
+						if (botSpec.chooseTwoColors && !obj.chosenColors) {
+							const pair = chooseBotTwoColors(state, chosenOpp.playerId);
+							obj.chosenColors = pair;
+							if (!obj.chosenColor) obj.chosenColor = pair[0];
+						}
+						if (botSpec.chooseTwoPlayers && !obj.chosenPlayerIds) {
+							const pids = chooseBotTwoPlayers(state, chosenOpp.playerId);
+							obj.chosenPlayerIds = pids;
+							if (!obj.chosenPlayerId && pids.length > 0) obj.chosenPlayerId = pids[0];
+						}
+						if (botSpec.chooseObjectOnBattlefield && !obj.chosenObjectId) {
+							obj.chosenObjectId = chooseBotBestEtbObject(
+								state,
+								chosenOpp.playerId,
+								obj,
+								botSpec.chooseObjectOnBattlefield.filter
+							);
+						}
+						if (
+							botSpec.chooseSubTypeOptions &&
+							botSpec.chooseSubTypeOptions.length > 0 &&
+							!obj.chosenSubType
+						) {
+							obj.chosenSubType = botSpec.chooseSubTypeOptions[0];
+						}
+						// --- End Track P22a ---
+					}
+				}
+			}
+		// --- End Track P20a ---
+		// --- Track P22a ---
+		} else if (choiceField === 'cardType' && answer.kind === 'chooseMode') {
+			const optsList = Array.isArray(data.cardTypeOptions)
+				? data.cardTypeOptions.map(String)
+				: prompt.choice?.kind === 'chooseMode'
+					? prompt.choice.modes
+					: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenType = optsList[chosenIdx] ?? optsList[0] ?? 'Creature';
+			obj.chosenCardType = chosenType;
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${chosenType} for ${bfView.name} (CR 614.12).`
+			);
+		} else if (choiceField === 'etbNumber' && answer.kind === 'chooseNumber') {
+			obj.chosenNumber = answer.n;
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${answer.n} for ${bfView.name} (CR 614.12).`
+			);
+		} else if (choiceField === 'twoColors' && answer.kind === 'chooseMode') {
+			const chosenIdx = answer.indices[0] ?? 0;
+			const pair = parseTwoColorPairIndex(chosenIdx);
+			obj.chosenColors = pair;
+			if (!obj.chosenColor) obj.chosenColor = pair[0];
+			const label = TWO_COLOR_PAIR_LABELS[chosenIdx] ?? TWO_COLOR_PAIR_LABELS[0] ?? '';
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${label} for ${bfView.name} (CR 614.12).`
+			);
+		} else if (choiceField === 'twoPlayers' && answer.kind === 'chooseMode') {
+			const candPids = Array.isArray(data.candidatePlayerIds)
+				? data.candidatePlayerIds.map(String)
+				: [];
+			const chosenPids = answer.indices
+				.map((i) => candPids[i])
+				.filter((x): x is string => Boolean(x));
+			obj.chosenPlayerIds = chosenPids;
+			if (!obj.chosenPlayerId && chosenPids.length > 0) obj.chosenPlayerId = chosenPids[0];
+			const names = chosenPids
+				.map((pid) => state.players.find((p) => p.playerId === pid)?.username ?? pid)
+				.join(' and ');
+			pushEtbRuleLog(
+				state,
+				chooser.playerId,
+				`${chooser.username} chose ${names} for ${bfView.name} (CR 614.12).`
+			);
+		} else if (choiceField === 'etbObject' && answer.kind === 'chooseObjects') {
+			nextData.etbObjectChosen = true;
+			const chosenId = answer.objectIds[0];
+			if (chosenId) {
+				obj.chosenObjectId = chosenId;
+				let chosenName = chosenId;
+				for (const pl of state.players) {
+					const found = pl.battlefield.find((b) => !b.phasedOut && b.instanceId === chosenId);
+					if (found) {
+						chosenName = found.card.name;
+						break;
+					}
+				}
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose ${chosenName} for ${bfView.name} (CR 614.12).`
+				);
+			}
+		} else if (choiceField === 'subTypeOptions' && answer.kind === 'chooseMode') {
+			const optsList = Array.isArray(data.subTypeOptions)
+				? data.subTypeOptions.map(String)
+				: prompt.choice?.kind === 'chooseMode'
+					? prompt.choice.modes
+					: [];
+			const chosenIdx = answer.indices[0] ?? 0;
+			const chosenSub = optsList[chosenIdx] ?? optsList[0] ?? '';
+			if (chosenSub) {
+				obj.chosenSubType = chosenSub;
+				pushEtbRuleLog(
+					state,
+					chooser.playerId,
+					`${chooser.username} chose ${chosenSub} for ${bfView.name} (CR 614.12).`
+				);
+			}
+		// --- End Track P22a ---
+		} else {
+			return;
+		}
+
+		// --- Track P20a (CR 614.12): External enters-untapped overrides tapped ETB choices ---
+		if (
+			obj.tapped &&
+			withHypotheticalBattlefieldPresence(state, receiver, obj, () =>
+				externalPermanentEntersUntapped(state, obj, receiver.playerId)
+			)
+		) {
+			obj.tapped = false;
+		}
+		// --- End Track P20a ---
+
+		// --- Track P18a ---
+		const remainingSpec = chooser.isBot ? null : selfEtbChoiceSpec(state, obj);
+		// --- End Track P18a ---
+		if (enqueueNextEtbChoicePrompt(state, obj, chooser, remainingSpec, nextData, null)) {
+			awaitingMore = true;
+			return;
+		}
+
+		pendingList.splice(idx, 1);
+		if (pendingList.length === 0) {
+			delete state.pendingZoneMoves;
+		}
+
+		if (setZone) obj.zone = 'battlefield';
+		const at: Exclude<InsertAt, 'deferred'> =
+			typeof insertSpec === 'number' || insertSpec === 'start' || insertSpec === 'end'
+				? insertSpec
+				: 'end';
+		if (insertSpec !== 'deferred') {
+			insertInto(receiver.battlefield, obj, at);
+			if (withCounters && withCounters.count > 0) {
+				placeRegisteredCounters(state, obj, withCounters.counter, withCounters.count);
+			}
+			if (!obj.isFaceDown) {
+				applyWave3EtbCounters(state, obj, placeRegisteredCounters, wave3ExtraCounters);
+				// --- Track P11 ---
+				if (typeof nextData.chosenEtbCounter === 'string') {
+					placeRegisteredCounters(state, obj, nextData.chosenEtbCounter as CounterType, 1);
+				}
+				const extEtbCounters = collectExternalEtbCounters(
+					state,
+					obj,
+					obj.controllerId || receiver.playerId
+				);
+				for (const ec of extEtbCounters) {
+					placeRegisteredCounters(state, obj, ec.counter, ec.amount);
+				}
+				// --- End Track P11 ---
+			}
+			// --- Track P12 ---
+			applyWave4EtbCountersAndSetup(state, obj, placeRegisteredCounters);
+			// --- End Track P12 ---
+			// --- Track P15 ---
+			const p15AmpCounters =
+				typeof nextData.wave5AmplifyCounters === 'number' ? nextData.wave5AmplifyCounters : 0;
+			applyWave5EtbCountersAndSetup(
+				state,
+				obj,
+				placeRegisteredCounters,
+				p15AmpCounters
+			);
+			// --- End Track P15 ---
+			// --- Track P18a ---
+			if (!obj.isFaceDown && obj.tributePaid) {
+				const tribN = getTributeTotalN(obj);
+				if (tribN > 0) {
+					placeRegisteredCounters(state, obj, '+1/+1', tribN);
+				}
+			}
+			checkStoriedDesignations(state);
+			enforceSoulbondPairs(state);
+			syncHideawayExilePeekPermissions(state);
+			// --- End Track P18a ---
+			// --- Track P22a ---
+			recordEnteredBattlefieldWave8(
+				state,
+				obj.controllerId || receiver.playerId,
+				obj
+			);
+			syncMayLookAtExiledWithSelfPermissionsWave8(state);
+			// --- End Track P22a ---
+		}
+		noteLayerInputsChanged(state);
+
+		if (sbaLog) {
+			pushSbaLog(state, obj, 'battlefield', replacedBy, sbaLog);
+		}
+		if (emit) {
+			emitZoneChange(
+				state,
+				obj,
+				fromZone,
+				'battlefield',
+				fromPlayerId,
+				receiver.playerId,
+				false,
+				lki
+			);
+			maybePlaceSagaEtbLoreCounter(state, obj);
+			if (
+				obj.attachedToId &&
+				(bfView.subtypes.includes('Aura') || bfView.typeLine.includes('Aura'))
+			) {
+				for (const pl of state.players) {
+					const host = pl.battlefield.find(
+						(b) => !b.phasedOut && b.instanceId === obj.attachedToId
+					);
+					if (host) {
+						emitEvent(state, {
+							kind: 'Attached',
+							attachmentId: obj.instanceId,
+							attachment: obj,
+							hostId: host.instanceId,
+							host
+						});
+						break;
+					}
+				}
+			}
+		}
+		syncBattlefieldControllers(state);
+	});
+	if (!awaitingMore) {
+		flushTriggers(state);
+	}
+});
+
+// --- Track P10 ---
+export function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
+// --- End Track P10 ---
 	const evaluated = evaluatePermanent(state, obj);
 	const power = evaluated.isCreature
 		? (obj.lastKnownPower ?? evaluated.breakdown.effectivePower ?? evaluated.power)
@@ -647,8 +3962,16 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 	const toughness = evaluated.isCreature
 		? (obj.lastKnownToughness ?? evaluated.breakdown.effectiveToughness ?? evaluated.toughness)
 		: undefined;
+	const attachedIds: string[] = [];
+	for (const p of state.players) {
+		for (const perm of p.battlefield) {
+			if (!perm.phasedOut && perm.attachedToId === obj.instanceId) {
+				attachedIds.push(perm.instanceId);
+			}
+		}
+	}
 	return {
-		card: obj.copiableCard ?? obj.card,
+		card: effectiveCardForObject(obj),
 		controllerId: obj.controllerId,
 		typeLine: evaluated.typeLine,
 		hasAllCreatureTypes: evaluated.hasAllCreatureTypes,
@@ -656,7 +3979,55 @@ function captureLki(state: GameState, obj: CardInstance): LeftBattlefieldInfo {
 		isToken: obj.isToken,
 		tapped: obj.tapped,
 		power,
-		toughness
+		toughness,
+		...(obj.activeFaceIndex !== undefined ? { activeFaceIndex: obj.activeFaceIndex } : {}),
+		...(obj.unlockedFaces ? { unlockedFaces: [...obj.unlockedFaces] } : {}),
+		...(attachedIds.length > 0 ? { attachedIds } : {}),
+		...(obj.foretold ? { foretold: true } : {}),
+		...(obj.blitzed ? { blitzed: true } : {}),
+		...(obj.saddledThisTurn ? { saddled: true } : {}),
+		...(obj.exertedThisTurn ? { exerted: true } : {}),
+		...(obj.chosenSubType ? { chosenSubType: obj.chosenSubType } : {}),
+		...(obj.chosenColor ? { chosenColor: obj.chosenColor } : {}),
+		...(obj.isMonstrous ? { monstrous: true } : {}),
+		// --- Track P9 ---
+		counters: { ...(obj.lastKnownCounters ?? obj.counters) },
+		...(() => {
+			const g = extractGrantedDeathKeywords(state, obj, evaluated);
+			return g ? { grantedDeathKeywords: g } : {};
+		})(),
+		// --- Track P10 ---
+		...(obj.damagedByThisTurn && obj.damagedByThisTurn.length > 0
+			? { damagedByThisTurn: [...obj.damagedByThisTurn] }
+			: {}),
+		...(() => {
+			if (!state.timedContinuousEffects?.length || evaluated.hasLostAllAbilities) return {};
+			const ver = obj.objectVersion || 1;
+			const texts: string[] = [];
+			for (const eff of state.timedContinuousEffects) {
+				if (!eff.layer6?.grantedAbilityTexts?.length) continue;
+				if (
+					eff.affected.some(
+						(a) => a.instanceId === obj.instanceId && (a.objectVersion ?? 1) === ver
+					)
+				) {
+					texts.push(...eff.layer6.grantedAbilityTexts);
+				}
+			}
+			return texts.length > 0 ? { grantedAbilityTexts: texts } : {};
+		})(),
+		// --- End Track P10 ---
+		// --- Track P18a ---
+		...(() => {
+			if (obj.isFaceDown) return {};
+			const effMergedLki = obj.copiableState
+				? obj.copiableState.mergedComponents
+				: obj.mergedComponents;
+			return effMergedLki && effMergedLki.length > 1
+				? { mergedComponents: [...effMergedLki] }
+				: {};
+		})()
+		// --- End Track P18a ---
 	};
 }
 
@@ -676,6 +4047,11 @@ function emitZoneChange(
 	ceasedToExist: boolean,
 	lki?: LeftBattlefieldInfo
 ): void {
+	// --- Track P22b ---
+	if (to === 'battlefield' && !ceasedToExist) {
+		obj.enteredFromZone = from;
+	}
+	// --- End Track P22b ---
 	emitEvent(state, {
 		kind: 'ZoneChange',
 		objectId: obj.instanceId,
@@ -687,6 +4063,39 @@ function emitZoneChange(
 		ceasedToExist,
 		...(lki ? { lki } : {})
 	});
+}
+
+function sagaHasReadAhead(obj: CardInstance): boolean {
+	if (obj.isFaceDown) return false;
+	const card = effectiveCardForObject(obj);
+	const def = compileCard(card);
+	const resolved = resolveObjectFaces(card, instanceFaceOptions(obj, 'battlefield'));
+	return resolved.activeFaceIndices.some((fi) => Boolean(def.faces[fi]?.hasReadAhead));
+}
+
+/**
+ * CR 715.3a: As a Saga without read ahead enters the battlefield, its controller puts a lore
+ * counter on it. Evaluated after battlefield insertion so layer-4 type changes (CR 614.12) and
+ * counter multipliers apply accurately.
+ */
+function maybePlaceSagaEtbLoreCounter(state: GameState, obj: CardInstance): void {
+	if (obj.zone !== 'battlefield' || obj.phasedOut || obj.isFaceDown) return;
+	if ((obj.counters.lore || 0) > 0) return;
+	const ev = evaluatePermanent(state, obj);
+	if (!ev.hasSubType('Saga')) return;
+	// --- Track P15: CR 702.155a Read ahead ---
+	const raSpec = getSagaReadAheadSpec(obj);
+	if (raSpec.hasReadAhead || sagaHasReadAhead(obj)) {
+		const chosen = Math.max(
+			1,
+			Math.min(raSpec.maxChapter, obj.readAheadChosenChapter ?? raSpec.maxChapter)
+		);
+		obj.readAheadChosenChapter = chosen;
+		placeRegisteredCounters(state, obj, 'lore', chosen);
+		return;
+	}
+	// --- End Track P15 ---
+	placeRegisteredCounters(state, obj, 'lore', 1);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -710,6 +4119,11 @@ export function placeDeferred(
 
 /** Shuffles a library. With `keepTop`, the top `keepTop` cards stay where they are. */
 export function shuffleLibrary(state: RngHolder, player: PlayerGameState, keepTop = 0): void {
+	// CR 701.20d: Shuffling clears known-card identity on the shuffled portion of the library.
+	const toClear = keepTop <= 0 ? player.library : player.library.slice(keepTop);
+	for (const c of toClear) {
+		c.knownToPlayerIds = undefined;
+	}
 	if (keepTop <= 0) {
 		player.library = shuffleArray(state, player.library);
 	} else {
@@ -718,6 +4132,15 @@ export function shuffleLibrary(state: RngHolder, player: PlayerGameState, keepTo
 			...shuffleArray(state, player.library.slice(keepTop))
 		];
 	}
+	// --- Track P22b ---
+	const maybeGameState = state as Partial<GameState>;
+	if (Array.isArray(maybeGameState.players) && maybeGameState.status !== 'mulligan') {
+		emitEvent(maybeGameState as GameState, {
+			kind: 'LibraryShuffled',
+			playerId: player.playerId
+		});
+	}
+	// --- End Track P22b ---
 }
 
 /** Replaces a zone's order. `ordered` must contain exactly the zone's current objects. */
@@ -767,14 +4190,179 @@ export function transferBattlefieldControl(
 	perm: CardInstance,
 	fromPlayer: PlayerGameState,
 	toPlayer: PlayerGameState,
-	state?: GameState
+	state?: GameState,
+	opts?: { preserveDefaultController?: boolean }
 ): void {
 	removeFirst(fromPlayer.battlefield, perm.instanceId);
+	if (!opts?.preserveDefaultController) {
+		if (!perm.defaultControllerId) {
+			perm.defaultControllerId = perm.controllerId || fromPlayer.playerId;
+		}
+		if (state) {
+			const ts = (state.nextTimestamp = (state.nextTimestamp || 0) + 1);
+			(state.timedContinuousEffects ??= []).push({
+				timestamp: ts,
+				sourceName: 'Control change',
+				controllerId: toPlayer.playerId,
+				expires: 'never',
+				affected: [{ instanceId: perm.instanceId, objectVersion: perm.objectVersion ?? 1 }],
+				layer2: { controllerId: toPlayer.playerId }
+			});
+		}
+	}
 	perm.controllerId = toPlayer.playerId;
 	perm.summoningSick = true;
+	perm.castViaSuspend = false;
+	// --- Track P9 (CR 702.30a) ---
+	if (state) {
+		perm.cameUnderControlAt = allocateEchoTick(state);
+	}
 	toPlayer.battlefield.push(perm);
 	noteLayerInputsChanged(state);
 	removeFromCombat(state, perm.instanceId);
+}
+
+/**
+ * CR 613.1b, 613.7, 302.6, 506.4: Synchronizes each battlefield permanent's physical
+ * `player.battlefield` array and `perm.controllerId` with its evaluated Layer 2 controller.
+ *
+ * 1. Prunes `TimedContinuousEffect` entries whose `layer2.untilSourceLeaves` source is no longer
+ *    on any active player's battlefield with matching `objectVersion` (phased-out permanents remain
+ *    on the battlefield per CR 702.26d and are not pruned).
+ * 2. Evaluates all active permanents via `evaluatePermanent` and moves any permanent whose
+ *    `controllerId` or hosting `battlefield` differs from its evaluated Layer 2 controller,
+ *    preserving `defaultControllerId`, marking `summoningSick = true` (CR 302.6), clearing
+ *    `castViaSuspend` (CR 702.62a), and removing from combat (CR 506.4).
+ *
+ * Returns true if any permanent changed controller/battlefield.
+ */
+let syncingControllers = false;
+
+export function syncBattlefieldControllers(state: GameState): boolean {
+	if (syncingControllers) return false;
+	syncingControllers = true;
+	try {
+		// --- Track P16a (CR 611.2b) ---
+		const pruneBrokenSourceDurations = (): void => {
+			if (!state.timedContinuousEffects?.length) return;
+			const boardPerms = new Map<string, CardInstance>();
+			for (const p of state.players) {
+				if (p.lost) continue;
+				for (const c of p.battlefield) {
+					boardPerms.set(c.instanceId, c);
+				}
+			}
+			const remaining = state.timedContinuousEffects.filter((eff) => {
+				const usl = eff.layer2?.untilSourceLeaves;
+				if (usl) {
+					const src = boardPerms.get(usl.sourceInstanceId);
+					if (!src || (src.objectVersion ?? 1) !== usl.sourceObjectVersion) return false;
+				}
+				if (
+					eff.expires === 'forAsLongAsYouControlSelf' ||
+					eff.expires === 'forAsLongAsSelfRemainsTapped'
+				) {
+					const cond = eff.sourceCondition;
+					if (!cond || cond.broken) return false;
+					const src = boardPerms.get(cond.sourceInstanceId);
+					if (!src || src.phasedOut || (src.objectVersion ?? 1) !== cond.sourceObjectVersion) {
+						cond.broken = true;
+						return false;
+					}
+					const holds =
+						cond.kind === 'controlledByPlayer'
+							? src.controllerId === cond.controllerId
+							: Boolean(src.tapped);
+					if (!holds) {
+						cond.broken = true;
+						return false;
+					}
+				}
+				return true;
+			});
+			if (remaining.length !== state.timedContinuousEffects.length) {
+				state.timedContinuousEffects = remaining.length > 0 ? remaining : undefined;
+				noteLayerInputsChanged(state);
+			}
+		};
+		pruneBrokenSourceDurations();
+		// --- End Track P16a ---
+
+		// --- Track P11: O(B) skip when no Layer 2 control effect or foreign permanent exists ---
+		if (!boardMayNeedControllerSync(state)) return false;
+		// --- End Track P11 ---
+
+		let anyMoved = false;
+		for (let pass = 0; pass < 8; pass++) {
+			const moves: Array<{
+				perm: CardInstance;
+				fromPlayer: PlayerGameState;
+				targetControllerId: string;
+			}> = [];
+			withStableLayerInputs(state, () => {
+				for (const p of state.players) {
+					if (p.lost) continue;
+					for (const perm of p.battlefield) {
+						if (perm.phasedOut) continue;
+						const targetControllerId = evaluatePermanent(state, perm).controllerId;
+						if (perm.controllerId !== targetControllerId || p.playerId !== targetControllerId) {
+							moves.push({ perm, fromPlayer: p, targetControllerId });
+						}
+					}
+				}
+			});
+			if (moves.length === 0) break;
+
+			let passMoved = false;
+			for (const { perm, fromPlayer, targetControllerId } of moves) {
+				if (!perm.defaultControllerId) {
+					perm.defaultControllerId = perm.controllerId || fromPlayer.playerId;
+				}
+				const targetPlayer = state.players.find((pl) => pl.playerId === targetControllerId);
+				if (!targetPlayer || targetPlayer.lost) {
+					// CR 800.4a / 800.4c: Previous/default controller left the game; exile foreign permanent.
+					moveObject(state, perm, 'exile', {
+						from: { player: fromPlayer, zone: 'battlefield' },
+						detachAttachments: true,
+						leaveBattlefieldReset: true,
+						bumpVersion: true,
+						newTimestamp: true,
+						ceaseToExist: 'tokens'
+					});
+					passMoved = true;
+					anyMoved = true;
+					continue;
+				}
+				if (fromPlayer.playerId !== targetPlayer.playerId) {
+					transferBattlefieldControl(perm, fromPlayer, targetPlayer, state, {
+						preserveDefaultController: true
+					});
+				} else {
+					perm.controllerId = targetControllerId;
+					perm.summoningSick = true;
+					perm.castViaSuspend = false;
+					// --- Track P9 (CR 702.30a) ---
+					perm.cameUnderControlAt = allocateTimestamp(state);
+					noteLayerInputsChanged(state);
+					removeFromCombat(state, perm.instanceId);
+				}
+				passMoved = true;
+				anyMoved = true;
+			}
+			if (!passMoved) break;
+			// --- Track P16a ---
+			pruneBrokenSourceDurations();
+			// --- End Track P16a ---
+		}
+		// --- Track P18a (CR 702.95e, 702.75a, 702.195b) ---
+		enforceSoulbondPairs(state);
+		syncHideawayExilePeekPermissions(state);
+		checkStoriedDesignations(state);
+		// --- End Track P18a ---
+		return anyMoved;
+	} finally {
+		syncingControllers = false;
+	}
 }
 
 /**
@@ -839,3 +4427,150 @@ export function tapPermanent(state: GameState, perm: CardInstance): boolean {
 	}
 	return true;
 }
+
+/**
+ * CR 701.3a–c, CR 613.7e: Single funnel for attaching an Aura, Equipment, or Fortification to an
+ * object or player (`hostId`).
+ * - CR 701.3b: If `obj` is already attached to `hostId`, does nothing and returns `false`.
+ * - CR 613.7e: Otherwise sets `obj.attachedToId = hostId`, allocates a fresh `enteredTimestamp`,
+ *   notifies the layer cache, and returns `true`.
+ */
+export function attachObject(state: GameState, obj: CardInstance, hostId: string): boolean {
+	// --- Track P21: Graveyard/Reanimating Aura transition onto battlefield creature (CR 303.4, 400.7, 613.7e) ---
+	let bfHost: CardInstance | undefined;
+	let reanimTransition = false;
+	if (obj.zone === 'battlefield' && !obj.phasedOut && !obj.auraReanimatedHostId && isGraveyardOrReanimatingAura(state, obj)) {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			const found = p.battlefield.find((c) => !c.phasedOut && c.instanceId === hostId);
+			if (found) {
+				bfHost = found;
+				reanimTransition = true;
+				break;
+			}
+		}
+	}
+	if (obj.attachedToId === hostId && !reanimTransition) return false;
+	if (reanimTransition && bfHost) {
+		obj.auraReanimatedHostId = hostId;
+		bfHost.reanimatedByAura = {
+			sourceInstanceId: obj.instanceId,
+			sourceObjectVersion: obj.objectVersion ?? 1
+		};
+	}
+	// --- End Track P21 ---
+	// --- Track P16b ---
+	const prevHostId = obj.zone === 'battlefield' && !obj.phasedOut ? obj.attachedToId : null;
+	// --- End Track P16b ---
+	obj.attachedToId = hostId;
+	obj.enteredTimestamp = allocateTimestamp(state);
+	noteLayerInputsChanged(state);
+	// --- Track P16b ---
+	if (prevHostId && prevHostId !== hostId) {
+		emitEvent(state, {
+			kind: 'Unattached',
+			attachmentId: obj.instanceId,
+			attachment: obj,
+			hostId: prevHostId
+		});
+	}
+	// --- End Track P16b ---
+	return true;
+}
+
+// --- Track P13 ---
+/**
+ * CR 114.1 / CR 309.4: Places a synthesized Emblem or Dungeon object into `player.command` through
+ * `zones.ts` (preserving `directZoneMutation === 0`) and notifies the layer cache.
+ */
+export function putIntoCommandZone(
+	state: GameState,
+	player: PlayerGameState,
+	inst: CardInstance
+): void {
+	inst.zone = 'command';
+	player.command.push(inst);
+	noteLayerInputsChanged(state);
+}
+// --- End Track P13 ---
+
+// --- Track P18b ---
+/**
+ * CR 713.4: Merges two exiled Meld front cards onto the battlefield as a single melded permanent
+ * through `zones.ts` (preserving `directZoneMutation === 0`).
+ */
+export function mergeExiledPairOntoBattlefield(
+	state: GameState,
+	controller: PlayerGameState,
+	exiledPrimary: CardInstance,
+	exiledPartner: CardInstance,
+	meldedCard: ScryfallCard,
+	components: [ScryfallCard, ScryfallCard],
+	enterTapped: boolean
+): CardInstance | null {
+	let primaryHolder: PlayerGameState | undefined;
+	for (const pl of state.players) {
+		if (pl.exile.some((e) => e.instanceId === exiledPrimary.instanceId)) {
+			primaryHolder = pl;
+		}
+		const pIdx = pl.exile.findIndex((e) => e.instanceId === exiledPartner.instanceId);
+		if (pIdx >= 0) {
+			pl.exile.splice(pIdx, 1);
+		}
+	}
+	if (!primaryHolder) return null;
+
+	exiledPrimary.printedCard = components[0];
+	exiledPrimary.card = meldedCard;
+	exiledPrimary.meldedComponents = components;
+	exiledPrimary.activeFaceIndex = 1;
+	exiledPrimary.tapped = enterTapped;
+	exiledPrimary.summoningSick = true;
+
+	moveObject(state, exiledPrimary, 'battlefield', {
+		from: { player: primaryHolder, zone: 'exile' },
+		toPlayer: controller,
+		controllerId: controller.playerId,
+		bumpVersion: true,
+		newTimestamp: true
+	});
+	noteLayerInputsChanged(state);
+	return exiledPrimary.zone === 'battlefield' ? exiledPrimary : null;
+}
+
+/**
+ * CR 116.2g / CR 702.139a: Puts a designated Companion card from outside the game into `player`'s
+ * hand through `zones.ts` (preserving `directZoneMutation === 0`).
+ */
+export function putCompanionIntoHand(
+	state: GameState,
+	player: PlayerGameState,
+	companionCard: ScryfallCard
+): CardInstance {
+	const inst: CardInstance = {
+		instanceId: uid('ci', state),
+		card: companionCard,
+		ownerId: player.playerId,
+		controllerId: player.playerId,
+		zone: 'hand',
+		tapped: false,
+		summoningSick: false,
+		damageMarked: 0,
+		deathtouchDamageMarked: false,
+		counters: createEmptyCounters(),
+		tempPowerMod: 0,
+		tempToughnessMod: 0,
+		grantedKeywords: [],
+		attachedToId: null,
+		isToken: false,
+		isCommander: false,
+		commanderCastCount: 0,
+		usedLoyaltyThisTurn: false,
+		transformed: false,
+		objectVersion: 1
+	};
+	player.hand.push(inst);
+	noteLayerInputsChanged(state);
+	return inst;
+}
+// --- End Track P18b ---

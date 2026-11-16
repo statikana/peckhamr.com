@@ -360,8 +360,7 @@ describe('Phase 5 bug: Goldspan Dragon "or becomes the target of a spell"', () =
 
 describe('Phase 5 bug: unsupported qualifiers never fire', () => {
 	const cases: Array<[string, string]> = [
-		['Saddle Runner', 'Whenever Saddle Runner attacks while saddled, draw a card.'],
-		['Unseen Courier', "Whenever Unseen Courier attacks and isn't blocked, draw a card."],
+		['Enchanted Runner', 'Whenever Enchanted Runner attacks while enchanted, draw a card.'],
 		['Player Hunter', 'Whenever Player Hunter attacks a player, draw a card.']
 	];
 	for (const [name, text] of cases) {
@@ -380,9 +379,31 @@ describe('Phase 5 bug: unsupported qualifiers never fire', () => {
 		});
 	}
 
-	it('When ~ enters untapped, draw a card.', () => {
+	// --- Track P22b: "attacks the player with the most life" promoted from unsupported to supported ---
+	it('Track P22b: Most Life Hunter triggers only when attacking the player with the most life', () => {
 		const { state, p } = game();
-		const c = card({ name: 'Quiet Grange', typeLine: 'Land', manaCost: '', cmc: 0, oracleText: 'When Quiet Grange enters untapped, draw a card.' });
+		const c = card({
+			name: 'Most Life Hunter',
+			typeLine: 'Creature — Human',
+			oracleText: 'Whenever Most Life Hunter attacks the player with the most life, draw a card.',
+			power: '1',
+			toughness: '1'
+		});
+		assert.equal(compileCard(c).faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const inst = put(state, p[0], c, 'battlefield');
+		p[0].life = 15;
+		p[1].life = 25;
+		const handBefore = p[0].hand.length;
+		attack(state, p[0], p[1], [inst]);
+		resolveTriggers(state);
+		assert.equal(p[0].hand.length, handBefore + 1, 'drew when attacking player with the most life');
+	});
+	// --- End Track P22b ---
+
+	// --- Track P16b ---
+	it('When ~ enters from the command zone, draw a card.', () => {
+		const { state, p } = game();
+		const c = card({ name: 'Quiet Grange', typeLine: 'Land', manaCost: '', cmc: 0, oracleText: 'When Quiet Grange enters from the command zone, draw a card.' });
 		assert.ok(compileCard(c).faces[0].abilities.some((a) => a.kind === 'unsupported'));
 		const inst = put(state, p[0], c, 'hand');
 		const handBefore = p[0].hand.length;
@@ -392,13 +413,15 @@ describe('Phase 5 bug: unsupported qualifiers never fire', () => {
 
 	it('a cast trigger with an unmodelled intervening-if does not fire', () => {
 		const { state, p } = game();
+		// --- Track P19b: Treasure-mana intervening-if is now implemented; test an unmodelled condition ---
 		const c = card({
 			name: 'Tide Sage',
 			typeLine: 'Creature — Merfolk',
-			oracleText: 'Whenever you cast a noncreature spell, if at least four mana was spent to cast it, draw a card.',
+			oracleText: 'Whenever you cast a noncreature spell, if an opponent voted for grace, draw a card.',
 			power: '1',
 			toughness: '3'
 		});
+		// --- End Track P19b ---
 		assert.ok(compileCard(c).faces[0].abilities.some((a) => a.kind === 'unsupported'));
 		put(state, p[0], c, 'battlefield');
 		const spell = put(state, p[0], card({ name: 'Small Thought', manaCost: '{U}', typeLine: 'Instant', oracleText: 'You gain 1 life.' }), 'hand');
@@ -406,6 +429,7 @@ describe('Phase 5 bug: unsupported qualifiers never fire', () => {
 		cast(state, p[0], spell);
 		assert.equal(p[0].hand.length, handBefore - 1, 'did not draw');
 	});
+	// --- End Track P16b ---
 });
 
 describe('Phase 5 bug: lines matched to the wrong event', () => {

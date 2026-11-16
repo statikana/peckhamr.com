@@ -4,6 +4,9 @@ Audited against `engine-rewrite` (`917180b` and reconciled post-Step-F at `9ac84
 
 ---
 
+> [!WARNING]
+> **Known miscounts (checked 2026-11-12).** The table below mixes table-row counts (sections 02 and 05) with subrule counts, and the totals for 02, 03, 06 and 10 don't match their own reports. `src/lib/rules.txt` has about 2,988 numbered rules, not 2,565. Use these figures for rough proportions only. See [`../audits/02-rules-audit-arithmetic-and-cr-citations.md`](../audits/02-rules-audit-arithmetic-and-cr-citations.md).
+
 ## 1. Section-by-Section Summary
 
 | Section | Report | Rules Range | Implemented | Partial | Missing | N/A | Total Rows/Subrules |
@@ -126,13 +129,13 @@ These are places where the compiler claims a card is `fullySupported: true` (sup
 
 ### Tier 4: Unimplemented Mechanics & Keywords Common in Commander (Phase 11+ Roadmap)
 
-1. **Modal spells & abilities (`CR 700.2`)** — Mode choice prompt (`chooseMode`) on cast/trigger/resolution *(Step F is adding modal support for precon spells like Casualties of War and Farewell)*.
-2. **Vehicles & `Crew N` / `Living metal` / `Saddle N` (`CR 301.7, 702.122, 702.161, 702.171`)** — Continuous Layer 4 type-animation effect (`becomes an artifact creature until end of turn`) and `tapOthers` total-power cost filter.
-3. **Linked Exile (`CR 607.2a, 610.3`)** — `"Exile target ... until ~ leaves the battlefield"` (*Banisher Priest*, *Oblivion Ring*, *Grasp of Fate*) and `"cards exiled with ~"` tracking.
-4. **Continuous effects from resolving spells/abilities (`CR 611.2`)** — Timestamped continuous-effect objects on `GameState` for Layer 2 control changes (*Act of Treason*, *Control Magic*), Layer 4/5 type/color changes, Layer 7b base P/T setting, and `"for as long as ..."` durations.
-5. **Predefined tokens beyond Treasure (`CR 111.10a–x`)** — **Clue**, **Food**, **Blood**, **Map**, **Powerstone**, **Junk**, **Lander** token definitions in `compiler/effects.ts`.
-6. **High-frequency keyword actions (`CR 701`)** — **Surveil** (`701.25`), **Investigate** (`701.16`), **Explore** (`701.44`), **Connive** (`701.50`), **Discover** (`701.57`), **Goad** (`701.15` application & expiration), **Regenerate** (`701.19`).
-7. **High-frequency keyword abilities (`CR 702`)** — **Cascade** (`702.85`), **Flashback** (`702.34`), **Kicker** (`702.33`), **Cycling** (`702.29`), **Convoke** (`702.51`), **Delve** (`702.66`), **Undying** (`702.93`), **Persist** (`702.79`), **Toxic** (`702.164`), **Myriad** (`702.116`), **Landwalk** (`702.14`).
+1. ✅ **Modal spells & abilities (`CR 700.2a–d`, `603.3c`)** — Spells, triggered abilities (`trigger_modes -> trigger_targets`), activated/loyalty abilities (`activate_ability.chosenModes`), repeatable modes (`allowRepeat`), `oncePerTurnUnique`, and multi-target modes (`modals-and-triggers.test.ts`). *(Spree `700.2h`, pawprints `{P}` `700.2i`, and opponent mode choice `700.2e` remain unimplemented.)*
+2. ✅ **Vehicles & `Crew N` (`CR 702.122a–e`, `CR 301.7`)** — Generalized Layer 4/6/7b `TimedContinuousEffect` animation, `tapSubsetSum` cost, `BecomesCrewed` event/triggers, and keyword-blind UI/AI (`crew-and-vehicles.test.ts`). *(`Living metal` `702.161`, `Saddle N` `702.171`, and `Station` remain unimplemented.)*
+3. ✅ **Linked Exile (`CR 607.2a, 610.3`)** — `"Exile target ... until ~ leaves the battlefield"` (*Banisher Priest*, *Oblivion Ring*, *Grasp of Fate*) and `"cards exiled with ~"` tracking implemented in Track E (`compiler/compiler.test.ts`).
+4. ✅ **Layer 2 control changes & continuous effects (`CR 611.2, 613.1b`)** — Layer 2 continuous control changes (*Act of Treason*, *Control Magic*, `untilSourceLeaves`), `state.timedContinuousEffects` for Layer 4/6/7b (`Crew N`), and general delayed triggers (`CR 603.7`) implemented (`runtime/layers.ts`, `compiler/compiler.test.ts`). *(Other `"for as long as ..."` durations remain partial.)*
+5. **Predefined tokens beyond Treasure (`CR 111.10a–x`)** — **Incubator** (`111.10i`) and **Role** (`111.10j–r`) remain unimplemented. **Treasure** (`111.10a`), **Food** (`111.10b`), **Gold** (`111.10c`), **Walker** (`111.10d`), **Shard** (`111.10e`), **Clue** (`111.10f`), **Blood** (`111.10g`), **Powerstone** (`111.10h`), **Map** (`111.10s`), **Junk** (`111.10t`), **Lander** (`111.10u`), **Mutagen** (`111.10v`), **Vibranium** (`111.10w`), and **Heartwood** (`111.10x`) are implemented (`PREDEFINED_TOKEN_DEFS`, `runtime/mana.ts`).
+6. **High-frequency keyword actions (`CR 701`)** — **Discover** (`701.57`) remains unimplemented. **Investigate** (`701.16`), **Surveil** (`701.25`), **Goad** (`701.15`, with `CR 800.4m` turn expiration), **Explore** (`701.44`), **Connive** (`701.50`), and **Regenerate** (`701.19` / `614.8`) are implemented (`compiler/effects.ts`, `runtime/effects.ts`, `engine.ts`).
+7. **High-frequency keyword abilities (`CR 702`)** — **Convoke** (`702.51`) & **Delve** (`702.66`) implemented via generic `CastCostAid` (`runtime/convoke-delve.test.ts`); **Devoid** (`702.114`) implemented (`runtime/keywords-devoid-and-dig.test.ts`); **Cascade** (`702.85`), **Flashback** (`702.34`), **Kicker** (`702.33`), **Cycling** (`702.29`), **Undying** (`702.93`), **Persist** (`702.79`), **Toxic** (`702.164`), **Myriad** (`702.116`), **Landwalk** (`702.14`) tracked across `keywords.ts`.
 8. **Sagas (`CR 715`), Classes (`CR 717`), and Double-Faced / Split / Adventure Cards (`CR 709, 712, 716`)** — Lore counters & chapter triggers, class levels, and multi-face card casting/transformation.
 9. **Monarch (`CR 726`) & Initiative (`CR 727`)** — Game-state designations and inherent triggers.
 

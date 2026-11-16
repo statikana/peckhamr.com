@@ -1,0 +1,145 @@
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.7in}
+\addtolength{\textheight}{1.35in}
+\setlength{\footskip}{5pt}
+
+\urlstyle{same}
+
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+\vspace{-6pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-4pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{
+\item\small{#1}
+}
+
+\newcommand{\shortsection}{\vspace{-6pt}\section}
+
+\newcommand{\resumeSubheading}[4]{
+\vspace{1pt}\item
+\begin{tabular*}{\linewidth}{l@{\extracolsep{\fill}}r}
+\textbf{#1} & #2 \\[2pt]
+\small#3 & \small #4 \\
+\end{tabular*}\vspace{-1pt}
+}
+
+\newcommand{\resumeSubheadingSoftTwo}[2]{
+\vspace{-2pt}\item
+\begin{tabular*}{\linewidth}{l@{\extracolsep{\fill}}r}
+#1 & #2 \\
+\end{tabular*}\vspace{-4pt}
+}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\setlist[itemize]{itemsep=1.5pt, topsep=1.5pt, parsep=0pt, partopsep=0pt}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=0.15in]}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{2pt}}
+
+\begin{document}
+\begin{center}
+\textbf{\Huge \scshape Ryan Peckham} \\[2pt]
+\small \href{mailto:peckhamr@umich.edu}{peckhamr@umich.edu} $\cdot$
+\href{https://peckhamr.com}{peckhamr.com} $\cdot$
+\href{https://github.com/statikana}{github.com/statikana} $\cdot$
+(616) 834-2160 $\cdot$
+Ann Arbor, MI
+\end{center}
+
+\shortsection{Education}
+\resumeSubHeadingListStart
+\resumeSubheading
+{University of Michigan}{Ann Arbor, MI}
+{B.S. in Computer Engineering (GPA: 3.35/4.0)}{Expected May 2029}
+\resumeItem{\textbf{Relevant Coursework:} Programming \& Data Structures, Discrete Mathematics, Multivariable \& Vector Calculus, Probability \& Statistics, Electricity \& Magnetism}
+\resumeSubHeadingListEnd
+
+\shortsection{Technical Skills}
+\resumeSubHeadingListStart
+\resumeItem{\textbf{Languages} --- C/C++, Python, Rust, Java, C\#, SQL, JavaScript, MATLAB}
+\resumeItem{\textbf{Robotics \& Autonomy} --- ROS 2, OpenCV, SITL/HITL Simulation, PID Control, Sensor Interfacing (IMU, GPS)}
+\resumeItem{\textbf{Systems \& Tools} --- Linux (Ubuntu, Debian, NixOS), Docker, Git/GitHub, Multithreading, PostgreSQL}
+\resumeItem{\textbf{Hardware Prototyping} --- Raspberry Pi, Circuit Prototyping, Soldering, Machining (CNC, Lathe, Mill)}
+\resumeSubHeadingListEnd
+
+\shortsection{Engineering Experience}
+\resumeSubHeadingListStart
+
+\resumeSubheading
+{Michigan Autonomous Security Team (M-AST), Chief Software Engineer}{Jan. 2026 -- Present}
+{University of Michigan}{}
+\resumeItemListStart
+\resumeItem{Lead a team of engineers developing onboard firmware and sensor drivers for an autonomous quadcopter, integrating and calibrating IMU (gyroscope/accelerometer), magnetometer, barometer, and GPS modules}
+\resumeItem{Co-architected modular flight software architecture and inter-subsystem data pipelines, containerizing services with Docker to enable Software-in-the-Loop (SITL) and Hardware-in-the-Loop (HITL) flight simulation}
+\resumeItem{Integrated ROS 2 nodes, OpenCV vision pipelines, autonomous waypoint navigation, and real-time telemetry into a unified flight software stack}
+\resumeItem{Direct repository architecture across submodules, enforcing peer code reviews, CI workflows, and quality standards}
+\resumeItemListEnd
+
+\resumeSubheading
+{FIRST Robotics Competition (FRC), Team 141 ``WOBOT''}{Aug. 2023 -- Oct. 2024}
+{West Ottawa High School, Programming Team Lead}{}
+\resumeItemListStart
+\resumeItem{Programmed robot drivetrain kinematics and mechanism control in Java, tuning closed-loop PIDF feedback controllers to achieve precision autonomous trajectory tracking and responsive teleoperation}
+\resumeItem{Troubleshot real-time software exceptions and electrical faults under tight match turnarounds, collaborating with drive and pit teams to win the District Championship and Engineering Inspiration award}
+\resumeItemListEnd
+
+\resumeSubheading
+{Cultural, Technological, and Environmental Exchange (CTEE) Club}{Sep. 2024 -- Apr. 2025}
+{West Ottawa High School, Hardware Technician}{}
+\resumeItemListStart
+\resumeItem{Diagnosed and refurbished desktop workstations, troubleshooting hardware-level faults across motherboards, power supplies, RAM, and storage drives}
+\resumeItem{Configured operating systems, drivers, and network configurations to provision ready-to-deploy machines for humanitarian delivery to schools in Cambodia and Haiti}
+\resumeItemListEnd
+
+\resumeSubHeadingListEnd
+
+\shortsection{Technical Projects}
+\resumeSubHeadingListStart
+\resumeItem{\textbf{QRust (Custom Compiler)} --- Statically typed language in Rust targeting multiple ISAs via Cranelift; implemented lexical analysis, AST parsing, type checking, native SIMD vector primitives, and stack-allocated pointer semantics}
+\resumeItem{\textbf{Autonomous Solar Tracker} --- Engineered a dual-axis solar tracking system on a Raspberry Pi using C++; designed closed-loop feedback algorithms processing photoresistor arrays to control precision stepper motor orientation}
+\resumeItem{\textbf{Multi-Threaded File Downloader} --- Built a concurrent CLI file downloader in Python; segmented large payloads via HTTP Range headers to stream chunks across worker threads with thread-safe file reassembly}
+\resumeItem{\textbf{Algorithmic Sudoku Solver} --- Implemented a high-performance solver modeling grid states with bitmasks and NumPy; developed constraint propagation techniques and human strategies (hidden singles/pairs, X-Wing, Swordfish)}
+\resumeItem{\textbf{FlyMast.com \& peckhamr.com} --- Designed and deployed production web applications using Svelte, JavaScript, and Cloudflare Workers, incorporating responsive modular components for team updates and sponsor engagement}
+\resumeSubHeadingListEnd
+
+\shortsection{Work Experience}
+\vspace{-4pt}
+\begin{tabular*}{\linewidth}{l@{\extracolsep{\fill}}r}
+\small Ace Hardware, Delivery and Assembly Technician & \small May 2026 -- Aug. 2026 \\[1.5pt]
+\small Chick-fil-A, Crew Member & \small June 2025 -- Jan. 2026 \\[1.5pt]
+\small Target, Electronics Consultant \& Team Leader & \small Nov. 2022 -- Aug. 2024 \\
+\end{tabular*}
+
+\end{document}

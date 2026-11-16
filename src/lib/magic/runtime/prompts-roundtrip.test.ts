@@ -5,7 +5,9 @@ import {
 	applyGameAction,
 	checkStateBasedActions,
 	createCardInstance,
-	createInitialGameState
+	createInitialGameState,
+	endTheTurnImmediately,
+	sanitizeGameStateForViewer
 } from '../engine.ts';
 import { PRECON_DECKS } from '../precons.ts';
 import {
@@ -453,5 +455,671 @@ describe('Step E2: prompts survive the JSON round trip (fail-first)', () => {
 		assert.equal(player(s4, 0).hand.length, 6);
 		assert.equal(player(s4, 0).library.at(-1)?.instanceId, chosen);
 		assert.equal(player(s4, 0).hasKeptHand, true);
+	});
+
+	for (const accept of [true, false]) {
+		it(`mid-ability "You may ... If you do, ..." (${accept ? 'accepted' : 'declined'}) survives JSON round-trips`, () => {
+			let state = game();
+			let alice = player(state, 0);
+			const spell = put(
+				state,
+				alice,
+				card({
+					name: 'Scholarly Bargain',
+					oracleText: 'Draw a card. You may discard a card. If you do, draw two cards.'
+				}),
+				'hand'
+			);
+			const keepCard = put(state, alice, card({ name: 'Island', typeLine: 'Basic Land — Island' }), 'hand');
+			const handBeforeCast = alice.hand.length;
+			cast(state, alice, spell);
+			settle(state);
+
+			// Cast (-1) + step 0 draw (+1) before pausing at step 1 ("You may discard a card.")
+			assert.equal(player(state, 0).hand.length, handBeforeCast);
+			assert.equal(state.stack.length, 1);
+			const optPrompt = onlyPrompt(state, 0);
+			assert.equal(optPrompt.choice?.kind, 'yesNo');
+
+			state = answerOnCopy(state, optPrompt, { kind: 'yesNo', yes: accept });
+			if (!accept) {
+				assert.equal(state.pendingPrompts.length, 0);
+				assert.equal(state.stack.length, 0);
+				assert.equal(player(state, 0).hand.length, handBeforeCast, 'declining skips discard and conditional draw');
+				return;
+			}
+
+			// Step 1 pause: choose a card to discard.
+			const discardPrompt = onlyPrompt(state, 0);
+			assert.equal(discardPrompt.choice?.kind, 'chooseObjects');
+			assert.equal(state.stack.length, 1);
+			state = answerOnCopy(state, discardPrompt, {
+				kind: 'chooseObjects',
+				objectIds: [keepCard.instanceId]
+			});
+			assert.equal(state.pendingPrompts.length, 0);
+			assert.equal(state.stack.length, 0);
+			// +1 draw -1 discard +2 conditional draw -1 spell = handBeforeCast + 1
+			assert.equal(player(state, 0).hand.length, handBeforeCast + 1);
+		});
+	}
+
+	it('non-controller chooser ("Target opponent may ...") prompts the opponent and survives JSON round-trip', () => {
+		let state = game();
+		const alice = player(state, 0);
+		const bob = player(state, 1);
+		const spell = put(
+			state,
+			alice,
+			card({ name: 'Parley Offer', oracleText: 'Target opponent may draw a card.' }),
+			'hand'
+		);
+		const bobHand = bob.hand.length;
+		const aliceHandAfterCast = alice.hand.length - 1;
+		cast(state, alice, spell, [{ kind: 'player', id: bob.playerId, label: bob.username }]);
+		settle(state);
+
+		const prompt = onlyPrompt(state, 1);
+		assert.equal(prompt.playerId, bob.playerId, 'opponent gets the yes/no prompt, not controller');
+		assert.equal(prompt.choice?.kind, 'yesNo');
+		state = answerOnCopy(state, prompt, { kind: 'yesNo', yes: true });
+		assert.equal(state.stack.length, 0);
+		assert.equal(player(state, 1).hand.length, bobHand + 1);
+		assert.equal(player(state, 0).hand.length, aliceHandAfterCast);
+	});
+
+	it('defers SBAs (CR 704.4) and triggered abilities (CR 603.3) while paused mid-resolution, strips them in viewer state, and flushes after resume', () => {
+		let state = game();
+		const alice = player(state, 0);
+		const bob = player(state, 1);
+		// Put a 2/2 creature on Bob's battlefield and a dies-watcher on Alice's battlefield.
+		const bear = put(state, bob, creature('Ashcoat Bear', '', '2', '2'), 'battlefield');
+		put(
+			state,
+			alice,
+			creature('Mourning Witness', 'Whenever a creature dies, you gain 1 life.'),
+			'battlefield'
+		);
+		const spell = put(
+			state,
+			alice,
+			card({
+				name: 'Withering Pause',
+				oracleText: 'Target creature gets -2/-2 until end of turn. You may draw a card.'
+			}),
+			'hand'
+		);
+		const aliceLifeBefore = alice.life;
+		const aliceHandAfterCast = alice.hand.length - 1;
+
+		cast(state, alice, spell, [{ kind: 'permanent', id: bear.instanceId, label: bear.card.name }]);
+		settle(state);
+
+		// Spell paused before step 1 ("You may draw a card."): resolving spell is STILL on the stack
+		// and bear with 2 - 2 = 0 toughness has NOT been put into graveyard by SBAs yet (CR 704.4).
+		const prompt = onlyPrompt(state, 0);
+		assert.equal(state.stack.length, 1);
+		assert.equal(state.stack[0].resolutionStarted, true);
+		assert.ok(
+			player(state, 1).battlefield.some((c) => c.instanceId === bear.instanceId),
+			'SBA must not kill 0-toughness creature while spell is paused mid-resolution'
+		);
+		assert.equal(player(state, 1).graveyard.length, 0);
+		assert.equal(state.pendingTriggers, undefined);
+
+		// Verify sanitized viewer state hides effectResume and any pendingTriggers.
+		const viewerState = sanitizeGameStateForViewer(state, alice.playerId);
+		assert.equal(viewerState.stack[0].effectResume, undefined);
+		assert.equal(viewerState.pendingTriggers, undefined);
+
+		// Also verify a trigger fired directly during a paused step waits in state.pendingTriggers across JSON round-trip.
+		let state2 = game();
+		const alice2 = player(state2, 0);
+		const bob2 = player(state2, 1);
+		const prey = put(state2, alice2, creature('Ephemeral Squire', '', '1', '1'), 'battlefield');
+		put(
+			state2,
+			bob2,
+			creature('Vengeful Tracker', 'Whenever a creature dies, you gain 2 life.'),
+			'battlefield'
+		);
+		const bobLifeBefore = bob2.life;
+		const sacSpell = put(
+			state2,
+			alice2,
+			card({
+				name: 'Dark Bargain',
+				oracleText: 'Target player sacrifices a creature. Draw a card. You may draw a card.'
+			}),
+			'hand'
+		);
+		//Wait: Dark Bargain has step 0 sacrifice -> step 2 optional draw!
+		cast(state2, alice2, sacSpell, [{ kind: 'player', id: alice2.playerId, label: alice2.username }]);
+		settle(state2);
+
+		// Prey was sacrificed in step 0 (trigger recorded), then step 2 paused!
+		// Trigger MUST wait in state.pendingTriggers rather than going on the stack above Dark Bargain!
+		const pausePrompt = onlyPrompt(state2, 0);
+		assert.equal(state2.stack.length, 1, 'only the resolving spell is on the stack while paused');
+		assert.equal(state2.stack[0].title, 'Dark Bargain');
+		assert.equal(state2.pendingTriggers?.length, 1, 'dies trigger is queued in pendingTriggers');
+		assert.equal(player(state2, 1).life, bobLifeBefore, 'deferred trigger has not resolved yet');
+		const sanitized2 = sanitizeGameStateForViewer(state2, alice2.playerId);
+		assert.equal(sanitized2.pendingTriggers, undefined, 'viewer state strips pendingTriggers');
+		assert.equal(sanitized2.stack[0].effectResume, undefined);
+
+		// Answer on a JSON copy: spell finishes, leaves stack, deferred trigger goes on stack and settles!
+		state2 = answerOnCopy(state2, pausePrompt, { kind: 'yesNo', yes: false });
+		assert.equal(state2.pendingTriggers, undefined, 'pendingTriggers cleared once flushed');
+		assert.equal(state2.stack.length, 1, 'deferred dies trigger is now on the stack');
+		settle(state2);
+		assert.equal(state2.stack.length, 0);
+		assert.equal(player(state2, 1).life, bobLifeBefore + 2);
+		assert.ok(prey.instanceId);
+
+		// Finish first game (Withering Pause): once spell finishes, SBA kills bear -> Mourning Witness triggers!
+		state = answerOnCopy(state, prompt, { kind: 'yesNo', yes: true });
+		assert.equal(player(state, 0).hand.length, aliceHandAfterCast + 1);
+		assert.ok(
+			player(state, 1).graveyard.some((c) => c.instanceId === bear.instanceId),
+			'SBA kills 0-toughness bear once paused spell finishes resolving'
+		);
+		assert.equal(state.stack.length, 1, 'dies trigger from post-resolution SBA is now on the stack');
+		settle(state);
+		assert.equal(player(state, 0).life, aliceLifeBefore + 1);
+	});
+
+	it('pausable PendingCostPayment (cast_spell): pauses mid-cost on zone_replacement_choice, defers SBAs/triggers, hides private state, and completes after JSON round-trip', () => {
+		let state = game();
+		const alice = player(state, 0);
+		const bob = player(state, 1);
+
+		// Empty mana pool so cast_spell must tap the two Swamps once (and never re-pay on resume).
+		alice.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
+		const swamp1 = put(state, alice, card({ name: 'Swamp', typeLine: 'Basic Land — Swamp', manaCost: '', cmc: 0 }), 'battlefield');
+		const swamp2 = put(state, alice, card({ name: 'Swamp', typeLine: 'Basic Land — Swamp', manaCost: '', cmc: 0 }), 'battlefield');
+
+		// Dies-watcher on Bob's battlefield triggers when c1 is sacrificed (part 0, object 0).
+		put(
+			state,
+			bob,
+			creature('Sorrow Stalker', 'Whenever a creature dies, you gain 2 life.'),
+			'battlefield'
+		);
+		// Creature with lethal damage marked: SBA must NOT destroy it while PendingCostPayment is active (CR 704.3).
+		const wounded = put(state, bob, creature('Wounded Sentinel', '', '2', '2'), 'battlefield');
+		wounded.damageMarked = 2;
+
+		// c1 dies normally -> triggers Sorrow Stalker; c2 has two competing graveyard replacements -> pauses on zone_replacement_choice.
+		const c1 = put(state, alice, creature('Fodder Thrall'), 'battlefield');
+		const c2 = put(
+			state,
+			alice,
+			creature(
+				'Shifted Martyr',
+				"If ~ would be put into a graveyard from anywhere, exile it instead.\nIf ~ would be put into a graveyard from anywhere, shuffle it into its owner's library instead."
+			),
+			'battlefield'
+		);
+		const discardCard = put(state, alice, card({ name: 'Bog Pebble', typeLine: 'Artifact', manaCost: '{0}', cmc: 0 }), 'hand');
+		const spell = put(
+			state,
+			alice,
+			card({
+				name: 'Bleak Offering',
+				manaCost: '{1}{B}',
+				cmc: 2,
+				colors: ['B'],
+				colorIdentity: ['B'],
+				oracleText: 'As an additional cost to cast this spell, sacrifice two creatures and discard a card.\nYou gain 3 life.'
+			}),
+			'hand'
+		);
+
+		const bobLifeBefore = bob.life;
+		const aliceLifeBefore = alice.life;
+
+		// Submit cast_spell with explicit object choices for sacrifice (part 0) and discard (part 1).
+		const res = applyGameAction(state, alice.playerId, {
+			type: 'cast_spell',
+			instanceId: spell.instanceId,
+			costPayment: {
+				options: [],
+				objects: [[c1.instanceId, c2.instanceId], [discardCard.instanceId]]
+			}
+		});
+		assert.equal(res.ok, true, res.error ?? '');
+
+		// Paused mid-payment: taps/mana already paid, c1 sacrificed, c2 in pendingZoneMoves awaiting replacement choice, discard NOT paid yet.
+		const prompt = onlyPrompt(state, 0);
+		assert.equal(prompt.choice?.kind, 'chooseReplacement');
+		assert.equal(swamp1.tapped, true, 'mana lands tapped once');
+		assert.equal(swamp2.tapped, true);
+		assert.ok(state.pendingCostPayment, 'pendingCostPayment saved on state');
+		assert.equal(state.pendingCostPayment?.kind, 'cast_spell');
+		assert.equal(state.pendingCostPayment?.tapsAndManaDone, true);
+		assert.equal(state.pendingCostPayment?.nextPartIndex, 0);
+		assert.equal(state.pendingCostPayment?.nextObjectIndex, 2);
+		assert.ok(alice.graveyard.some((c) => c.instanceId === c1.instanceId), 'c1 sacrificed');
+		assert.ok(state.pendingZoneMoves?.some((c) => c.instanceId === c2.instanceId), 'c2 awaiting replacement choice');
+		assert.ok(alice.hand.some((c) => c.instanceId === discardCard.instanceId), 'part 1 discard not paid yet');
+		assert.ok(alice.hand.some((c) => c.instanceId === spell.instanceId), 'spell not placed on stack yet');
+		assert.equal(state.stack.length, 0, 'stack still empty while mid-payment');
+		assert.equal(state.pendingTriggers?.length, 1, 'c1 dies trigger deferred in pendingTriggers (CR 601.2i / 603.3)');
+		assert.equal(bob.life, bobLifeBefore);
+
+		// SBAs defer while pendingCostPayment is active (CR 704.3).
+		checkStateBasedActions(state);
+		assert.ok(bob.battlefield.some((c) => c.instanceId === wounded.instanceId), 'SBA deferred during PendingCostPayment');
+
+		// Viewer sanitization strips pendingCostPayment and pendingTriggers.
+		const aliceView = sanitizeGameStateForViewer(state, alice.playerId);
+		const bobView = sanitizeGameStateForViewer(state, bob.playerId);
+		assert.equal(aliceView.pendingCostPayment, undefined);
+		assert.equal(aliceView.pendingTriggers, undefined);
+		assert.equal(bobView.pendingCostPayment, undefined);
+		assert.equal(bobView.pendingTriggers, undefined);
+
+		// Answer zone_replacement_choice (exile c2) on a JSON round-tripped copy.
+		const exileOpt = prompt.choice.options[0];
+		state = answerOnCopy(state, prompt, { kind: 'chooseReplacement', id: exileOpt.id });
+
+		const aliceAfter = player(state, 0);
+		const bobAfter = player(state, 1);
+		assert.equal(state.pendingCostPayment, undefined, 'pendingCostPayment cleared on completion');
+		assert.equal(state.pendingZoneMoves, undefined);
+		assert.equal(state.pendingTriggers, undefined, 'deferred triggers flushed onto stack');
+		assert.ok(aliceAfter.exile.some((c) => c.instanceId === c2.instanceId), 'c2 exiled by chosen replacement');
+		assert.ok(aliceAfter.graveyard.some((c) => c.instanceId === discardCard.instanceId), 'part 1 discard completed on resume');
+		assert.ok(bobAfter.graveyard.some((c) => c.instanceId === wounded.instanceId), 'deferred SBA ran after payment completed');
+
+		// Stack now has Bleak Offering on bottom, plus Sorrow Stalker triggers (c1 + wounded) above it.
+		assert.ok(state.stack.some((s) => s.title === 'Bleak Offering'));
+		assert.ok(state.stack.length >= 2);
+		settle(state);
+		assert.equal(state.stack.length, 0);
+		assert.equal(player(state, 0).life, aliceLifeBefore + 3);
+		assert.equal(player(state, 1).life, bobLifeBefore + 4);
+	});
+
+	it('pausable PendingCostPayment (activate_ability & tap_mana): pauses on zone_replacement_choice and completes after JSON round-trip', () => {
+		// 1. activate_ability with {T}, Discard two cards: card 0 triggers zone_replacement_choice, tap isn't re-run, card 1 still discards.
+		let state = game();
+		let alice = player(state, 0);
+		const relic = put(
+			state,
+			alice,
+			card({
+				name: 'Dusk Vault',
+				typeLine: 'Artifact',
+				manaCost: '{2}',
+				cmc: 2,
+				oracleText: '{T}, Discard two cards: You gain 3 life.'
+			}),
+			'battlefield'
+		);
+		const d1 = put(
+			state,
+			alice,
+			card({
+				name: 'Wandering Echo',
+				typeLine: 'Sorcery',
+				oracleText:
+					"If ~ would be put into a graveyard from anywhere, exile it instead.\nIf ~ would be put into a graveyard from anywhere, shuffle it into its owner's library instead."
+			}),
+			'hand'
+		);
+		const d2 = put(state, alice, card({ name: 'Plain Pebble', typeLine: 'Artifact' }), 'hand');
+
+		assert.equal(
+			applyGameAction(state, alice.playerId, {
+				type: 'activate_ability',
+				instanceId: relic.instanceId,
+				abilityId: 'act_0',
+				costPayment: { options: [], objects: [[d1.instanceId, d2.instanceId]] }
+			}).ok,
+			true
+		);
+
+		const actPrompt = onlyPrompt(state, 0);
+		assert.equal(actPrompt.choice?.kind, 'chooseReplacement');
+		assert.equal(relic.tapped, true);
+		assert.equal(state.pendingCostPayment?.kind, 'activate_ability');
+		assert.equal(state.pendingCostPayment?.tapsAndManaDone, true);
+		assert.equal(state.pendingCostPayment?.nextPartIndex, 1);
+		assert.equal(state.pendingCostPayment?.nextObjectIndex, 1);
+		assert.ok(alice.hand.some((c) => c.instanceId === d2.instanceId), 'second discard awaits resume');
+		assert.equal(state.stack.length, 0);
+
+		state = answerOnCopy(state, actPrompt, { kind: 'chooseReplacement', id: actPrompt.choice.options[0].id });
+		alice = player(state, 0);
+		assert.equal(state.pendingCostPayment, undefined);
+		assert.ok(alice.exile.some((c) => c.instanceId === d1.instanceId));
+		assert.ok(alice.graveyard.some((c) => c.instanceId === d2.instanceId));
+		assert.equal(state.stack.length, 1);
+		settle(state);
+		assert.equal(player(state, 0).life, 43);
+
+		// 2. tap_mana with {T}, Sacrifice ~: Add {B}.
+		let manaState = game();
+		const mAlice = player(manaState, 0);
+		mAlice.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
+		const lotus = put(
+			manaState,
+			mAlice,
+			card({
+				name: 'Rift Petal',
+				typeLine: 'Artifact',
+				manaCost: '{0}',
+				cmc: 0,
+				oracleText:
+					"{T}, Sacrifice ~: Add {B}.\nIf ~ would be put into a graveyard from anywhere, exile it instead.\nIf ~ would be put into a graveyard from anywhere, shuffle it into its owner's library instead."
+			}),
+			'battlefield'
+		);
+		assert.equal(
+			applyGameAction(manaState, mAlice.playerId, {
+				type: 'tap_mana',
+				instanceId: lotus.instanceId
+			}).ok,
+			true
+		);
+		const manaPrompt = onlyPrompt(manaState, 0);
+		assert.equal(manaPrompt.choice?.kind, 'chooseReplacement');
+		assert.equal(manaState.pendingCostPayment?.kind, 'tap_mana');
+		assert.equal(mAlice.manaPool.B, 0, 'mana not added until replacement resolves');
+
+		manaState = answerOnCopy(manaState, manaPrompt, {
+			kind: 'chooseReplacement',
+			id: manaPrompt.choice.options[0].id
+		});
+		assert.equal(manaState.pendingCostPayment, undefined);
+		assert.equal(player(manaState, 0).manaPool.B, 1, 'mana added once payment completes');
+		assert.ok(player(manaState, 0).exile.some((c) => c.instanceId === lotus.instanceId));
+	});
+
+	it('nested zone_replacement_choice mid-batch in EffectStep pauses remaining batch items, defers SBAs/triggers, and finishes after JSON round-trip', () => {
+		let state = game();
+		const alice = player(state, 0);
+		const bob = player(state, 1);
+
+		const shrine = put(
+			state,
+			bob,
+			card({
+				name: 'Sorrow Shrine',
+				typeLine: 'Enchantment',
+				manaCost: '{2}{B}',
+				cmc: 3,
+				oracleText: 'Whenever a creature dies, you gain 2 life.'
+			}),
+			'battlefield'
+		);
+		const bobLifeBefore = bob.life;
+		const c1 = put(
+			state,
+			alice,
+			card({
+				name: 'Split-Fate Soldier',
+				typeLine: 'Creature — Human',
+				power: '2',
+				toughness: '2',
+				oracleText:
+					"If ~ would be put into a graveyard from anywhere, exile it instead.\nIf ~ would be put into a graveyard from anywhere, shuffle it into its owner's library instead."
+			}),
+			'battlefield'
+		);
+		const c2 = put(state, alice, creature('Bronze Bear', '', '2', '2'), 'battlefield');
+		const wrathAndDraw = put(
+			state,
+			alice,
+			card({
+				name: 'Measured Cleansing',
+				oracleText: 'Destroy all creatures. Draw a card.'
+			}),
+			'hand'
+		);
+		const handBeforeResolve = alice.hand.length - 1;
+		cast(state, alice, wrathAndDraw);
+		settle(state);
+
+		const repPrompt = onlyPrompt(state, 0);
+		assert.equal(repPrompt.choice?.kind, 'chooseReplacement');
+		assert.equal(state.pendingZoneMoves?.length, 1, 'only c1 is paused in pendingZoneMoves');
+		assert.equal(state.stack.length, 1, 'sorcery remains on stack mid-batch');
+		assert.equal(state.stack[0].effectResume?.stepIndex, 0);
+		assert.equal(state.stack[0].effectResume?.subStepIndex, 1);
+		assert.ok(
+			player(state, 0).battlefield.some((p) => p.instanceId === c2.instanceId),
+			'c2 has not been destroyed yet while c1 awaits replacement order'
+		);
+		assert.equal(
+			player(state, 0).hand.length,
+			handBeforeResolve,
+			'subsequent Draw step has not run yet'
+		);
+		assert.equal(state.pendingTriggers, undefined, 'no dies triggers flushed prematurely');
+		const viewer = sanitizeGameStateForViewer(state, bob.playerId);
+		assert.equal(viewer.pendingProcedure, undefined);
+		assert.equal(viewer.stack[0]?.effectResume, undefined);
+
+		// Answer c1's replacement (exile c1) after a JSON round-trip: c2 destroys, Draw step runs, then dies trigger flushes!
+		state = answerOnCopy(state, repPrompt, {
+			kind: 'chooseReplacement',
+			id: repPrompt.choice!.options[0].id
+		});
+		assert.equal(state.pendingZoneMoves, undefined);
+		assert.ok(player(state, 0).exile.some((c) => c.instanceId === c1.instanceId));
+		assert.ok(player(state, 0).graveyard.some((c) => c.instanceId === c2.instanceId));
+		assert.ok(player(state, 1).battlefield.some((c) => c.instanceId === shrine.instanceId));
+		assert.equal(
+			player(state, 0).hand.length,
+			handBeforeResolve + 1,
+			'Draw step executed after the destroy batch completed'
+		);
+		assert.equal(state.stack.length, 1, 'dies trigger for c2 flushed onto stack after resolution');
+		settle(state);
+		assert.equal(state.stack.length, 0);
+		assert.equal(player(state, 1).life, bobLifeBefore + 2);
+	});
+
+	it('nested counter_replacement_choice mid-batch in putCounters preserves batch progress across multiple pauses and JSON round-trips', () => {
+		let state = game();
+		const alice = player(state, 0);
+
+		put(
+			state,
+			alice,
+			card({
+				name: 'Hardened Scales',
+				typeLine: 'Enchantment',
+				manaCost: '{G}',
+				cmc: 1,
+				oracleText:
+					'If one or more +1/+1 counters would be put on a creature you control, that many plus one +1/+1 counters are put on it instead.'
+			}),
+			'battlefield'
+		);
+		put(
+			state,
+			alice,
+			card({
+				name: 'Doubling Season',
+				typeLine: 'Enchantment',
+				manaCost: '{4}{G}',
+				cmc: 5,
+				oracleText:
+					'If an effect would put one or more counters on a permanent you control, it puts twice that many of each of those kinds of counters on that permanent instead.'
+			}),
+			'battlefield'
+		);
+		const a = put(state, alice, creature('Alpha Cub', '', '1', '1'), 'battlefield');
+		const b = put(state, alice, creature('Beta Cub', '', '1', '1'), 'battlefield');
+		const bless = put(
+			state,
+			alice,
+			card({
+				name: 'Pack Surge',
+				oracleText: 'Put a +1/+1 counter on each creature you control. You gain 3 life.'
+			}),
+			'hand'
+		);
+		cast(state, alice, bless);
+		settle(state);
+
+		// Paused on first creature (Alpha Cub): Beta Cub has 0 counters and life gain hasn't run!
+		const p1Prompt = onlyPrompt(state, 0);
+		assert.equal(p1Prompt.choice?.kind, 'chooseReplacement');
+		assert.equal(state.stack.length, 1);
+		assert.equal(state.stack[0].effectResume?.stepIndex, 0);
+		assert.equal(state.stack[0].effectResume?.subStepIndex, 1);
+		assert.equal(player(state, 0).battlefield.find((c) => c.instanceId === a.instanceId)?.counters['+1/+1'], 0);
+		assert.equal(player(state, 0).battlefield.find((c) => c.instanceId === b.instanceId)?.counters['+1/+1'], 0);
+		assert.equal(player(state, 0).life, 40, 'step 1 life gain has not run yet');
+
+		// Choose option 0 for Alpha Cub on a JSON round-tripped copy -> pauses on Beta Cub at subStepIndex 2!
+		state = answerOnCopy(state, p1Prompt, {
+			kind: 'chooseReplacement',
+			id: p1Prompt.choice!.options[0].id
+		});
+		const p2Prompt = onlyPrompt(state, 0);
+		assert.equal(p2Prompt.choice?.kind, 'chooseReplacement');
+		assert.equal(state.stack.length, 1);
+		assert.equal(state.stack[0].effectResume?.stepIndex, 0);
+		assert.equal(state.stack[0].effectResume?.subStepIndex, 2);
+		const aCounters =
+			player(state, 0).battlefield.find((c) => c.instanceId === a.instanceId)?.counters['+1/+1'] ?? 0;
+		assert.ok(aCounters >= 3, 'Alpha Cub received replaced counters before Beta Cub');
+		assert.equal(
+			player(state, 0).battlefield.find((c) => c.instanceId === b.instanceId)?.counters['+1/+1'],
+			0,
+			'Beta Cub awaits second counter_replacement_choice'
+		);
+		assert.equal(player(state, 0).life, 40, 'step 1 life gain still waits until batch completes');
+
+		// Choose option 1 for Beta Cub on JSON round-trip -> Beta Cub gets counters and step 1 ("gain 3 life") runs!
+		state = answerOnCopy(state, p2Prompt, {
+			kind: 'chooseReplacement',
+			id: p2Prompt.choice!.options[1].id
+		});
+		assert.equal(state.pendingPrompts.length, 0);
+		assert.equal(state.stack.length, 0);
+		const bCounters =
+			player(state, 0).battlefield.find((c) => c.instanceId === b.instanceId)?.counters['+1/+1'] ?? 0;
+		assert.ok(bCounters >= 3, 'Beta Cub received replaced counters');
+		assert.equal(player(state, 0).life, 43, 'step 1 ran once putCounters batch finished');
+	});
+
+	it('discard_to_hand_size hitting zone_replacement_choice preserves remaining discards, defers pass turn, and strips pendingProcedure from viewer', () => {
+		let state = game();
+		const alice = player(state, 0);
+		const d1 = put(
+			state,
+			alice,
+			card({
+				name: 'Shifting Scroll',
+				typeLine: 'Instant',
+				manaCost: '{U}',
+				cmc: 1,
+				oracleText:
+					"If ~ would be put into a graveyard from anywhere, exile it instead.\nIf ~ would be put into a graveyard from anywhere, shuffle it into its owner's library instead."
+			}),
+			'hand'
+		);
+		const d2 = put(state, alice, card({ name: 'Plain Scroll', typeLine: 'Instant', manaCost: '{U}', cmc: 1, oracleText: '' }), 'hand');
+		while (alice.hand.length > 9) {
+			alice.hand.shift();
+		}
+		while (alice.hand.length < 9) {
+			put(state, alice, card({ name: 'Filler Island', typeLine: 'Basic Land — Island' }), 'hand');
+		}
+		const turnBefore = state.turnNumber;
+		const activeBefore = state.activePlayerIndex;
+
+		endTheTurnImmediately(state, alice.playerId);
+		const discPrompt = onlyPrompt(state, 0);
+		assert.equal(discPrompt.purpose, 'discard_to_hand_size');
+		assert.equal(discPrompt.continuation?.kind, 'procedure');
+
+		// Answer choosing [d1, d2] -> d1 triggers zone_replacement_choice before d2 discards or turn passes!
+		state = answerOnCopy(state, discPrompt, {
+			kind: 'chooseObjects',
+			objectIds: [d1.instanceId, d2.instanceId]
+		});
+		const repPrompt = onlyPrompt(state, 0);
+		assert.equal(repPrompt.choice?.kind, 'chooseReplacement');
+		assert.equal(state.pendingProcedure?.kind, 'discard_to_hand_size');
+		assert.equal(state.turnNumber, turnBefore);
+		assert.equal(state.activePlayerIndex, activeBefore, 'turn has not passed while replacement is pending');
+		assert.ok(
+			player(state, 0).hand.some((c) => c.instanceId === d2.instanceId),
+			'd2 remains in hand until d1 replacement finishes'
+		);
+		const viewer = sanitizeGameStateForViewer(state, player(state, 1).playerId);
+		assert.equal(viewer.pendingProcedure, undefined, 'viewer state strips pendingProcedure');
+
+		// Resolve replacement on JSON copy -> d1 exiles, d2 discards to graveyard, cleanup completes and turn passes!
+		state = answerOnCopy(state, repPrompt, {
+			kind: 'chooseReplacement',
+			id: repPrompt.choice!.options[0].id
+		});
+		assert.equal(state.pendingProcedure, undefined);
+		assert.ok(player(state, 0).exile.some((c) => c.instanceId === d1.instanceId));
+		assert.ok(player(state, 0).graveyard.some((c) => c.instanceId === d2.instanceId));
+		assert.equal(state.activePlayerIndex, 1, 'turn passed to Bob after all cleanup discards completed');
+	});
+
+	it('legend_rule hitting zone_replacement_choice pauses remaining duplicates and SBAs cleanly across JSON round-trip', () => {
+		let state = game();
+		const alice = player(state, 0);
+		const kKeep = put(
+			state,
+			alice,
+			card({
+				name: 'Twin Champion',
+				typeLine: 'Legendary Creature — Warrior',
+				manaCost: '{1}{W}',
+				cmc: 2,
+				power: '2',
+				toughness: '2',
+				oracleText:
+					"If ~ would be put into a graveyard from anywhere, exile it instead.\nIf ~ would be put into a graveyard from anywhere, shuffle it into its owner's library instead."
+			}),
+			'battlefield'
+		);
+		const kRepl = put(state, alice, { ...kKeep.card }, 'battlefield');
+		const kThird = put(state, alice, { ...kKeep.card }, 'battlefield');
+		// Make kThird have plain oracleText so only kRepl triggers zone_replacement_choice while kThird moves normally after!
+		kThird.card = { ...kKeep.card, oracleText: '' };
+
+		checkStateBasedActions(state);
+		const legPrompt = onlyPrompt(state, 0);
+		assert.equal(legPrompt.purpose, 'legend_rule');
+		assert.equal(legPrompt.continuation?.kind, 'procedure');
+
+		// Choose kKeep -> kRepl enters pendingZoneMoves with zone_replacement_choice, kThird waits!
+		state = answerOnCopy(state, legPrompt, {
+			kind: 'chooseObjects',
+			objectIds: [kKeep.instanceId]
+		});
+		const rep1 = onlyPrompt(state, 0);
+		assert.equal(rep1.choice?.kind, 'chooseReplacement');
+		assert.equal(state.pendingProcedure?.kind, 'legend_rule');
+		assert.ok(
+			player(state, 0).battlefield.some((p) => p.instanceId === kThird.instanceId),
+			'kThird waits on battlefield until kRepl replacement resolves'
+		);
+		const viewer = sanitizeGameStateForViewer(state, player(state, 1).playerId);
+		assert.equal(viewer.pendingProcedure, undefined, 'viewer state strips pendingProcedure');
+
+		// Answer kRepl replacement -> kThird moves to graveyard cleanly and pendingProcedure clears!
+		state = answerOnCopy(state, rep1, {
+			kind: 'chooseReplacement',
+			id: rep1.choice!.options[0].id
+		});
+		assert.equal(state.pendingProcedure, undefined);
+		assert.ok(player(state, 0).battlefield.some((p) => p.instanceId === kKeep.instanceId));
+		assert.ok(player(state, 0).exile.some((c) => c.instanceId === kRepl.instanceId));
+		assert.ok(player(state, 0).graveyard.some((c) => c.instanceId === kThird.instanceId));
 	});
 });

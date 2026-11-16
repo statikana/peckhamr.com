@@ -1,6 +1,35 @@
 import { cardManaSteps as compiledCardManaSteps, compileCard } from './compiler/index.ts';
-import type { CostDef, EffectStep, TargetSpec } from './ir.ts';
-import { effectiveAbilityManaCost } from './runtime/costs.ts';
+import {
+	activeAbilityDefs,
+	activeCharacteristics,
+	instanceFaceOptions,
+	resolveObjectFaces,
+	type ResolveObjectFacesOptions
+} from './runtime/faces.ts';
+import { displayAbilityText } from './compiler/support.ts';
+import type { ActivatedAbility, CostDef, EffectStep, ModalDef, SpellAbility, TargetSpec, UnsupportedAbility } from './ir.ts';
+import { buildReconfigureUnattachAbility, getKeywordSpec } from './keywords.ts';
+import { describeCost, effectiveAbilityManaCost } from './runtime/costs.ts';
+import { hasChooseAllModesOptionalCost, isCastConditionMet } from './runtime/kicker.ts';
+import { evaluateCondition as evaluateFilterCondition } from './runtime/objectFilter.ts';
+// --- Track P7 ---
+import { activeTimedLayer1aForPermanent } from './runtime/layerCache.ts';
+// --- End Track P7 ---
+// --- Track P10 ---
+import { resolveQuotedAbilityDefs } from './runtime/reflexiveManaAndActions.ts';
+// --- End Track P10 ---
+// --- Track P12 ---
+import {
+	AWAKEN_LAND_TARGET_SPEC,
+	collectBackupGrantedAbilityGroups
+} from './runtime/keywordsWave4.ts';
+// --- End Track P12 ---
+// --- Track P18a ---
+import { mutateTargetSpec } from './runtime/keywordsWave6.ts';
+// --- End Track P18a ---
+// --- Track P22a ---
+import { collectGrantedGraveyardActivatedAbilitiesWave8 } from './runtime/staticsWave8.ts';
+// --- End Track P22a ---
 import {
 	evaluatePermanent,
 	getAttachedAbilityStrippingAuraSources,
@@ -19,6 +48,7 @@ import {
 } from './runtime/replace.ts';
 import type {
 	CardInstance,
+	CastOption,
 	EffectiveActivatedAbility,
 	GameState,
 	ManaColor,
@@ -46,7 +76,10 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 	const minTargets = specs.reduce((s, x) => s + x.min, 0);
 	const maxTargets = specs.reduce((s, x) => s + x.max, 0);
 	const spec = specs[0];
-	if (spec.kind === 'objectOrPlayer') {
+	if (
+		spec.kind === 'objectOrPlayer' ||
+		(specs.length > 1 && specs.some((s) => s.kind !== spec.kind))
+	) {
 		return {
 			requiresTarget: minTargets > 0,
 			targetKind: 'any',
@@ -76,17 +109,21 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 	const f = spec.filter;
 	if (f.zone === 'stack') {
 		const allSameController = specs.every((s) => (s.filter.controller ?? 'any') === (f.controller ?? 'any'));
-	const controllerFilter = allSameController ? (f.controller ?? 'any') : 'any';
+		const controllerFilter = allSameController ? (f.controller ?? 'any') : 'any';
+		const stackKind = f.stackKind;
 		let cardTypeFilter: string | undefined;
 		if (f.notTypes?.includes('Creature')) cardTypeFilter = 'Noncreature';
-		else if (f.types?.includes('Instant') && f.types?.includes('Sorcery')) {
+		else if (f.notTypes?.includes('Instant') && f.notTypes?.includes('Sorcery')) {
+			cardTypeFilter = 'Permanent';
+		} else if (f.types?.includes('Instant') && f.types?.includes('Sorcery')) {
 			cardTypeFilter = 'InstantOrSorcery';
 		} else if (f.types?.length === 1) {
 			cardTypeFilter = f.types[0];
 		}
 		return {
 			requiresTarget: minTargets > 0,
-			targetKind: 'spell',
+			targetKind: stackKind && stackKind !== 'spell' ? 'stack' : 'spell',
+			...(stackKind ? { stackKind } : {}),
 			minTargets,
 			maxTargets,
 			zone: 'stack',
@@ -96,9 +133,9 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 			targetSpecs: specs
 		};
 	}
-	if (f.zone === 'graveyard') {
+	if (f.zone === 'graveyard' || f.zone === 'exile') {
 		const controllerFilter = f.owner ?? f.controller ?? 'any';
-		const sameGraveyard = Boolean(spec.sameOwner || f.owner === 'you' || maxTargets <= 1);
+		const sameGraveyard = f.zone === 'graveyard' && Boolean(spec.sameOwner || f.owner === 'you' || maxTargets <= 1);
 		let cardTypeFilter: string | undefined;
 		if (f.types?.includes('Instant') && f.types?.includes('Sorcery')) {
 			cardTypeFilter = 'InstantOrSorcery';
@@ -111,10 +148,10 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 		}
 		return {
 			requiresTarget: minTargets > 0,
-			targetKind: 'graveyard_card',
+			targetKind: f.zone === 'exile' ? 'exile_card' : 'graveyard_card',
 			minTargets,
 			maxTargets,
-			zone: 'graveyard',
+			zone: f.zone,
 			sameGraveyard,
 			controllerFilter,
 			...(cardTypeFilter ? { cardTypeFilter } : {}),
@@ -123,9 +160,31 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
 	}
 	const allSameController = specs.every((s) => (s.filter.controller ?? 'any') === (f.controller ?? 'any'));
 	const controllerFilter = allSameController ? (f.controller ?? 'any') : 'any';
+	const allSameTypes =
+		specs.length === 1 ||
+		specs.every(
+			(s) =>
+				JSON.stringify(s.filter.types ?? null) === JSON.stringify(f.types ?? null) &&
+				// --- Track P8 ---
+				JSON.stringify(s.filter.allTypes ?? null) === JSON.stringify(f.allTypes ?? null) &&
+				JSON.stringify(s.filter.notTypes ?? null) === JSON.stringify(f.notTypes ?? null) &&
+				JSON.stringify(s.filter.subtypes ?? null) === JSON.stringify(f.subtypes ?? null) &&
+				JSON.stringify(s.filter.supertypes ?? null) === JSON.stringify(f.supertypes ?? null)
+		);
 	let targetKind = 'permanent';
 	let cardTypeFilter: string | undefined = 'Permanent';
-	if (f.types?.length === 1 && f.types[0] === 'Creature') {
+	if (!allSameTypes) {
+		targetKind = 'permanent';
+		cardTypeFilter = undefined;
+	} else if (f.allTypes?.length) {
+		// --- Track P8 ---
+		targetKind = f.allTypes.includes('Creature')
+			? controllerFilter === 'you'
+				? 'controlled_creature'
+				: 'creature'
+			: 'permanent';
+		cardTypeFilter = f.allTypes.join('');
+	} else if (f.types?.length === 1 && f.types[0] === 'Creature') {
 		targetKind = controllerFilter === 'you' ? 'controlled_creature' : 'creature';
 		const qual = [...(f.supertypes ?? []), ...(f.subtypes ?? [])];
 		cardTypeFilter = qual.length > 0 ? `${qual.join(' ')} Creature` : 'Creature';
@@ -165,11 +224,60 @@ export function targetRequirementFromSpecs(specs: TargetSpec[]): TargetRequireme
  * Returns the spell target requirement for casting `card` (Instant, Sorcery, or Aura) from the
  * compiled IR. Non-Aura permanent spells do not target on the stack (CR 115.1b).
  */
-export function getSpellTargetRequirement(card: ScryfallCard): TargetRequirementInfo {
-	const def = compileCard(card);
-	const abilities = def.faces[0]?.abilities ?? [];
-	const types = def.faces[0]?.characteristics.types ?? [];
-	const subtypes = def.faces[0]?.characteristics.subtypes ?? [];
+export function modalTargetRequirement(
+	modal: ModalDef,
+	filterSpecs: (specs: TargetSpec[]) => TargetSpec[] = (s) => s
+): TargetRequirementInfo {
+	const branches = modal.modes.map((m) => targetRequirementFromSpecs(filterSpecs(m.targets)));
+	const firstReq = branches.find((b) => b.requiresTarget) ?? branches[0] ?? NO_TARGET_REQUIREMENT;
+	const anyReq = branches.some((b) => b.requiresTarget);
+	return {
+		requiresTarget: anyReq && modal.min > 0 && !modal.upTo,
+		targetKind: firstReq.targetKind,
+		minTargets: anyReq
+			? Math.min(...branches.filter((b) => b.requiresTarget).map((b) => b.minTargets))
+			: 0,
+		maxTargets: Math.max(0, ...branches.map((b) => b.maxTargets)),
+		zone: firstReq.zone,
+		sameGraveyard: firstReq.sameGraveyard,
+		controllerFilter: firstReq.controllerFilter,
+		cardTypeFilter: firstReq.cardTypeFilter,
+		isModal: true,
+		modalBranches: branches
+	};
+}
+
+export function getSpellTargetRequirement(
+	card: ScryfallCard,
+	option?: Partial<Pick<CastOption, 'faceIndex' | 'fused' | 'optionalAdditionalCosts' | 'spellMods'>>,
+	optionalCostCounts?: Record<string, number>
+): TargetRequirementInfo {
+	if (option?.spellMods?.castFaceDown) {
+		return NO_TARGET_REQUIREMENT;
+	}
+	// --- Track P18a: Mutate cast option targets non-Human creature with same owner (CR 702.140a) ---
+	if (option?.spellMods?.mutating) {
+		return targetRequirementFromSpecs([mutateTargetSpec()]);
+	}
+	// --- End Track P18a ---
+	const faceOpts = {
+		zone: 'stack' as const,
+		faceIndex: option?.faceIndex ?? 0,
+		fused: option?.fused,
+		// --- Track P12 ---
+		...(option?.spellMods?.bestowed ? { bestowed: true } : {}),
+		// --- End Track P12 ---
+		// --- Track P15 ---
+		...(option?.spellMods?.cleaved ? { cleaved: true } : {}),
+		...((optionalCostCounts?.['opt:gift'] ?? 0) > 0 ? { giftPromised: true } : {})
+		// --- End Track P15 ---
+	};
+	const abilities = activeAbilityDefs(card, faceOpts);
+	const chars = activeCharacteristics(card, faceOpts);
+	const types = chars.types;
+	const subtypes = chars.subtypes;
+	const activeSpecs = (specs: TargetSpec[]) =>
+		specs.filter((sp) => !sp.condition || isCastConditionMet(sp.condition, card, optionalCostCounts, option));
 	if (subtypes.includes('Aura')) {
 		const enchantSpecs: TargetSpec[] = [];
 		for (const ab of abilities) {
@@ -206,34 +314,43 @@ export function getSpellTargetRequirement(card: ScryfallCard): TargetRequirement
 	if (!types.includes('Instant') && !types.includes('Sorcery')) {
 		return NO_TARGET_REQUIREMENT;
 	}
+	const nonModalSpecs: TargetSpec[] = [];
 	for (const ab of abilities) {
 		if (ab.kind === 'spell') {
-			if (ab.modal) {
-				const branches = ab.modal.modes.map((m) => targetRequirementFromSpecs(m.targets));
-				const firstReq = branches.find((b) => b.requiresTarget) ?? branches[0] ?? NO_TARGET_REQUIREMENT;
-				const anyReq = branches.some((b) => b.requiresTarget);
-				return {
-					requiresTarget: anyReq,
-					targetKind: firstReq.targetKind,
-					minTargets: anyReq
-						? Math.min(...branches.filter((b) => b.requiresTarget).map((b) => b.minTargets))
-						: 0,
-					maxTargets: Math.max(0, ...branches.map((b) => b.maxTargets)),
-					zone: firstReq.zone,
-					sameGraveyard: firstReq.sameGraveyard,
-					controllerFilter: firstReq.controllerFilter,
-					cardTypeFilter: firstReq.cardTypeFilter,
-					isModal: true,
-					modalBranches: branches
-				};
+			if (ab.modal && !option?.fused) {
+				// CR 702.42b: When Entwine (or another chooseAllModes optional cost) is paid,
+				// all modes are chosen in printed order and their target specs combine sequentially.
+				if (hasChooseAllModesOptionalCost(option, optionalCostCounts)) {
+					nonModalSpecs.push(...ab.modal.modes.flatMap((m) => activeSpecs(m.targets)));
+					continue;
+				}
+				return modalTargetRequirement(ab.modal, activeSpecs);
 			}
-			return targetRequirementFromSpecs(ab.targets);
-		}
-		if (ab.kind === 'unsupported' && ab.id === 'cast' && ab.targets) {
-			return targetRequirementFromSpecs(ab.targets);
+			nonModalSpecs.push(...activeSpecs(ab.targets));
+		} else if (ab.kind === 'unsupported' && ab.id === 'cast' && ab.targets) {
+			nonModalSpecs.push(...activeSpecs(ab.targets));
 		}
 	}
-	return NO_TARGET_REQUIREMENT;
+	// --- Track P12: Awaken N adds "target land you control" (CR 702.113a) ---
+	if ((option?.spellMods?.awakenCounters ?? 0) > 0) {
+		nonModalSpecs.push(AWAKEN_LAND_TARGET_SPEC);
+	}
+	// --- End Track P12 ---
+	// --- Track P15: Splice onto [subtype/type] appends spliced spell TargetSpecs (CR 702.47a,c) ---
+	if (option?.optionalAdditionalCosts && optionalCostCounts) {
+		for (const opt of option.optionalAdditionalCosts) {
+			if (!opt.spliceCard || (optionalCostCounts[opt.id] ?? 0) <= 0) continue;
+			const splicedCompiled = compileCard(opt.spliceCard);
+			const splicedSpell = splicedCompiled.faces[0]?.abilities.find(
+				(a): a is SpellAbility => a.kind === 'spell'
+			);
+			if (splicedSpell) {
+				nonModalSpecs.push(...activeSpecs(splicedSpell.targets));
+			}
+		}
+	}
+	// --- End Track P15 ---
+	return nonModalSpecs.length > 0 ? targetRequirementFromSpecs(nonModalSpecs) : NO_TARGET_REQUIREMENT;
 }
 
 /**
@@ -251,7 +368,12 @@ function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor
 			if (oppPerm.phasedOut) continue;
 			const oppEval = evaluatePermanent(state, oppPerm);
 			if (!oppEval.isLand) continue;
-			const oppCard = oppPerm.copiableCard ?? oppPerm.card;
+			// --- Track P7 ---
+			const oppCard =
+				activeTimedLayer1aForPermanent(state, oppPerm)?.card ??
+				oppPerm.copiableCard ??
+				oppPerm.card;
+			// --- End Track P7 ---
 			if (!oppEval.losesAllAbilities) {
 				for (const s of compiledCardManaSteps(oppCard)) {
 					const choice = s.params?.manaChoice;
@@ -260,15 +382,69 @@ function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor
 							? ['W', 'U', 'B', 'R', 'G']
 							: choice === 'commanderIdentity'
 								? oppCmdId
-								: Array.isArray(choice)
-									? choice
-									: (s.params?.mana ?? []);
+								: choice === 'chosenColor'
+									? oppPerm.chosenColor
+										? [oppPerm.chosenColor]
+										: []
+									: Array.isArray(choice)
+										? choice
+										: s.params?.manaWithChosenColor
+											? [
+													...s.params.manaWithChosenColor,
+													...(oppPerm.chosenColor ? [oppPerm.chosenColor] : [])
+												]
+											: s.params?.manaBundles
+												? s.params.manaBundles.flat()
+												: s.params?.manaCombinationColors
+													? s.params.manaCombinationColors === 'any'
+														? ['W', 'U', 'B', 'R', 'G']
+														: s.params.manaCombinationColors
+													: (s.params?.mana ?? []);
 					for (const c of cols) if (c !== 'C') found.add(c);
 				}
 			}
 			for (const t of ['Plains:W', 'Island:U', 'Swamp:B', 'Mountain:R', 'Forest:G'] as const) {
 				const [sub, col] = t.split(':') as [string, ManaColor];
 				if (oppEval.typeLine.includes(sub)) found.add(col);
+			}
+			const oppBreakdown = inspectCardContinuousBreakdown(oppPerm, state);
+			for (const item of oppBreakdown.items) {
+				if (item.removed || item.isInnate || !item.grantedAbility?.isMana) continue;
+				const grantSourceChosenColor = item.grantSourceId
+					? state.players
+							.flatMap((pl) => pl.battlefield)
+							.find((p) => p.instanceId === item.grantSourceId)?.chosenColor
+					: undefined;
+				const effChosenColor = grantSourceChosenColor ?? oppPerm.chosenColor;
+				for (const s of item.grantedAbility.effect) {
+					if (s.verb !== 'addMana') continue;
+					const choice = s.params?.manaChoice;
+					if (choice === 'opponentLandColors') continue;
+					const cols: ManaColor[] =
+						choice === 'any'
+							? ['W', 'U', 'B', 'R', 'G']
+							: choice === 'commanderIdentity'
+								? oppCmdId
+								: choice === 'chosenColor'
+									? effChosenColor
+										? [effChosenColor]
+										: []
+									: Array.isArray(choice)
+										? choice
+										: s.params?.manaWithChosenColor
+											? [
+													...s.params.manaWithChosenColor,
+													...(effChosenColor ? [effChosenColor] : [])
+												]
+											: s.params?.manaBundles
+												? s.params.manaBundles.flat()
+												: s.params?.manaCombinationColors
+													? s.params.manaCombinationColors === 'any'
+														? ['W', 'U', 'B', 'R', 'G']
+														: s.params.manaCombinationColors
+													: (s.params?.mana ?? []);
+					for (const c of cols) if (c !== 'C') found.add(c);
+				}
 			}
 		}
 	}
@@ -277,58 +453,336 @@ function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor
 
 function manaStepProduction(
 	steps: EffectStep[],
-	commanderIdentity: ManaColor[]
-): { colors: ManaColor[]; amount: number; opponentLandColors?: boolean } | null {
+	commanderIdentity: ManaColor[],
+	chosenColor?: ManaColor
+): {
+	colors: ManaColor[];
+	amount: number;
+	opponentLandColors?: boolean;
+	manaRestriction?: EffectiveActivatedAbility['manaRestriction'];
+	manaBundles?: ManaColor[][];
+	manaCombinationColors?: ManaColor[] | 'any';
+	// --- Track P10 ---
+	manaRestrictionSpec?: EffectiveActivatedAbility['manaRestrictionSpec'];
+	retainManaUntilEndOfTurn?: boolean;
+	// --- End Track P10 ---
+} | null {
 	const addSteps = steps.filter((s) => s.verb === 'addMana');
 	if (addSteps.length === 0) return null;
 	const cmdColors: ManaColor[] = commanderIdentity.filter((c) => c !== 'C');
 	const colors: ManaColor[] = [];
 	let totalAmount = 0;
 	let opponentLands = false;
+	let manaRestriction: EffectiveActivatedAbility['manaRestriction'];
+	let manaBundles: ManaColor[][] | undefined;
+	let manaCombinationColors: ManaColor[] | 'any' | undefined;
+	// --- Track P10 ---
+	let manaRestrictionSpec: EffectiveActivatedAbility['manaRestrictionSpec'];
+	let retainManaUntilEndOfTurn = false;
+	// --- End Track P10 ---
+	let fixedSymbols: ManaColor[] | null = [];
 	for (const s of addSteps) {
+		if (s.params?.manaRestriction) manaRestriction = s.params.manaRestriction;
+		// --- Track P10 ---
+		if (s.params?.manaRestrictionSpec) manaRestrictionSpec = s.params.manaRestrictionSpec;
+		if (s.params?.retainManaUntilEndOfTurn) retainManaUntilEndOfTurn = true;
+		// --- End Track P10 ---
 		const amt = s.amount?.k === 'const' ? s.amount.n : 1;
 		const choice = s.params?.manaChoice;
 		if (choice === 'opponentLandColors') {
+			fixedSymbols = null;
 			opponentLands = true;
 			totalAmount += amt;
 		} else if (choice === 'any') {
+			fixedSymbols = null;
 			for (const c of ['W', 'U', 'B', 'R', 'G'] as ManaColor[]) {
 				if (!colors.includes(c)) colors.push(c);
 			}
 			totalAmount += amt;
 		} else if (choice === 'commanderIdentity') {
+			fixedSymbols = null;
 			for (const c of cmdColors) {
 				if (!colors.includes(c)) colors.push(c);
 			}
 			totalAmount += amt;
+		} else if (choice === 'chosenColor') {
+			fixedSymbols = null;
+			if (chosenColor && !colors.includes(chosenColor)) {
+				colors.push(chosenColor);
+			}
+			totalAmount += amt;
 		} else if (Array.isArray(choice)) {
+			fixedSymbols = null;
 			for (const c of choice) {
 				if (!colors.includes(c)) colors.push(c);
 			}
 			totalAmount += amt;
+		} else if (Array.isArray(s.params?.manaWithChosenColor)) {
+			fixedSymbols = null;
+			const bundle: ManaColor[] = [
+				...s.params.manaWithChosenColor,
+				...(chosenColor ? [chosenColor] : [])
+			];
+			for (const c of bundle) {
+				if (!colors.includes(c)) colors.push(c);
+			}
+			totalAmount += bundle.length;
+			if (bundle.length > 0) manaBundles = [bundle];
+		} else if (Array.isArray(s.params?.manaBundles) && s.params.manaBundles.length > 0) {
+			fixedSymbols = null;
+			for (const b of s.params.manaBundles) {
+				for (const c of b) {
+					if (!colors.includes(c)) colors.push(c);
+				}
+			}
+			totalAmount += s.params.manaBundles[0].length || 1;
+			manaBundles = s.params.manaBundles.map((b) => [...b]);
+		} else if (s.params?.manaCombinationColors) {
+			fixedSymbols = null;
+			const combCols: ManaColor[] =
+				s.params.manaCombinationColors === 'any'
+					? ['W', 'U', 'B', 'R', 'G']
+					: s.params.manaCombinationColors;
+			for (const c of combCols) {
+				if (!colors.includes(c)) colors.push(c);
+			}
+			totalAmount += amt;
+			manaCombinationColors =
+				s.params.manaCombinationColors === 'any'
+					? 'any'
+					: [...s.params.manaCombinationColors];
 		} else if (Array.isArray(s.params?.mana)) {
 			for (const c of s.params.mana) {
 				if (!colors.includes(c)) colors.push(c);
 			}
-			totalAmount += s.amount?.k === 'const' ? s.amount.n : s.params.mana.length || 1;
+			const stepAmt = s.amount?.k === 'const' ? s.amount.n : s.params.mana.length || 1;
+			totalAmount += stepAmt;
+			if (
+				fixedSymbols !== null &&
+				(!s.amount || s.amount.k === 'const') &&
+				s.params.mana.length === stepAmt
+			) {
+				fixedSymbols.push(...s.params.mana);
+			} else {
+				fixedSymbols = null;
+			}
+		} else {
+			fixedSymbols = null;
 		}
+	}
+	if (!manaBundles && fixedSymbols && new Set(fixedSymbols).size > 1) {
+		manaBundles = [fixedSymbols];
 	}
 	return {
 		colors,
 		amount: Math.max(1, totalAmount),
-		...(opponentLands ? { opponentLandColors: true } : {})
+		...(opponentLands ? { opponentLandColors: true } : {}),
+		...(manaRestriction ? { manaRestriction } : {}),
+		...(manaBundles ? { manaBundles } : {}),
+		...(manaCombinationColors ? { manaCombinationColors } : {}),
+		// --- Track P10 ---
+		...(manaRestrictionSpec ? { manaRestrictionSpec } : {}),
+		...(retainManaUntilEndOfTurn ? { retainManaUntilEndOfTurn: true } : {})
+		// --- End Track P10 ---
 	};
 }
 
-/**
- * Builds the innate activated abilities of `card` from its compiled IR.
- */
-export function getCardActivatedAbilities(
+interface BuildEffectiveAbilityOptions {
+	idOverride?: string;
+	displayCardName: string;
+	displayCard: ScryfallCard;
+	grantSourceCard?: ScryfallCard;
+	grantSources?: string[];
+	labelOverride?: string;
+	costTextOverride?: string;
+	effectTextOverride?: string;
+	chosenColor?: ManaColor;
+	// --- Track P10 ---
+	grantedAbilityText?: string;
+	// --- End Track P10 ---
+}
+
+function buildEffectiveActivatedAbility(
+	ab: ActivatedAbility | UnsupportedAbility,
+	commanderIdentity: ManaColor[],
+	resolveOpponentLandColors: (() => ManaColor[]) | undefined,
+	opts: BuildEffectiveAbilityOptions
+): EffectiveActivatedAbility | null {
+	const id = opts.idOverride ?? ab.id!;
+	const cost = ab.kind === 'activated' ? ab.cost : (ab.cost ?? []);
+	const costComplete = ab.kind === 'activated' ? true : (ab.costComplete ?? false);
+	const timing = ab.kind === 'activated' ? ab.timing : (ab.timing ?? 'instant');
+	const isMana =
+		ab.kind === 'activated'
+			? ab.isMana
+			: Boolean(ab.isMana && ab.effect && ab.effect.length > 0);
+	const effect = ab.kind === 'activated' ? ab.effect : (ab.effect ?? []);
+	const targets = ab.kind === 'activated' ? ab.targets : (ab.targets ?? []);
+	const fullText = displayAbilityText(ab.text ?? '', opts.displayCardName, opts.displayCard);
+	const colonIdx = fullText.indexOf(':');
+	const costPart = colonIdx >= 0 ? fullText.slice(0, colonIdx).trim() : '';
+	const effectPart = colonIdx >= 0 ? fullText.slice(colonIdx + 1).trim() : fullText;
+
+	const loyaltyDef = cost.find((c): c is Extract<CostDef, { k: 'loyalty' }> => c.k === 'loyalty');
+	// --- Track P15: +X / -X loyalty abilities (CR 606.4) ---
+	const isLoyaltyX = Boolean(loyaltyDef?.isX);
+	const loyaltySign: '+' | '-' | undefined = isLoyaltyX ? (loyaltyDef?.sign ?? '+') : undefined;
+	const loyaltyCost = loyaltyDef && !isLoyaltyX ? loyaltyDef.delta : null;
+	// --- End Track P15 ---
+	const manaDef = cost.find((c): c is Extract<CostDef, { k: 'mana' }> => c.k === 'mana');
+	const manaCost = manaDef ? manaDef.cost : '';
+	const requiresTap = cost.some((c) => c.k === 'tapSelf');
+	const requiresSacrificeSelf = cost.some((c) => c.k === 'sacrifice' && c.filter === 'self');
+	const lifeDef = cost.find((c): c is Extract<CostDef, { k: 'payLife' }> => c.k === 'payLife');
+	const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : 0;
+
+	let producesMana: ManaColor[] = [];
+	let producesAmount = 0;
+	let hasManaProduction = false;
+	let manaAmount: EffectiveActivatedAbility['manaAmount'];
+	let manaRestriction: EffectiveActivatedAbility['manaRestriction'];
+	let manaBundles: EffectiveActivatedAbility['manaBundles'];
+	let manaCombinationColors: EffectiveActivatedAbility['manaCombinationColors'];
+	// --- Track P10 ---
+	let manaRestrictionSpec: EffectiveActivatedAbility['manaRestrictionSpec'];
+	let retainManaUntilEndOfTurn: boolean | undefined;
+	// --- End Track P10 ---
+	const freezesSelfUntap =
+		isMana && effect.some((s) => s.verb === 'freezeUntap' && s.subject.k === 'self');
+	if (isMana) {
+		const prod = manaStepProduction(effect, commanderIdentity, opts.chosenColor);
+		if (prod?.opponentLandColors) {
+			const oppColors = resolveOpponentLandColors ? resolveOpponentLandColors() : [];
+			if (oppColors.length === 0) return null;
+			producesMana = oppColors;
+			producesAmount = prod.amount;
+			hasManaProduction = true;
+			manaRestriction = prod.manaRestriction;
+			// --- Track P10 ---
+			manaRestrictionSpec = prod.manaRestrictionSpec;
+			retainManaUntilEndOfTurn = prod.retainManaUntilEndOfTurn;
+			// --- End Track P10 ---
+		} else if (prod) {
+			producesMana = prod.colors;
+			producesAmount = prod.colors.length > 0 ? prod.amount : 0;
+			hasManaProduction = true;
+			manaRestriction = prod.manaRestriction;
+			manaBundles = prod.manaBundles;
+			manaCombinationColors = prod.manaCombinationColors;
+			// --- Track P10 ---
+			manaRestrictionSpec = prod.manaRestrictionSpec;
+			retainManaUntilEndOfTurn = prod.retainManaUntilEndOfTurn;
+			// --- End Track P10 ---
+		}
+		const dynStep = effect.find((s) => s.verb === 'addMana' && s.amount && s.amount.k !== 'const');
+		if (dynStep?.amount) manaAmount = dynStep.amount;
+	}
+
+	const modal = ab.kind === 'activated' ? ab.modal : undefined;
+	const targetInfo = modal ? modalTargetRequirement(modal) : targetRequirementFromSpecs(targets);
+	const isPureTapMana = isMana && id === 'mana_tap' && !manaBundles && !manaCombinationColors && !freezesSelfUntap;
+	const sourceSuffix = opts.grantSources && opts.grantSources.length > 0 ? ` (${opts.grantSources.join(', ')})` : '';
+	const maxEffectLen = opts.grantSources ? 60 : 45;
+	const loyaltyPrefix = isLoyaltyX
+		? `${loyaltySign}X`
+		: loyaltyCost !== null
+			? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}`
+			: null;
+	const baseLabel =
+		isPureTapMana && producesMana.length > 0
+			? `Tap: Add ${producesAmount > 1 ? `${producesAmount}x ` : ''}${producesMana.map((c) => `{${c}}`).join('/')}`
+			: loyaltyPrefix !== null
+				? `${loyaltyPrefix}: ${effectPart.slice(0, 48)}`
+				: `${costPart}: ${effectPart.slice(0, maxEffectLen)}`;
+	const label = opts.labelOverride ?? `${baseLabel}${sourceSuffix}`;
+	const costText =
+		opts.costTextOverride ??
+		(isPureTapMana ? '{T}' : loyaltyPrefix !== null ? loyaltyPrefix : costPart);
+	const activationZones = ab.kind === 'activated' ? ab.activationZones : undefined;
+	const costKeyword = ab.kind === 'activated' ? ab.costKeyword : undefined;
+	const activationCondition = ab.activationCondition;
+	// --- Track P15 ---
+	const choosesX =
+		isLoyaltyX ||
+		/\{X\}/i.test(manaCost) ||
+		cost.some(
+			(c) =>
+				(c.k === 'payLife' && c.amount.k === 'x') ||
+				(c.k === 'payEnergy' && c.count.k === 'x') ||
+				(c.k === 'removeCounters' && c.count.k === 'x') ||
+				(c.k === 'discard' && c.count.k === 'x') ||
+				(c.k === 'exileFrom' && c.count.k === 'x') ||
+				// --- Track P17b ---
+				(c.k === 'sacrifice' && c.count.k === 'x') ||
+				(c.k === 'tapOthers' && c.count.k === 'x') ||
+				(c.k === 'untapOthers' && c.count.k === 'x') ||
+				(c.k === 'returnToHand' && c.count.k === 'x') ||
+				(c.k === 'putCounters' && c.count.k === 'x') ||
+				(c.k === 'putOnBottomOfLibrary' && c.count.k === 'x') ||
+				(c.k === 'mill' && c.count.k === 'x')
+				// --- End Track P17b ---
+		);
+	const activatorWho = ab.kind === 'activated' ? ab.activatorWho : undefined;
+	const powerUpReduction = ab.kind === 'activated' ? ab.powerUpReduction : undefined;
+	// --- End Track P15 ---
+
+	return {
+		id,
+		label,
+		costText,
+		manaCost,
+		cost,
+		costComplete,
+		requiresTap,
+		requiresSacrificeSelf,
+		lifeCost,
+		loyaltyCost,
+		isManaAbility: isMana && hasManaProduction,
+		sorcerySpeedOnly: timing === 'sorcery',
+		...(ab.activationRestrictions?.length ? { activationRestrictions: ab.activationRestrictions } : {}),
+		...(activationCondition ? { activationCondition } : {}),
+		...(activationZones?.length ? { activationZones } : {}),
+		...(costKeyword ? { costKeyword } : {}),
+		...(ab.grantCondition ? { grantCondition: ab.grantCondition } : {}),
+		// --- Track P15 ---
+		...(choosesX ? { choosesX: true } : {}),
+		...(loyaltySign ? { loyaltySign } : {}),
+		...(activatorWho ? { activatorWho } : {}),
+		...(powerUpReduction ? { powerUpReduction: true } : {}),
+		// --- End Track P15 ---
+		// --- Track P18b ---
+		...(ab.xCantBeZero ? { xCantBeZero: true } : {}),
+		// --- End Track P18b ---
+		producesMana,
+		producesAmount,
+		...(manaAmount ? { manaAmount } : {}),
+		...(manaRestriction ? { manaRestriction } : {}),
+		...(manaBundles ? { manaBundles } : {}),
+		...(manaCombinationColors ? { manaCombinationColors } : {}),
+		// --- Track P10 ---
+		...(manaRestrictionSpec ? { manaRestrictionSpec } : {}),
+		...(retainManaUntilEndOfTurn ? { retainManaUntilEndOfTurn: true } : {}),
+		...(opts.grantedAbilityText ? { grantedAbilityText: opts.grantedAbilityText } : {}),
+		// --- End Track P10 ---
+		...(freezesSelfUntap ? { freezesSelfUntap: true } : {}),
+		...(opts.grantSourceCard ? { grantSourceCard: opts.grantSourceCard } : {}),
+		effectText: opts.effectTextOverride ?? effectPart,
+		...(modal ? { modal } : {}),
+		requiresTarget: targetInfo.requiresTarget,
+		targetKind: targetInfo.targetKind,
+		targetInfo
+	};
+}
+
+function buildFaceActivatedAbilities(
+	faceName: string,
+	faceIndex: number,
+	abilities: ReturnType<typeof activeAbilityDefs>,
 	card: ScryfallCard,
-	commanderIdentity: ManaColor[] = [],
-	resolveOpponentLandColors?: () => ManaColor[]
+	commanderIdentity: ManaColor[],
+	resolveOpponentLandColors?: () => ManaColor[],
+	chosenColor?: ManaColor
 ): EffectiveActivatedAbility[] {
-	const abilities = compileCard(card).faces[0]?.abilities ?? [];
 	const out: EffectiveActivatedAbility[] = [];
 
 	const intrinsicColors: ManaColor[] = [];
@@ -344,6 +798,7 @@ export function getCardActivatedAbilities(
 	if (intrinsicColors.length > 0) {
 		out.push({
 			id: 'mana_tap',
+			faceIndex,
 			label: `Tap: Add ${intrinsicColors.map((c) => `{${c}}`).join('/')}`,
 			costText: '{T}',
 			manaCost: '',
@@ -367,41 +822,146 @@ export function getCardActivatedAbilities(
 		if (ab.kind === 'keyword') {
 			const { name: kwName, cost: kwCost, equipFilter } = ab.keyword;
 			if (kwName === 'equip') {
-				const equipCost = kwCost ?? '{0}';
+				// --- Track P12 ---
 				const filter = equipFilter ?? {};
-			const qual = [
-				...(filter.supertypes?.map((s) => s.toLowerCase()) ?? []),
-				...(filter.subtypes ?? [])
-			].join(' ');
-			const equipTargetPhrase = qual ? `${qual} creature` : 'creature';
-			const labelPrefix = qual ? `Equip ${qual} ${equipCost}` : `Equip ${equipCost}`;
-			const spec: TargetSpec = {
-				kind: 'object',
-				filter: { zone: 'battlefield', types: ['Creature'], controller: 'you', ...filter },
-				min: 1,
-				max: 1
-			};
-			const targetInfo = targetRequirementFromSpecs([spec]);
-			out.push({
-				id: ab.id ?? 'equip_0',
-				label: `${labelPrefix}: Attach to target ${equipTargetPhrase} you control`,
-				costText: labelPrefix,
-				manaCost: equipCost,
-				cost: equipCost && equipCost !== '{0}' ? [{ k: 'mana', cost: equipCost }] : [],
-				costComplete: true,
-				requiresTap: false,
-				requiresSacrificeSelf: false,
-				lifeCost: 0,
-				loyaltyCost: null,
-				isManaAbility: false,
-				sorcerySpeedOnly: true,
-				producesMana: [],
-				producesAmount: 0,
-				effectText: `Attach to target ${equipTargetPhrase} you control.`,
-				requiresTarget: true,
-				targetKind: 'controlled_creature',
-				targetInfo
-			});
+				const costDefs =
+					ab.keyword.costDefs ??
+					(kwCost && kwCost !== '{0}' ? [{ k: 'mana' as const, cost: kwCost }] : []);
+				const manaParts = costDefs.filter(
+					(d): d is Extract<CostDef, { k: 'mana' }> => d.k === 'mana'
+				);
+				const nonManaParts = costDefs.filter((d) => d.k !== 'mana');
+				const equipCost =
+					kwCost ?? (manaParts.length > 0 ? manaParts.map((m) => m.cost).join('') : '{0}');
+				const lifeCost = costDefs.reduce(
+					(sum, d) => (d.k === 'payLife' && d.amount.k === 'const' ? sum + d.amount.n : sum),
+					0
+				);
+				const requiresTap = costDefs.some((d) => d.k === 'tapSelf');
+				const requiresSacrificeSelf = costDefs.some(
+					(d) => d.k === 'sacrifice' && d.filter === 'self'
+				);
+				const qual = [
+					...(filter.token === true ? ['token'] : filter.token === false ? ['nontoken'] : []),
+					...(filter.supertypes?.map((s) => s.toLowerCase()) ?? []),
+					...(filter.notTypes?.map((t) => `non${t.toLowerCase()}`) ?? []),
+					...(filter.notSubtypes?.map((s) => `non-${s}`) ?? []),
+					...(filter.subtypes ?? [])
+				].join(' ');
+				const allowsPw = Boolean(
+					ab.keyword.equipAllowPlaneswalker || filter.types?.includes('Planeswalker')
+				);
+				const allowsCreature = !filter.types || filter.types.includes('Creature');
+				const baseNoun =
+					allowsPw && allowsCreature
+						? 'creature or planeswalker'
+						: allowsPw
+							? 'planeswalker'
+							: 'creature';
+				const equipTargetPhrase = ab.keyword.param
+					? ab.keyword.param
+					: qual
+						? `${qual} ${baseNoun}`
+						: baseNoun;
+				const hasCustomTarget = equipTargetPhrase !== 'creature';
+				let labelPrefix: string;
+				if (nonManaParts.length > 0) {
+					const costDesc = [
+						...(equipCost && equipCost !== '{0}' ? [equipCost] : []),
+						describeCost(nonManaParts)
+					].join(', ');
+					labelPrefix = hasCustomTarget
+						? `Equip ${equipTargetPhrase}—${costDesc}`
+						: `Equip—${costDesc}`;
+				} else {
+					labelPrefix = hasCustomTarget
+						? `Equip ${equipTargetPhrase} ${equipCost}`
+						: `Equip ${equipCost}`;
+				}
+				const spec: TargetSpec = {
+					kind: 'object',
+					filter: { zone: 'battlefield', types: ['Creature'], controller: 'you', ...filter },
+					min: 1,
+					max: 1
+				};
+				const targetInfo = targetRequirementFromSpecs([spec]);
+				out.push({
+					id: ab.id ?? 'equip_0',
+					faceIndex,
+					label: `${labelPrefix}: Attach to target ${equipTargetPhrase} you control`,
+					costText: labelPrefix,
+					manaCost: equipCost,
+					cost: costDefs,
+					costComplete: true,
+					requiresTap,
+					requiresSacrificeSelf,
+					lifeCost,
+					loyaltyCost: null,
+					isManaAbility: false,
+					sorcerySpeedOnly: true,
+					costKeyword: 'equip',
+					producesMana: [],
+					producesAmount: 0,
+					effectText: `Attach to target ${equipTargetPhrase} you control.`,
+					requiresTarget: true,
+					targetKind: targetInfo.targetKind,
+					targetInfo
+				});
+				// --- End Track P12 ---
+			} else {
+				const spec = getKeywordSpec(kwName);
+				if (
+					spec?.status === 'implemented' &&
+					spec.implementation?.kind === 'activated' &&
+					spec.implementation.buildActivated
+				) {
+					const built = spec.implementation.buildActivated(
+						ab.keyword,
+						ab.id ?? `${kwName}_0`,
+						ab.span
+					);
+					if (built) {
+						const effective = buildEffectiveActivatedAbility(
+							built.ability,
+							commanderIdentity,
+							resolveOpponentLandColors,
+							{
+								displayCardName: faceName,
+								displayCard: card,
+								labelOverride: built.label,
+								costTextOverride: built.costText,
+								effectTextOverride: built.effectText,
+								chosenColor
+							}
+						);
+						if (effective) out.push({ ...effective, faceIndex });
+					}
+					// --- Track P15: Reconfigure also defines an unattach ability (CR 702.151a) ---
+					if (kwName === 'reconfigure') {
+						const unattachBuilt = buildReconfigureUnattachAbility(
+							ab.keyword,
+							ab.id ?? 'reconfigure_0',
+							ab.span
+						);
+						if (unattachBuilt) {
+							const unattachEff = buildEffectiveActivatedAbility(
+								unattachBuilt.ability,
+								commanderIdentity,
+								resolveOpponentLandColors,
+								{
+									displayCardName: faceName,
+									displayCard: card,
+									labelOverride: unattachBuilt.label,
+									costTextOverride: unattachBuilt.costText,
+									effectTextOverride: unattachBuilt.effectText,
+									chosenColor
+								}
+							);
+							if (unattachEff) out.push({ ...unattachEff, faceIndex });
+						}
+					}
+					// --- End Track P15 ---
+				}
 			}
 			continue;
 		}
@@ -411,82 +971,12 @@ export function getCardActivatedAbilities(
 			(ab.kind === 'unsupported' && ab.id && ab.id !== 'cast')
 		) {
 			if (ab.id === 'mana_tap' && out.some((x) => x.id === 'mana_tap')) continue;
-			const cost = ab.kind === 'activated' ? ab.cost : (ab.cost ?? []);
-			const costComplete = ab.kind === 'activated' ? true : (ab.costComplete ?? false);
-			const timing = ab.kind === 'activated' ? ab.timing : (ab.timing ?? 'instant');
-			const isMana =
-				ab.kind === 'activated'
-					? ab.isMana
-					: Boolean(ab.isMana && ab.effect && ab.effect.length > 0);
-			const effect = ab.kind === 'activated' ? ab.effect : (ab.effect ?? []);
-			const targets = ab.kind === 'activated' ? ab.targets : (ab.targets ?? []);
-			const fullText = (ab.text ?? '').replace(/~/g, card.name);
-			const colonIdx = fullText.indexOf(':');
-			const costPart = colonIdx >= 0 ? fullText.slice(0, colonIdx).trim() : '';
-			const effectPart = colonIdx >= 0 ? fullText.slice(colonIdx + 1).trim() : fullText;
-
-			const loyaltyDef = cost.find((c): c is Extract<CostDef, { k: 'loyalty' }> => c.k === 'loyalty');
-			const loyaltyCost = loyaltyDef ? loyaltyDef.delta : null;
-			const manaDef = cost.find((c): c is Extract<CostDef, { k: 'mana' }> => c.k === 'mana');
-			const manaCost = manaDef ? manaDef.cost : '';
-			const requiresTap = cost.some((c) => c.k === 'tapSelf');
-			const requiresSacrificeSelf = cost.some((c) => c.k === 'sacrifice' && c.filter === 'self');
-			const lifeDef = cost.find((c): c is Extract<CostDef, { k: 'payLife' }> => c.k === 'payLife');
-			const lifeCost = lifeDef && lifeDef.amount.k === 'const' ? lifeDef.amount.n : 0;
-
-			let producesMana: ManaColor[] = [];
-			let producesAmount = 0;
-			let hasManaProduction = false;
-			if (isMana) {
-				const prod = manaStepProduction(effect, commanderIdentity);
-				if (prod?.opponentLandColors) {
-					const oppColors = resolveOpponentLandColors ? resolveOpponentLandColors() : [];
-					if (oppColors.length === 0) continue;
-					producesMana = oppColors;
-					producesAmount = prod.amount;
-					hasManaProduction = true;
-				} else if (prod) {
-					producesMana = prod.colors;
-					producesAmount = prod.colors.length > 0 ? prod.amount : 0;
-					hasManaProduction = true;
-				}
-			}
-
-			const targetInfo = targetRequirementFromSpecs(targets);
-			const isPureTapMana = isMana && ab.id === 'mana_tap';
-			const label =
-				isPureTapMana && producesMana.length > 0
-					? `Tap: Add ${producesAmount > 1 ? `${producesAmount}x ` : ''}${producesMana.map((c) => `{${c}}`).join('/')}`
-					: loyaltyCost !== null
-						? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}: ${effectPart.slice(0, 48)}`
-						: `${costPart}: ${effectPart.slice(0, 45)}`;
-			const costText = isPureTapMana
-				? '{T}'
-				: loyaltyCost !== null
-					? `${loyaltyCost >= 0 ? `+${loyaltyCost}` : loyaltyCost}`
-					: costPart;
-
-			out.push({
-				id: ab.id!,
-				label,
-				costText,
-				manaCost,
-				cost,
-				costComplete,
-				requiresTap,
-				requiresSacrificeSelf,
-				lifeCost,
-				loyaltyCost,
-				isManaAbility: isMana && hasManaProduction,
-				sorcerySpeedOnly: timing === 'sorcery',
-				...(ab.activationRestrictions?.length ? { activationRestrictions: ab.activationRestrictions } : {}),
-				producesMana,
-				producesAmount,
-				effectText: effectPart,
-				requiresTarget: targetInfo.requiresTarget,
-				targetKind: targetInfo.targetKind,
-				targetInfo
+			const built = buildEffectiveActivatedAbility(ab, commanderIdentity, resolveOpponentLandColors, {
+				displayCardName: faceName,
+				displayCard: card,
+				chosenColor
 			});
+			if (built) out.push({ ...built, faceIndex });
 		}
 	}
 
@@ -494,8 +984,45 @@ export function getCardActivatedAbilities(
 }
 
 /**
+ * Builds the innate activated abilities of `card` from its compiled IR, scoped to `faceOpts`
+ * (and disambiguating colliding ability IDs across multiple active faces such as unlocked Room doors).
+ */
+export function getCardActivatedAbilities(
+	card: ScryfallCard,
+	commanderIdentity: ManaColor[] = [],
+	resolveOpponentLandColors?: () => ManaColor[],
+	faceOpts?: ResolveObjectFacesOptions,
+	chosenColor?: ManaColor
+): EffectiveActivatedAbility[] {
+	const resolved = resolveObjectFaces(card, faceOpts);
+	const def = compileCard(card);
+	const collected: EffectiveActivatedAbility[] = [];
+	for (const fi of resolved.activeFaceIndices) {
+		const face = def.faces[fi];
+		if (!face) continue;
+		collected.push(
+			...buildFaceActivatedAbilities(
+				face.name,
+				fi,
+				face.abilities,
+				card,
+				commanderIdentity,
+				resolveOpponentLandColors,
+				chosenColor
+			)
+		);
+	}
+	if (resolved.activeFaceIndices.length <= 1) return collected;
+	const idCounts = new Map<string, number>();
+	for (const ab of collected) idCounts.set(ab.id, (idCounts.get(ab.id) ?? 0) + 1);
+	return collected.map((ab) =>
+		(idCounts.get(ab.id) ?? 0) > 1 ? { ...ab, id: `f${ab.faceIndex ?? 0}:${ab.id}` } : ab
+	);
+}
+
+/**
  * Returns the activated abilities of a permanent from its compiled IR, with continuous layer
- * grants/ability-loss and active cost modifiers applied.
+ * grants/ability-loss (CR 613.1f, 613.7) and active cost modifiers applied.
  */
 export function getEffectiveActivatedAbilities(
 	state: GameState,
@@ -503,77 +1030,296 @@ export function getEffectiveActivatedAbilities(
 	perm: CardInstance,
 	commanderIdentity: ManaColor[] = []
 ): EffectiveActivatedAbility[] {
-	const breakdown = inspectCardContinuousBreakdown(perm, state);
-	const allInnateRemoved = breakdown.items.some(
-		(it) => it.isInnate && it.removed && it.removedBy.length > 0
-	);
+	const resolveOppLands = () =>
+		state.lobbyCode === 'GOLDEN'
+			? (['W', 'U', 'B', 'R', 'G'] as ManaColor[])
+			: opponentLandColors(state, actor);
 
-	const effectiveCard = perm.copiableCard ?? perm.card;
-	let rawAbilities = allInnateRemoved
-		? []
-		: getCardActivatedAbilities(effectiveCard, commanderIdentity, () =>
-				state.lobbyCode === 'GOLDEN'
-					? (['W', 'U', 'B', 'R', 'G'] as ManaColor[])
-					: opponentLandColors(state, actor)
-			);
+	let rawAbilities: EffectiveActivatedAbility[];
+	if (perm.zone !== 'battlefield') {
+		// CR 611.3b: Battlefield Layer 4/6 static effects (ability loss, grants, copy) apply only
+		// to permanents on the battlefield; off-battlefield objects keep their innate abilities,
+		// with cost modifiers still applied below.
+		rawAbilities = getCardActivatedAbilities(
+			perm.card,
+			commanderIdentity,
+			resolveOppLands,
+			instanceFaceOptions(perm, perm.zone),
+			perm.chosenColor
+		).filter((ab) => !ab.grantCondition);
+		// --- Track P22a (CR 702.97 Scavenge / CR 702.84 Unearth graveyard grants) ---
+		if (perm.zone === 'graveyard' && perm.ownerId === actor.playerId) {
+			for (const g of collectGrantedGraveyardActivatedAbilitiesWave8(state, actor, perm)) {
+				if (rawAbilities.some((a) => a.id === g.abilityId)) continue;
+				const built = buildEffectiveActivatedAbility(
+					g.ability,
+					commanderIdentity,
+					resolveOppLands,
+					{
+						idOverride: g.abilityId,
+						displayCardName: perm.card.name,
+						displayCard: g.grantSourceCard,
+						grantSourceCard: g.grantSourceCard,
+						grantSources: [g.grantSourceName],
+						labelOverride: g.label,
+						costTextOverride: g.costText,
+						effectTextOverride: g.effectText,
+						chosenColor: perm.chosenColor
+					}
+				);
+				if (built) rawAbilities.push(built);
+			}
+		}
+		// --- End Track P22a ---
+	} else {
+		const breakdown = inspectCardContinuousBreakdown(perm, state);
+		const allInnateRemoved = permanentHasLostAllAbilities(perm, state).lost;
+		// --- Track P7 ---
+		const timedLayer1a = activeTimedLayer1aForPermanent(state, perm);
+		const effectiveCard = timedLayer1a?.card ?? perm.copiableCard ?? perm.card;
+		const baseFaceOpts = instanceFaceOptions(perm, 'battlefield');
+		const effectiveFaceOpts: ResolveObjectFacesOptions = timedLayer1a
+			? {
+					...baseFaceOpts,
+					copiableState: timedLayer1a,
+					faceIndex: timedLayer1a.faceIndex ?? 0,
+					isSingleFaceCopy: timedLayer1a.isSingleFaceCopy,
+					prototyped: Boolean(timedLayer1a.prototyped)
+				}
+			: baseFaceOpts;
+		// --- End Track P7 ---
+		rawAbilities = allInnateRemoved
+			? []
+			: getCardActivatedAbilities(
+					effectiveCard,
+					commanderIdentity,
+					resolveOppLands,
+					effectiveFaceOpts,
+					perm.chosenColor
+				).filter(
+					(ab) =>
+						!ab.grantCondition ||
+						evaluateFilterCondition(ab.grantCondition, {
+							state,
+							controllerId: actor.playerId,
+							source: perm
+						})
+				);
 
-	// Add granted mana abilities from continuous type-changing effects (Imprisoned in the Moon, Song of the Dryads, Blood Moon, Urborg, Yavimaya)
-	for (const item of breakdown.items) {
-		if (!item.removed && !item.isInnate && item.name.startsWith('Mana Ability: Add ')) {
-			const colorMatch = item.name.match(/Add \{([WUBRGC])\}/);
-			if (colorMatch) {
-				const col = colorMatch[1] as ManaColor;
-				const abId = `granted_mana_${col.toLowerCase()}`;
-				if (!rawAbilities.some((a) => a.id === abId)) {
-					rawAbilities = [
-						...rawAbilities,
-						{
-							id: abId,
-							label: `{T}: Add {${col}} (${item.sources.join(', ')})`,
-							costText: '{T}',
-							manaCost: '{0}',
-							cost: [{ k: 'tapSelf' }],
-							costComplete: true,
-							requiresTap: true,
-							requiresSacrificeSelf: false,
-							lifeCost: 0,
-							loyaltyCost: null,
-							isManaAbility: true,
-							producesMana: [col],
-							producesAmount: 1,
-							effectText: `Add {${col}}.`,
-							requiresTarget: false,
-							targetKind: 'none',
-							targetInfo: NO_TARGET_REQUIREMENT
-						}
-					];
+		// Add granted activated abilities from Layer 4 / Layer 6 IR (`AttributedKeywordOrEffect.grantedAbility`)
+		for (const item of breakdown.items) {
+			if (item.removed || item.isInnate || !item.grantedAbility) continue;
+			const grantedIr = item.grantedAbility;
+			const abId = grantedIr.intrinsic
+				? grantedIr.id
+				: item.grantSourceId
+					? `granted:${item.grantSourceId}:${grantedIr.id}`
+					: grantedIr.id;
+			if (rawAbilities.some((a) => a.id === abId)) continue;
+			const grantSourceChosenColor = item.grantSourceId
+				? state.players
+						.flatMap((pl) => pl.battlefield)
+						.find((p) => p.instanceId === item.grantSourceId)?.chosenColor
+				: undefined;
+			const built = buildEffectiveActivatedAbility(grantedIr, commanderIdentity, resolveOppLands, {
+				idOverride: abId,
+				displayCardName: effectiveCard.name,
+				displayCard: item.grantSourceCard ?? effectiveCard,
+				grantSourceCard: item.grantSourceCard,
+				grantSources: item.sources,
+				chosenColor: grantSourceChosenColor ?? perm.chosenColor
+			});
+			if (built) rawAbilities.push(built);
+		}
+		// --- Track P10: EOT-granted quoted activated abilities (`TimedContinuousEffect.layer6.grantedAbilityTexts`) ---
+		if (state.timedContinuousEffects?.length) {
+			const permVer = perm.objectVersion ?? 1;
+			let quoteIdx = 0;
+			for (const eff of state.timedContinuousEffects) {
+				if (!eff.layer6?.grantedAbilityTexts?.length) continue;
+				if (
+					!eff.affected.some(
+						(a) => a.instanceId === perm.instanceId && (a.objectVersion ?? 1) === permVer
+					)
+				) {
+					continue;
+				}
+				for (const gt of eff.layer6.grantedAbilityTexts) {
+					for (const def of resolveQuotedAbilityDefs(gt, effectiveCard.name)) {
+						if (def.kind !== 'activated') continue;
+						const abId = `quoted_eot:${eff.timestamp}:${quoteIdx++}`;
+						const built = buildEffectiveActivatedAbility(def, commanderIdentity, resolveOppLands, {
+							idOverride: abId,
+							displayCardName: effectiveCard.name,
+							displayCard: effectiveCard,
+							grantSources: [eff.sourceName],
+							chosenColor: perm.chosenColor,
+							grantedAbilityText: gt
+						});
+						if (built) rawAbilities.push(built);
+					}
 				}
 			}
 		}
+		// --- End Track P10 ---
+
+		// --- Track P12: Backup-granted activated abilities (CR 702.165c) ---
+		if (!allInnateRemoved) {
+			for (const bg of collectBackupGrantedAbilityGroups(state, perm)) {
+				for (const ab of bg.abilities) {
+					if (ab.kind !== 'activated' || ab.intrinsic) continue;
+					const abId = `backup_act:${bg.sourceInstanceId}:${ab.id}`;
+					if (rawAbilities.some((a) => a.id === abId)) continue;
+					const built = buildEffectiveActivatedAbility(ab, commanderIdentity, resolveOppLands, {
+						idOverride: abId,
+						displayCardName: effectiveCard.name,
+						displayCard: bg.sourceCard,
+						grantSourceCard: bg.sourceCard,
+						grantSources: [bg.sourceName],
+						chosenColor: perm.chosenColor
+					});
+					if (built) rawAbilities.push(built);
+				}
+			}
+		}
+		// --- End Track P12 ---
+
+		// --- Track P18a: Merged permanent underneath component activated abilities (CR 731.2b / CR 707.2) ---
+		const effCopyLayer1 = timedLayer1a ?? perm.copiableState;
+		const effMergedComponents = effCopyLayer1
+			? effCopyLayer1.mergedComponents
+			: perm.mergedComponents;
+		if (
+			!allInnateRemoved &&
+			!perm.isFaceDown &&
+			effMergedComponents &&
+			effMergedComponents.length > 1
+		) {
+			for (let cIdx = 1; cIdx < effMergedComponents.length; cIdx++) {
+				const compCard = effMergedComponents[cIdx]!;
+				const compDef = compileCard(compCard);
+				const compFace = compDef.faces[0];
+				if (!compFace) continue;
+				for (const ab of compFace.abilities) {
+					if (ab.kind === 'activated' && !ab.intrinsic) {
+						const abId = `backup_act:merged_${cIdx}:${ab.id}`;
+						if (rawAbilities.some((a) => a.id === abId)) continue;
+						const built = buildEffectiveActivatedAbility(ab, commanderIdentity, resolveOppLands, {
+							idOverride: abId,
+							displayCardName: effectiveCard.name,
+							displayCard: compCard,
+							grantSourceCard: compCard,
+							grantSources: [compCard.name],
+							chosenColor: perm.chosenColor
+						});
+						if (built) rawAbilities.push(built);
+					} else if (ab.kind === 'keyword') {
+						const { name: kwName } = ab.keyword;
+						const spec = getKeywordSpec(kwName);
+						if (
+							spec?.status === 'implemented' &&
+							spec.implementation?.kind === 'activated' &&
+							spec.implementation.buildActivated
+						) {
+							const baseId = ab.id ?? `${kwName}_0`;
+							const kwBuilt = spec.implementation.buildActivated(ab.keyword, baseId, ab.span);
+							if (kwBuilt) {
+								const abId = `backup_act:merged_${cIdx}:${kwBuilt.ability.id}`;
+								if (rawAbilities.some((a) => a.id === abId)) continue;
+								const built = buildEffectiveActivatedAbility(
+									kwBuilt.ability,
+									commanderIdentity,
+									resolveOppLands,
+									{
+										idOverride: abId,
+										displayCardName: effectiveCard.name,
+										displayCard: compCard,
+										grantSourceCard: compCard,
+										grantSources: [compCard.name],
+										labelOverride: kwBuilt.label,
+										costTextOverride: kwBuilt.costText,
+										effectTextOverride: kwBuilt.effectText,
+										chosenColor: perm.chosenColor
+									}
+								);
+								if (built) rawAbilities.push(built);
+							}
+						}
+					}
+				}
+			}
+		}
+		// --- End Track P18a ---
 	}
 
 	return rawAbilities.map((ab) => {
+		// --- Track P10: Bind chosen creature subtype onto manaRestrictionSpec ---
+		if (ab.manaRestrictionSpec && perm.chosenSubType && !ab.manaRestrictionSpec.sourceChosenSubType) {
+			ab = {
+				...ab,
+				manaRestrictionSpec: {
+					...ab.manaRestrictionSpec,
+					sourceChosenSubType: perm.chosenSubType
+				}
+			};
+		}
+		// --- End Track P10 ---
+		// --- Track P17b ---
+		const rawBaseMana = ab.baseManaCost ?? ab.manaCost;
+		const isKeywordAb = Boolean(
+			ab.costKeyword ||
+				ab.id.startsWith('equip_') ||
+				ab.id.startsWith('cycling_') ||
+				ab.id.startsWith('unearth_') ||
+				ab.id.startsWith('ninjutsu_') ||
+				ab.id.startsWith('commander_ninjutsu_') ||
+				ab.id.startsWith('scavenge_') ||
+				ab.id.startsWith('boast_') ||
+				ab.id.startsWith('exhaust_') ||
+				ab.id.startsWith('powerup_')
+		);
 		const { manaCost: effMana } = effectiveAbilityManaCost(
 			state,
 			actor.playerId,
 			ab.id,
-			ab.manaCost
+			rawBaseMana,
+			ab.costKeyword,
+			0,
+			isKeywordAb ? perm : undefined,
+			ab.isManaAbility,
+			Boolean(ab.powerUpReduction),
+			undefined,
+			ab.loyaltyCost !== null
 		);
-		if (effMana !== ab.manaCost) {
-			const nextCost = ab.cost.map((c) =>
-				c.k === 'mana' ? { k: 'mana' as const, cost: effMana } : c
-			);
+		// --- End Track P17b ---
+		if (effMana !== rawBaseMana) {
+			const hasManaEntry = ab.cost.some((c) => c.k === 'mana');
+			const nextCost = hasManaEntry
+				? ab.cost.map((c) => (c.k === 'mana' ? { k: 'mana' as const, cost: effMana } : c))
+				: effMana && effMana !== '{0}'
+					? [{ k: 'mana' as const, cost: effMana }, ...ab.cost]
+					: ab.cost;
 			const filteredCost =
 				effMana === '{0}' || effMana === '' ? nextCost.filter((c) => c.k !== 'mana') : nextCost;
+			const nextCostText =
+				ab.id.startsWith('equip_') && effMana === '{0}'
+					? 'Equip {0}'
+					: rawBaseMana && ab.costText.includes(rawBaseMana)
+						? ab.costText.replace(rawBaseMana, effMana || '{0}')
+						: ab.costText;
+			const nextLabel =
+				ab.id.startsWith('equip_') && effMana === '{0}'
+					? `Equip {0} (was ${rawBaseMana})`
+					: rawBaseMana && ab.label.includes(rawBaseMana)
+						? ab.label.replace(rawBaseMana, effMana || '{0}')
+						: ab.label;
 			return {
 				...ab,
+				baseManaCost: rawBaseMana,
 				manaCost: effMana,
 				cost: filteredCost,
-				costText: ab.id.startsWith('equip_') && effMana === '{0}' ? 'Equip {0}' : ab.costText,
-				label:
-					ab.id.startsWith('equip_') && effMana === '{0}'
-						? `Equip {0} (was ${ab.manaCost})`
-						: ab.label
+				costText: nextCostText,
+				label: nextLabel
 			};
 		}
 		return ab;

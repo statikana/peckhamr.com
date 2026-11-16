@@ -1,0 +1,85 @@
+{
+  "oracleId": "2962fe4c-bf48-454b-8a6b-0f8253352ae8",
+  "cardName": "Spelunking",
+  "expectedTextHash": "bff68e7f",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: ETB draw + optional land from hand (+4 life if Cave) and Lands you control enter untapped.",
+  "faces": [
+    {
+      "name": "Spelunking",
+      "characteristics": {
+        "manaCost": "{2}{G}",
+        "types": ["Enchantment"],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": ["G"]
+      },
+      "abilities": [
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "zoneChange",
+            "filter": { "object": "self", "to": "battlefield" }
+          },
+          "targets": [],
+          "effect": [
+            {
+              "verb": "draw",
+              "subject": { "k": "player", "filter": { "relation": "you" } },
+              "amount": { "k": "const", "n": 1 },
+              "span": { "start": 27, "end": 38 }
+            },
+            {
+              "verb": "move",
+              "subject": {
+                "k": "all",
+                "filter": {
+                  "zone": "hand",
+                  "owner": "you",
+                  "types": ["Land"]
+                }
+              },
+              "params": {
+                "from": "hand",
+                "to": "battlefield",
+                "choiceCount": { "k": "const", "n": 1 },
+                "upTo": true,
+                "underYourControl": true
+              },
+              "bindAs": "putLand",
+              "span": { "start": 40, "end": 94 }
+            },
+            {
+              "verb": "gainLife",
+              "subject": { "k": "player", "filter": { "relation": "you" } },
+              "amount": { "k": "const", "n": 4 },
+              "condition": {
+                "k": "matchesFilter",
+                "target": { "k": "binding", "name": "putLand" },
+                "filter": { "subtypes": ["Cave"] },
+                "any": true
+              },
+              "span": { "start": 95, "end": 159 }
+            }
+          ],
+          "text": "When ~ enters, draw a card, then you may put a land card from your hand onto the battlefield. If you put a Cave onto the battlefield this way, you gain 4 life.",
+          "span": { "start": 0, "end": 159 }
+        },
+        {
+          "kind": "replacement",
+          "replacement": {
+            "replaces": {
+              "event": "zoneChange",
+              "filter": {
+                "object": { "controller": "you", "types": ["Land"] },
+                "to": "battlefield"
+              }
+            },
+            "with": { "k": "modify", "untapped": true }
+          },
+          "span": { "start": 160, "end": 208 }
+        }
+      ]
+    }
+  ]
+}

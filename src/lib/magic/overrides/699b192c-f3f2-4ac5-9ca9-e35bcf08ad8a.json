@@ -1,0 +1,134 @@
+{
+	"oracleId": "699b192c-f3f2-4ac5-9ca9-e35bcf08ad8a",
+	"expectedTextHash": "7214e43b",
+	"faces": [
+		{
+			"name": "Necromancy",
+			"characteristics": {
+				"manaCost": "{2}{B}",
+				"types": ["Enchantment"],
+				"subtypes": [],
+				"supertypes": [],
+				"colors": ["B"]
+			},
+			"abilities": [
+				{
+					"kind": "static",
+					"static": {
+						"k": "ruleModifier",
+						"rule": "castAsThoughFlash",
+						"who": { "relation": "you" },
+						"params": { "selfOnly": true }
+					},
+					"span": { "start": 0, "end": 38 }
+				},
+				{
+					"kind": "triggered",
+					"trigger": {
+						"event": "zoneChange",
+						"filter": {
+							"object": "self",
+							"to": "battlefield"
+						}
+					},
+					"targets": [],
+					"effect": [
+						{
+							"verb": "reveal",
+							"subject": { "k": "none" },
+							"params": { "wave7Effect": "necromancyFlashCleanup" },
+							"span": { "start": 39, "end": 197 }
+						}
+					],
+					"text": "If you cast it any time a sorcery couldn't have been cast, the controller of the permanent it becomes sacrifices it at the beginning of the next cleanup step.",
+					"span": { "start": 39, "end": 197 }
+				},
+				{
+					"kind": "triggered",
+					"trigger": {
+						"event": "zoneChange",
+						"filter": {
+							"object": "self",
+							"to": "battlefield"
+						}
+					},
+					"condition": {
+						"k": "selfInZone",
+						"zone": "battlefield"
+					},
+					"targets": [
+						{
+							"kind": "object",
+							"filter": {
+								"zone": "graveyard",
+								"types": ["Creature"]
+							},
+							"min": 1,
+							"max": 1
+						}
+					],
+					"effect": [
+						{
+							"verb": "animate",
+							"subject": { "k": "self" },
+							"params": {
+								"addTypes": ["Enchantment"],
+								"addSubtypes": ["Aura"],
+								"duration": "permanent"
+							},
+							"span": { "start": 241, "end": 310 }
+						},
+						{
+							"verb": "move",
+							"subject": { "k": "target", "index": 0 },
+							"params": {
+								"from": "graveyard",
+								"to": "battlefield",
+								"underYourControl": true
+							},
+							"bindAs": "reanimated",
+							"span": { "start": 312, "end": 410 }
+						},
+						{
+							"verb": "attach",
+							"subject": {
+								"k": "binding",
+								"name": "reanimated"
+							},
+							"span": { "start": 395, "end": 410 }
+						}
+					],
+					"text": "When ~ enters, if it's on the battlefield, it becomes an Aura with \"enchant creature put onto the battlefield with ~.\" Put target creature card from a graveyard onto the battlefield under your control and attach ~ to it.",
+					"span": { "start": 198, "end": 411 }
+				},
+				{
+					"kind": "triggered",
+					"trigger": {
+						"event": "zoneChange",
+						"filter": {
+							"object": "self",
+							"from": "battlefield"
+						}
+					},
+					"targets": [],
+					"effect": [
+						{
+							"verb": "sacrifice",
+							"subject": {
+								"k": "all",
+								"filter": {
+									"controller": "any",
+									"zone": "battlefield",
+									"attachedToRef": "reanimatedBySelf"
+								}
+							},
+							"span": { "start": 447, "end": 491 }
+						}
+					],
+					"text": "When ~ leaves the battlefield, that creature's controller sacrifices it.",
+					"span": { "start": 412, "end": 491 }
+				}
+			]
+		}
+	]
+}

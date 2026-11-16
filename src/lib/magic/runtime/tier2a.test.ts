@@ -130,13 +130,47 @@ describe('Tier 2 Track A — Item 1: CR 207.2c Ability-Word Stripping', () => {
 			oracleText: 'Landfall — Whenever a land you control enters, you gain 1 life.'
 		});
 
-		assert.equal(compileCard(caseCard).fullySupported, false, 'Solved — is not an ability word (CR 702.169)');
-		assert.equal(cardSupportReport(caseCard).fullySupported, false);
-		assert.equal(compileCard(maxSpeedCard).fullySupported, false, 'Max speed — is not an ability word (CR 702.178)');
-		assert.equal(cardSupportReport(maxSpeedCard).fullySupported, false);
-		assert.equal(compileCard(boastCard).fullySupported, false, 'Boast — is not an ability word (CR 702.142)');
-		assert.equal(compileCard(exhaustCard).fullySupported, false, 'Exhaust — is not an ability word (CR 702.177)');
-		assert.equal(compileCard(powerUpCard).fullySupported, false, 'Power-up — is not an ability word (CR 702.193)');
+		// --- Track P12 & P15: Solved (CR 720), Max speed (CR 702.178), Boast (CR 702.142), Exhaust (CR 702.177), and Power-up (CR 702.193) compile with explicit gating conditions/costKeywords instead of stripping as flavor words ---
+		const caseDef = compileCard(caseCard);
+		assert.equal(caseDef.fullySupported, true, 'Solved — compiled as gated Case ability (CR 720)');
+		assert.ok(
+			caseDef.faces[0].abilities.every(
+				(a) => a.kind === 'static' && a.static.condition?.k === 'caseSolved'
+			)
+		);
+		const maxSpeedDef = compileCard(maxSpeedCard);
+		assert.equal(maxSpeedDef.fullySupported, true, 'Max speed — compiled with maxSpeed condition (CR 702.178)');
+		assert.ok(
+			maxSpeedDef.faces[0].abilities.every(
+				(a) => a.kind === 'static' && a.static.condition?.k === 'maxSpeed'
+			)
+		);
+		const boastDef = compileCard(boastCard);
+		assert.equal(boastDef.fullySupported, true, 'Boast — compiled with costKeyword: boast (CR 702.142)');
+		assert.ok(
+			boastDef.faces[0].abilities.some(
+				(a) => a.kind === 'activated' && a.costKeyword === 'boast'
+			)
+		);
+		const exhaustDef = compileCard(exhaustCard);
+		assert.equal(exhaustDef.fullySupported, true, 'Exhaust — compiled with costKeyword: exhaust (CR 702.177)');
+		assert.ok(
+			exhaustDef.faces[0].abilities.some(
+				(a) => a.kind === 'activated' && a.costKeyword === 'exhaust'
+			)
+		);
+		const powerUpDef = compileCard(powerUpCard);
+		assert.equal(powerUpDef.fullySupported, true, 'Power-up — compiled with costKeyword: power-up (CR 702.193)');
+		assert.ok(
+			powerUpDef.faces[0].abilities.some(
+				(a) =>
+					a.kind === 'activated' &&
+					a.costKeyword === 'power-up' &&
+					a.powerUpReduction === true &&
+					a.activationRestrictions?.includes('oncePerGame')
+			)
+		);
+		// --- End Track P12 & P15 ---
 
 		// Genuine CR 207.2c ability word still compiles as fullySupported
 		const landfallDef = compileCard(landfallCard);
@@ -195,11 +229,31 @@ describe('Tier 2 Track A — Item 2: CR 602.5b Activation Restrictions', () => {
 			power: undefined,
 			toughness: undefined
 		});
+		const nightConditionalArtifact = card({
+			name: 'Lunar Shrine',
+			typeLine: 'Artifact',
+			oracleText: "{1}: You gain 1 life. Activate only if it's night.",
+			power: undefined,
+			toughness: undefined
+		});
+		const unknownConditionalArtifact = card({
+			name: 'Lunar Anomaly Shrine',
+			typeLine: 'Artifact',
+			oracleText: '{1}: You gain 1 life. Activate only if an opponent controls a Contraption.',
+			power: undefined,
+			toughness: undefined
+		});
 
 		assert.equal(compileCard(upkeepArtifact).fullySupported, true);
 		assert.equal(compileCard(onceArtifact).fullySupported, true);
 		assert.equal(compileCard(yourTurnArtifact).fullySupported, true);
-		assert.equal(compileCard(conditionalArtifact).fullySupported, false, 'Unknown "Activate only if ..." must be unsupported');
+		assert.equal(compileCard(conditionalArtifact).fullySupported, true);
+		assert.equal(compileCard(nightConditionalArtifact).fullySupported, true);
+		assert.equal(
+			compileCard(unknownConditionalArtifact).fullySupported,
+			false,
+			'Unknown "Activate only if ..." must be unsupported'
+		);
 
 		const state = createTestGame();
 		const alice = state.players[0];
@@ -575,14 +629,24 @@ describe('Tier 2 Track A — Item 3: CR 509.1b / 702.11d / 702.13 / 702.28 / 702
 	});
 });
 
-describe('Tier 2 Track A — Item 4: CR 702.85a / 702.88a Unsupported Keywords on Instants & Sorceries', () => {
+describe('Tier 2 Track A — Item 4: CR 702.156 Unsupported Keywords on Instants & Sorceries', () => {
 	it('marks non-period keyword lines on instants/sorceries as unsupported and logs an unautomated notice on cast', () => {
-		const cascadeSorcery = card({
+		// --- Track P18a: Epic (CR 702.50a) is now implemented; Double team (CR 702.156, digital-only) remains unsupported ---
+		const epicSorcery = card({
 			name: 'Ardent Plea Scroll',
 			typeLine: 'Sorcery',
 			manaCost: '{2}{U}',
 			colors: ['U'],
-			oracleText: 'Cascade\nYou gain 2 life.',
+			oracleText: 'Epic\nYou gain 2 life.',
+			power: undefined,
+			toughness: undefined
+		});
+		const unimplementedKwSorcery = card({
+			name: 'Mirrored Scroll',
+			typeLine: 'Sorcery',
+			manaCost: '{2}{U}',
+			colors: ['U'],
+			oracleText: 'Double team\nYou gain 2 life.',
 			power: undefined,
 			toughness: undefined
 		});
@@ -596,12 +660,13 @@ describe('Tier 2 Track A — Item 4: CR 702.85a / 702.88a Unsupported Keywords o
 			toughness: undefined
 		});
 
-		assert.equal(compileCard(cascadeSorcery).fullySupported, false, 'Cascade sorcery must be unsupported (CR 702.85a)');
+		assert.equal(compileCard(epicSorcery).fullySupported, true, 'Epic sorcery is now compiled & supported (CR 702.50a)');
+		assert.equal(compileCard(unimplementedKwSorcery).fullySupported, false, 'Unimplemented keyword sorcery must be unsupported (CR 702.156)');
 		assert.equal(compileCard(freecastInstant).fullySupported, false, 'Unrecognized non-period keyword line on instant must not be silently skipped');
 
 		const state = createTestGame();
 		const alice = state.players[0];
-		const spellInst = putOnBoard(state, alice, cascadeSorcery, 'hand');
+		const spellInst = putOnBoard(state, alice, unimplementedKwSorcery, 'hand');
 
 		const logLenBefore = state.log.length;
 		assert.equal(
@@ -614,8 +679,9 @@ describe('Tier 2 Track A — Item 4: CR 702.85a / 702.88a Unsupported Keywords o
 
 		const newLogs = state.log.slice(logLenBefore).map((l) => l.text);
 		assert.ok(
-			newLogs.some((m) => m.includes('Cascade') && m.includes('not automated — resolve manually')),
-			`Expected cast log to mention 'Cascade is not automated — resolve manually', got: ${JSON.stringify(newLogs)}`
+			newLogs.some((m) => m.includes('Double team') && m.includes('not automated — resolve manually')),
+			`Expected cast log to mention 'Double team is not automated — resolve manually', got: ${JSON.stringify(newLogs)}`
 		);
+		// --- End Track P18a ---
 	});
 });

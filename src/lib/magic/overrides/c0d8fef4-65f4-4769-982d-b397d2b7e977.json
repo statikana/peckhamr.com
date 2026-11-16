@@ -1,0 +1,115 @@
+{
+	"oracleId": "c0d8fef4-65f4-4769-982d-b397d2b7e977",
+	"expectedTextHash": "e44a14a0",
+	"faces": [
+		{
+			"name": "Animate Dead",
+			"characteristics": {
+				"manaCost": "{1}{B}",
+				"types": ["Enchantment"],
+				"subtypes": ["Aura"],
+				"supertypes": [],
+				"colors": ["B"]
+			},
+			"abilities": [
+				{
+					"kind": "keyword",
+					"keyword": {
+						"name": "enchant",
+						"param": "creature card in a graveyard",
+						"enchantFilter": {
+							"types": ["Creature"],
+							"zone": "graveyard"
+						}
+					},
+					"span": { "start": 0, "end": 36 }
+				},
+				{
+					"kind": "triggered",
+					"trigger": {
+						"event": "zoneChange",
+						"filter": {
+							"object": "self",
+							"to": "battlefield"
+						}
+					},
+					"condition": {
+						"k": "selfInZone",
+						"zone": "battlefield"
+					},
+					"targets": [],
+					"effect": [
+						{
+							"verb": "move",
+							"subject": {
+								"k": "all",
+								"filter": {
+									"zone": "graveyard",
+									"attachedToRef": "hostOfSelf"
+								}
+							},
+							"params": {
+								"from": "graveyard",
+								"to": "battlefield",
+								"underYourControl": true
+							},
+							"bindAs": "reanimated",
+							"span": { "start": 182, "end": 270 }
+						},
+						{
+							"verb": "attach",
+							"subject": {
+								"k": "binding",
+								"name": "reanimated"
+							},
+							"span": { "start": 255, "end": 270 }
+						}
+					],
+					"text": "When ~ enters, if it's on the battlefield, it loses \"enchant creature card in a graveyard\" and gains \"enchant creature put onto the battlefield with ~.\" Return enchanted creature card to the battlefield under your control and attach ~ to it.",
+					"span": { "start": 37, "end": 271 }
+				},
+				{
+					"kind": "triggered",
+					"trigger": {
+						"event": "zoneChange",
+						"filter": {
+							"object": "self",
+							"from": "battlefield"
+						}
+					},
+					"targets": [],
+					"effect": [
+						{
+							"verb": "sacrifice",
+							"subject": {
+								"k": "all",
+								"filter": {
+									"controller": "any",
+									"zone": "battlefield",
+									"attachedToRef": "reanimatedBySelf"
+								}
+							},
+							"span": { "start": 307, "end": 351 }
+						}
+					],
+					"text": "When ~ leaves the battlefield, that creature's controller sacrifices it.",
+					"span": { "start": 272, "end": 351 }
+				},
+				{
+					"kind": "static",
+					"static": {
+						"k": "continuous",
+						"layer": "7c",
+						"affected": "attachedTo",
+						"mod": {
+							"k": "pt",
+							"power": { "k": "const", "n": -1 },
+							"toughness": { "k": "const", "n": 0 }
+						}
+					},
+					"span": { "start": 352, "end": 382 }
+				}
+			]
+		}
+	]
+}

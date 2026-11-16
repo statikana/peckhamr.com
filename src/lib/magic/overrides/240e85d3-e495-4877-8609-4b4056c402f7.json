@@ -1,0 +1,71 @@
+{
+  "oracleId": "240e85d3-e495-4877-8609-4b4056c402f7",
+  "cardName": "Victimize",
+  "expectedTextHash": "77cd9f22",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Choose two target creature cards in your graveyard; sacrifice a creature; if you do, return them tapped.",
+  "faces": [
+    {
+      "name": "Victimize",
+      "characteristics": {
+        "manaCost": "{2}{B}",
+        "types": ["Sorcery"],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": ["B"]
+      },
+      "abilities": [
+        {
+          "kind": "spell",
+          "additionalCosts": [],
+          "targets": [
+            {
+              "kind": "object",
+              "filter": {
+                "zone": "graveyard",
+                "owner": "you",
+                "types": ["Creature"]
+              },
+              "min": 2,
+              "max": 2
+            }
+          ],
+          "effect": [
+            {
+              "verb": "sacrifice",
+              "subject": {
+                "k": "all",
+                "filter": {
+                  "zone": "battlefield",
+                  "controller": "you",
+                  "types": ["Creature"]
+                }
+              },
+              "amount": { "k": "const", "n": 1 },
+              "bindAs": "sac",
+              "span": { "start": 53, "end": 74 }
+            },
+            {
+              "verb": "move",
+              "subject": { "k": "target", "index": 0 },
+              "params": {
+                "from": "graveyard",
+                "to": "battlefield",
+                "tapped": true,
+                "underYourControl": true
+              },
+              "condition": {
+                "k": "compare",
+                "left": { "k": "resultCount", "of": "sac" },
+                "op": ">=",
+                "right": { "k": "const", "n": 1 }
+              },
+              "span": { "start": 76, "end": 135 }
+            }
+          ],
+          "span": { "start": 0, "end": 135 }
+        }
+      ]
+    }
+  ]
+}

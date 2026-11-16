@@ -486,20 +486,22 @@ describe('Tier 2B — 5c: Ward human yesNo prompt and unsupported non-mana/life 
 	it('marks non-mana/non-life Ward costs as unsupported (fullySupported: false) and opens manual resolution instead of treating them as {0} (CR 702.21a)', () => {
 		const { state, p1, p2 } = makeGame([false, false]);
 
+		// --- Track P12: Ward—Discard a card is now supported; test unsupported Ward fallback with Ward—{X} ---
 		const discardWardCard = synthCard({
 			name: 'Graveyard Sentinel',
 			typeLine: 'Creature — Horror',
 			power: '4',
 			toughness: '4',
-			oracleText: 'Ward—Discard a card.',
+			oracleText: 'Ward—{X}.',
 			keywords: ['Ward']
 		});
 		const report = cardSupportReport(discardWardCard);
 		assert.equal(
 			report.fullySupported,
 			false,
-			'Ward—Discard a card must report fullySupported: false instead of compiling as supported'
+			'Ward—{X} must report fullySupported: false instead of compiling as supported'
 		);
+		// --- End Track P12 ---
 
 		const sentinel = putInZone(state, p1, discardWardCard, 'battlefield');
 		const bolt = putInZone(

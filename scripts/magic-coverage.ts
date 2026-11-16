@@ -274,7 +274,7 @@ async function main(): Promise<void> {
 		'compiler changes; see ENGINE_ARCHITECTURE_PLAN.md, Phase 11+.',
 		'',
 		'Each card is compiled directly from Oracle text by the grammar (`compiler/card.ts`) and',
-		'checked with `definitionSupportReport` / `isAbilityAutomated` (`compiler/interpretable.ts`),',
+		'checked with `definitionSupportReport` (`compiler/support.ts`),',
 		'the same predicate that drives the deck-builder badge, the lobby rule, and runtime manual',
 		'resolution.',
 		'',
@@ -317,7 +317,7 @@ async function main(): Promise<void> {
 	else process.stdout.write(report);
 
 	console.error(
-		`Compiled ${all.cards} cards: ${pct(all.fullySupported, all.cards)} fully supported (legacy-claimed upper bound), ` +
+		`Compiled ${all.cards} cards: ${pct(all.fullySupported, all.cards)} fully supported, ` +
 			`${pct(all.supportedExceptStatics, all.cards)} ignoring statics; ${throws.length} errors; ` +
 			`cold start ${coldMs.toFixed(0)} ms for ${sample.length} cards.`
 	);

@@ -1,4 +1,5 @@
 import type {
+	CardLayout,
 	DelayedTrigger,
 	LibrarySearchDestination,
 	LibrarySearchSpec,
@@ -23,7 +24,20 @@ export interface ManaCostRequirement {
 	xCount: number;
 	totalCmc: number;
 	flexibleSymbols?: FlexibleManaSymbol[];
+	// --- Track P11 ---
+	/** CR 107.4h: count of {S} snow mana symbols required (payable with any mana produced by a Snow source). */
+	snow?: number;
+	// --- End Track P11 ---
 }
+
+// --- Track P11 ---
+export interface ParseManaCostOptions {
+	coloredReduction?: Partial<Record<ManaColor, number>>;
+	hybridColoredReduction?: Array<[ManaColor, ManaColor]>;
+	coloredOnly?: boolean;
+	minTotalMana?: number;
+}
+// --- End Track P11 ---
 
 export function withStackItemText(
 	item: Omit<StackItem, 'oracleText'>,
@@ -45,27 +59,288 @@ export function withDelayedTriggerSpec(
 	};
 }
 
+export interface PredefinedTokenDef extends TokenCreationSpec {
+	oracleText: string;
+	// --- Track P5 ---
+	/** CR 111.10i: transforming double-faced predefined token (e.g. Incubator -> Phyrexian). */
+	layout?: CardLayout;
+	backFace?: PredefinedTokenDef;
+}
+
+/**
+ * CR 111.10a–g, u, v, x: single authoritative table for predefined tokens.
+ * Both `buildTokenScryfallCard` and the compiler's `tokenPhrase` read from this table.
+ */
+export const PREDEFINED_TOKEN_DEFS = {
+	treasure: {
+		name: 'Treasure',
+		typeLine: 'Token Artifact — Treasure',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{T}, Sacrifice this artifact: Add one mana of any color.'
+	},
+	food: {
+		name: 'Food',
+		typeLine: 'Token Artifact — Food',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{2}, {T}, Sacrifice this token: You gain 3 life.'
+	},
+	gold: {
+		name: 'Gold',
+		typeLine: 'Token Artifact — Gold',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: 'Sacrifice this token: Add one mana of any color.'
+	},
+	walker: {
+		name: 'Walker',
+		typeLine: 'Token Creature — Zombie',
+		colors: ['B'],
+		power: 2,
+		toughness: 2,
+		keywords: [],
+		oracleText: ''
+	},
+	shard: {
+		name: 'Shard',
+		typeLine: 'Token Enchantment — Shard',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{2}, Sacrifice this token: Scry 1, then draw a card.'
+	},
+	clue: {
+		name: 'Clue',
+		typeLine: 'Token Artifact — Clue',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{2}, Sacrifice this token: Draw a card.'
+	},
+	blood: {
+		name: 'Blood',
+		typeLine: 'Token Artifact — Blood',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{1}, {T}, Discard a card, Sacrifice this token: Draw a card.'
+	},
+	lander: {
+		name: 'Lander',
+		typeLine: 'Token Artifact — Lander',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText:
+			'{2}, {T}, Sacrifice this token: Search your library for a basic land card, put it onto the battlefield tapped, then shuffle.'
+	},
+	mutagen: {
+		name: 'Mutagen',
+		typeLine: 'Token Artifact — Mutagen',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText:
+			'{1}, {T}, Sacrifice this token: Put a +1/+1 counter on target creature. Activate only as a sorcery.'
+	},
+	heartwood: {
+		name: 'Heartwood',
+		typeLine: 'Token Artifact — Heartwood',
+		colors: ['R', 'G'],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{T}: Add {R} or {G}.'
+	},
+	powerstone: {
+		name: 'Powerstone',
+		typeLine: 'Token Artifact — Powerstone',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: "{T}: Add {C}. This mana can't be spent to cast a nonartifact spell."
+	},
+	vibranium: {
+		name: 'Vibranium',
+		typeLine: 'Token Artifact — Vibranium',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: ['Indestructible'],
+		oracleText: "{T}: Add {C}. This mana can't be spent to cast a nonartifact spell."
+	},
+	junk: {
+		name: 'Junk',
+		typeLine: 'Token Artifact — Junk',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText:
+			'{T}, Sacrifice this token: Exile the top card of your library. You may play that card this turn. Activate only as a sorcery.'
+	},
+	map: {
+		name: 'Map',
+		typeLine: 'Token Artifact — Map',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText:
+			'{1}, {T}, Sacrifice this token: Target creature you control explores. Activate only as a sorcery.'
+	},
+	// --- Track P5 (CR 111.10i / 701.53a) ---
+	incubator: {
+		name: 'Incubator',
+		typeLine: 'Token Artifact — Incubator',
+		colors: [],
+		power: 0,
+		toughness: 0,
+		keywords: [],
+		oracleText: '{2}: Transform this token.',
+		layout: 'transform',
+		backFace: {
+			name: 'Phyrexian Token',
+			typeLine: 'Token Artifact Creature — Phyrexian',
+			colors: [],
+			power: 0,
+			toughness: 0,
+			keywords: [],
+			oracleText: ''
+		}
+	}
+} satisfies Record<string, PredefinedTokenDef>;
+
+function matchPredefinedTokenDef(spec: TokenCreationSpec): PredefinedTokenDef | undefined {
+	const nameKey = spec.name.toLowerCase();
+	if (nameKey in PREDEFINED_TOKEN_DEFS) {
+		return PREDEFINED_TOKEN_DEFS[nameKey as keyof typeof PREDEFINED_TOKEN_DEFS];
+	}
+	const dashIdx = spec.typeLine.indexOf('—');
+	const altDashIdx = dashIdx >= 0 ? dashIdx : spec.typeLine.indexOf(' - ');
+	const subtypePart = altDashIdx >= 0 ? spec.typeLine.slice(altDashIdx + 1) : '';
+	for (const sub of subtypePart.split(/\s+/).filter(Boolean)) {
+		const key = sub.toLowerCase();
+		if (key !== 'walker' && key in PREDEFINED_TOKEN_DEFS) {
+			return PREDEFINED_TOKEN_DEFS[key as keyof typeof PREDEFINED_TOKEN_DEFS];
+		}
+	}
+	return undefined;
+}
+
 export function buildTokenScryfallCard(
 	id: string,
 	spec: TokenCreationSpec
 ): ScryfallCard {
-	const isTreasure = /\bTreasure\b/.test(spec.typeLine);
+	// --- Track P13 ---
+	if (spec.roleKind) {
+		return buildRoleTokenScryfallCard(id, spec.roleKind);
+	}
+	if (spec.ringLevel !== undefined) {
+		return buildRingEmblemScryfallCard(id, spec.ringLevel);
+	}
+	if (spec.emblemAbilities) {
+		return buildEmblemScryfallCard(id, spec.name, spec.emblemAbilities);
+	}
+	if (spec.dungeonId && spec.dungeonRoomIndex !== undefined) {
+		return buildDungeonRoomTriggerCard(id, spec.dungeonId, spec.dungeonRoomIndex);
+	}
+	if (spec.dungeonId) {
+		return buildDungeonScryfallCard(id, spec.dungeonId);
+	}
+	// --- End Track P13 ---
+	const predefined = matchPredefinedTokenDef(spec);
+	const isCreature = /\bCreature\b/.test(spec.typeLine);
+	const kwText = spec.keywords.join(', ');
+	const abilityText = predefined?.oracleText ?? '';
+	// --- Track P10 ---
+	const quotedLines = (spec.quotedAbilities ?? []).map((q) => q.replace(/~/g, spec.name));
+	const oracleText = [kwText, ...quotedLines, abilityText].filter(Boolean).join('\n');
+	// --- End Track P10 ---
+	const frontImg = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=normal`;
+	const frontArt = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=art_crop`;
+	// --- Track P5: Transforming DFC predefined tokens (CR 111.10i: Incubator // Phyrexian) ---
+	if (predefined?.layout === 'transform' && predefined.backFace) {
+		const back = predefined.backFace;
+		const backIsCreature = /\bCreature\b/.test(back.typeLine);
+		const backKwText = back.keywords.join(', ');
+		const backOracle = [backKwText, back.oracleText].filter(Boolean).join('\n');
+		const backImg = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(back.name.replace(' Token', ''))}&format=image&version=normal`;
+		const backArt = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(back.name.replace(' Token', ''))}&format=image&version=art_crop`;
+		return {
+			id,
+			name: spec.name,
+			manaCost: '',
+			cmc: 0,
+			typeLine: spec.typeLine,
+			oracleText,
+			colors: spec.colors,
+			colorIdentity: spec.colors,
+			keywords: spec.keywords,
+			power: isCreature ? String(spec.power) : undefined,
+			toughness: isCreature ? String(spec.toughness) : undefined,
+			imageUrl: frontImg,
+			artCropUrl: frontArt,
+			layout: 'transform',
+			faces: [
+				{
+					name: spec.name,
+					manaCost: '',
+					typeLine: spec.typeLine,
+					oracleText,
+					colors: spec.colors,
+					power: isCreature ? String(spec.power) : undefined,
+					toughness: isCreature ? String(spec.toughness) : undefined,
+					imageUrl: frontImg,
+					artCropUrl: frontArt
+				},
+				{
+					name: back.name,
+					manaCost: '',
+					typeLine: back.typeLine,
+					oracleText: backOracle,
+					colors: back.colors,
+					power: backIsCreature ? String(back.power) : undefined,
+					toughness: backIsCreature ? String(back.toughness) : undefined,
+					imageUrl: backImg,
+					artCropUrl: backArt
+				}
+			],
+			legalCommander: true,
+			canBeCommander: false,
+			hasPartner: false,
+			hasChooseBackground: false,
+			hasPartnerWith: undefined,
+			isBackground: false
+		} as ScryfallCard;
+	}
 	return {
 		id,
 		name: spec.name,
 		manaCost: '',
 		cmc: 0,
 		typeLine: spec.typeLine,
-		oracleText: isTreasure
-			? '{T}, Sacrifice this artifact: Add one mana of any color.'
-			: spec.keywords.join(', '),
+		oracleText,
 		colors: spec.colors,
 		colorIdentity: spec.colors,
 		keywords: spec.keywords,
-		power: isTreasure ? undefined : String(spec.power),
-		toughness: isTreasure ? undefined : String(spec.toughness),
-		imageUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=normal`,
-		artCropUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name.replace(' Token', ''))}&format=image&version=art_crop`,
+		power: isCreature ? String(spec.power) : undefined,
+		toughness: isCreature ? String(spec.toughness) : undefined,
+		imageUrl: frontImg,
+		artCropUrl: frontArt,
 		legalCommander: true,
 		canBeCommander: false,
 		hasPartner: false,
@@ -87,13 +362,19 @@ export function parseManaCost(
 	manaCostStr: string,
 	xValue = 0,
 	additionalGeneric = 0,
-	genericReduction = 0
+	genericReduction = 0,
+	// --- Track P11 ---
+	options?: ParseManaCostOptions
+	// --- End Track P11 ---
 ): ManaCostRequirement {
 	const colored: Record<ManaColor, number> = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
 	let generic = Math.max(0, additionalGeneric);
 	let hasX = false;
 	let xCount = 0;
 	let hybridExtraCmc = 0;
+	// --- Track P11 ---
+	let snow = 0;
+	// --- End Track P11 ---
 	const flexibleSymbols: FlexibleManaSymbol[] = [];
 
 	const symbols = manaCostStr.match(/\{([^}]+)\}/g) || [];
@@ -104,10 +385,13 @@ export function parseManaCost(
 			xCount += 1;
 		} else if (/^\d+$/.test(sym)) {
 			generic += parseInt(sym, 10);
+		} else if (sym === 'S') {
+			// --- Track P11 (CR 107.4h, 202.3h, 118.7a): {S} has MV 1 and is not reduced by generic reductions ---
+			snow += 1;
 		} else if (sym === 'W' || sym === 'U' || sym === 'B' || sym === 'R' || sym === 'G' || sym === 'C') {
 			colored[sym] += 1;
 		} else if (sym.includes('/')) {
-			// CR 107.4e-f / 202.3f: Hybrid {W/U}, monocolored hybrid {2/W} (MV 2), or Phyrexian {W/P}
+			// CR 107.4e-g / 202.3f-g: Hybrid {W/U}, {C/W}, twobrid {2/W} (MV 2), Phyrexian {W/P}, or hybrid Phyrexian {W/U/P}
 			const parts = sym.split('/');
 			const cols = parts.filter(
 				(p): p is ManaColor =>
@@ -119,10 +403,19 @@ export function parseManaCost(
 			if (firstCol) {
 				colored[firstCol] += 1;
 				if (cols.length >= 2) {
-					flexibleSymbols.push({ primaryColor: firstCol, altColor: cols[1] });
+					flexibleSymbols.push({
+						primaryColor: firstCol,
+						altColor: cols[1],
+						// --- Track P11 (CR 107.4g): hybrid Phyrexian {W/U/P} ---
+						...(hasPhyrexian ? { altLife: 2 } : {})
+					});
 				} else if (numPart) {
 					const numVal = parseInt(numPart, 10);
-					flexibleSymbols.push({ primaryColor: firstCol, altGeneric: numVal });
+					flexibleSymbols.push({
+						primaryColor: firstCol,
+						altGeneric: numVal,
+						...(hasPhyrexian ? { altLife: 2 } : {})
+					});
 					if (numVal > 1) {
 						hybridExtraCmc += numVal - 1;
 					}
@@ -138,7 +431,74 @@ export function parseManaCost(
 	}
 
 	generic += xCount * Math.max(0, xValue);
-	generic = Math.max(0, generic - Math.max(0, genericReduction));
+
+	// --- Track P11 (CR 118.7b-e): colored/hybrid cost reductions & minTotalMana floor ---
+	const baseManaBeforeReduction =
+		colored.W + colored.U + colored.B + colored.R + colored.G + colored.C + snow + generic;
+	let effGenericReduction = Math.max(0, genericReduction);
+
+	const reduceSingleColor = (col: ManaColor, amount: number): void => {
+		let rem = Math.max(0, amount);
+		for (let guard = 0; guard < 64 && rem > 0 && colored[col] > 0; guard++) {
+			const flexCount = flexibleSymbols.filter((f) => f.primaryColor === col).length;
+			const fixedCount = colored[col] - flexCount;
+			colored[col] -= 1;
+			if (fixedCount <= 0) {
+				const idx = flexibleSymbols.findIndex((f) => f.primaryColor === col);
+				if (idx !== -1) flexibleSymbols.splice(idx, 1);
+			}
+			rem -= 1;
+		}
+		if (rem > 0) {
+			// Check if any flexible symbol has `altColor === col`
+			for (let guard = 0; guard < 64 && rem > 0; guard++) {
+				const altIdx = flexibleSymbols.findIndex((f) => f.altColor === col);
+				if (altIdx === -1) break;
+				const primary = flexibleSymbols[altIdx].primaryColor;
+				if (colored[primary] <= 0) break;
+				colored[primary] -= 1;
+				flexibleSymbols.splice(altIdx, 1);
+				rem -= 1;
+			}
+		}
+		if (rem > 0 && !options?.coloredOnly) {
+			effGenericReduction += rem;
+		}
+	};
+
+	if (options?.coloredReduction) {
+		const allCols: ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
+		for (const c of allCols) {
+			const amt = options.coloredReduction[c] ?? 0;
+			if (amt > 0) reduceSingleColor(c, amt);
+		}
+	}
+	if (options?.hybridColoredReduction) {
+		for (const [c1, c2] of options.hybridColoredReduction) {
+			if (colored[c1] > 0 || flexibleSymbols.some((f) => f.altColor === c1)) {
+				reduceSingleColor(c1, 1);
+			} else if (colored[c2] > 0 || flexibleSymbols.some((f) => f.altColor === c2)) {
+				reduceSingleColor(c2, 1);
+			} else if (!options.coloredOnly) {
+				effGenericReduction += 1;
+			}
+		}
+	}
+
+	generic = Math.max(0, generic - effGenericReduction);
+
+	if (
+		options?.minTotalMana !== undefined &&
+		options.minTotalMana > 0 &&
+		baseManaBeforeReduction >= options.minTotalMana
+	) {
+		const curTotal =
+			colored.W + colored.U + colored.B + colored.R + colored.G + colored.C + snow + generic;
+		if (curTotal < options.minTotalMana) {
+			generic += options.minTotalMana - curTotal;
+		}
+	}
+	// --- End Track P11 ---
 
 	const totalColored = colored.W + colored.U + colored.B + colored.R + colored.G + colored.C;
 	return {
@@ -146,8 +506,9 @@ export function parseManaCost(
 		generic,
 		hasX,
 		xCount,
-		totalCmc: totalColored + generic + hybridExtraCmc,
-		...(flexibleSymbols.length > 0 ? { flexibleSymbols } : {})
+		totalCmc: totalColored + snow + generic + hybridExtraCmc,
+		...(flexibleSymbols.length > 0 ? { flexibleSymbols } : {}),
+		...(snow > 0 ? { snow } : {})
 	};
 }
 
@@ -191,8 +552,15 @@ export function resolveFlexibleManaRequirement(
 export function canPayManaCost(
 	pool: ManaPool,
 	req: ManaCostRequirement,
-	availableLife?: number
+	availableLife?: number,
+	// --- Track P11 ---
+	availableSnowMana?: number
+	// --- End Track P11 ---
 ): boolean {
+	const snowReq = req.snow ?? 0;
+	if (snowReq > 0 && availableSnowMana !== undefined && availableSnowMana < snowReq) {
+		return false;
+	}
 	const resolved = resolveFlexibleManaRequirement(pool, req, availableLife);
 	const colors: ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
 	let remainingPool = 0;
@@ -202,7 +570,7 @@ export function canPayManaCost(
 		}
 		remainingPool += pool[c] - resolved.colored[c];
 	}
-	return remainingPool >= resolved.generic;
+	return remainingPool >= resolved.generic + snowReq;
 }
 
 export function deductManaFromPool(
@@ -220,7 +588,7 @@ export function deductManaFromPool(
 		next[c] = Math.max(0, next[c] - resolved.colored[c]);
 	}
 
-	let remGeneric = resolved.generic;
+	let remGeneric = resolved.generic + (req.snow ?? 0);
 	// Spend colorless C first for generic costs, then colors with highest surplus
 	if (remGeneric > 0 && next.C > 0) {
 		const take = Math.min(next.C, remGeneric);
@@ -229,7 +597,7 @@ export function deductManaFromPool(
 	}
 
 	const colorOrder: ManaColor[] = ['G', 'R', 'B', 'U', 'W'];
-	while (remGeneric > 0) {
+	for (let guard = 0; guard < 256 && remGeneric > 0; guard++) {
 		// Pick color with largest remaining count
 		let bestColor: ManaColor | null = null;
 		let bestAmt = 0;
@@ -340,6 +708,16 @@ const KNOWN_SEARCH_SUBTYPES = [
 	'Clue',
 	'Food',
 	'Treasure',
+	'Gold',
+	'Shard',
+	'Blood',
+	'Lander',
+	'Mutagen',
+	'Heartwood',
+	'Powerstone',
+	'Junk',
+	'Map',
+	'Vibranium',
 	'Dragon',
 	'Elf',
 	'Goblin',
@@ -413,25 +791,32 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 	const restOfParagraph = (match[2] || '').trim();
 	const fullClause = `${rawCriteria}, ${restOfParagraph}`;
 
+	const namedMatch = rawCriteria.match(/\bnamed\s+(.+)$/i);
+	const named = namedMatch ? namedMatch[1].trim() : undefined;
+	const criteriaForQualities = namedMatch
+		? rawCriteria.slice(0, namedMatch.index).trim()
+		: rawCriteria;
+
 	const upTo = /\bup to\b/i.test(rawCriteria);
 	const qtyMatch = rawCriteria.match(/^(?:up to\s+)?(a|an|one|two|three|four|\d+)\b/i);
 	const count = qtyMatch ? parseWordOrNumber(qtyMatch[1], 1) : 1;
 
-	const requireBasic = /\bbasic\b/i.test(rawCriteria) && !/\bnonbasic\b/i.test(rawCriteria);
+	const requireBasic =
+		/\bbasic\b/i.test(criteriaForQualities) && !/\bnonbasic\b/i.test(criteriaForQualities);
 	const requireLegendary =
-		/\blegendary\b/i.test(rawCriteria) && !/\bnonlegendary\b/i.test(rawCriteria);
+		/\blegendary\b/i.test(criteriaForQualities) && !/\bnonlegendary\b/i.test(criteriaForQualities);
 
 	const disallowedTypes: string[] = [];
-	if (/\bnonbasic\b/i.test(rawCriteria)) disallowedTypes.push('Basic');
-	if (/\bnonland\b/i.test(rawCriteria)) disallowedTypes.push('Land');
-	if (/\bnoncreature\b/i.test(rawCriteria)) disallowedTypes.push('Creature');
-	if (/\bnonartifact\b/i.test(rawCriteria)) disallowedTypes.push('Artifact');
-	if (/\bnonenchantment\b/i.test(rawCriteria)) disallowedTypes.push('Enchantment');
+	if (/\bnonbasic\b/i.test(criteriaForQualities)) disallowedTypes.push('Basic');
+	if (/\bnonland\b/i.test(criteriaForQualities)) disallowedTypes.push('Land');
+	if (/\bnoncreature\b/i.test(criteriaForQualities)) disallowedTypes.push('Creature');
+	if (/\bnonartifact\b/i.test(criteriaForQualities)) disallowedTypes.push('Artifact');
+	if (/\bnonenchantment\b/i.test(criteriaForQualities)) disallowedTypes.push('Enchantment');
 
 	const allowedTypes: string[] = [];
 	for (const cType of KNOWN_CARD_TYPES) {
 		const re = new RegExp(`\\b${cType}\\b`, 'i');
-		if (re.test(rawCriteria)) {
+		if (re.test(criteriaForQualities)) {
 			allowedTypes.push(cType);
 		}
 	}
@@ -439,13 +824,13 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 	const allowedSubtypes: string[] = [];
 	for (const sub of KNOWN_SEARCH_SUBTYPES) {
 		const re = new RegExp(`\\b${sub}\\b`, 'i');
-		if (re.test(rawCriteria)) {
+		if (re.test(criteriaForQualities)) {
 			allowedSubtypes.push(sub);
 		}
 	}
 
 	// Also detect any other capitalized subtype words before "card/cards" (e.g. "Rebel", "Mercenary")
-	const beforeCard = rawCriteria.split(/\bcards?\b/i)[0] || rawCriteria;
+	const beforeCard = criteriaForQualities.split(/\bcards?\b/i)[0] || criteriaForQualities;
 	const capWords = beforeCard.match(/\b[A-Z][a-z]+\b/g) || [];
 	for (const word of capWords) {
 		if (!NON_SUBTYPE_CAPITALIZED_WORDS.has(word) && !allowedSubtypes.includes(word)) {
@@ -454,12 +839,12 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 	}
 
 	const allowedColors: ManaColor[] = [];
-	if (/\bwhite\b/i.test(rawCriteria)) allowedColors.push('W');
-	if (/\bblue\b/i.test(rawCriteria)) allowedColors.push('U');
-	if (/\bblack\b/i.test(rawCriteria)) allowedColors.push('B');
-	if (/\bred\b/i.test(rawCriteria)) allowedColors.push('R');
-	if (/\bgreen\b/i.test(rawCriteria)) allowedColors.push('G');
-	if (/\bcolorless\b/i.test(rawCriteria)) allowedColors.push('C');
+	if (/\bwhite\b/i.test(criteriaForQualities)) allowedColors.push('W');
+	if (/\bblue\b/i.test(criteriaForQualities)) allowedColors.push('U');
+	if (/\bblack\b/i.test(criteriaForQualities)) allowedColors.push('B');
+	if (/\bred\b/i.test(criteriaForQualities)) allowedColors.push('R');
+	if (/\bgreen\b/i.test(criteriaForQualities)) allowedColors.push('G');
+	if (/\bcolorless\b/i.test(criteriaForQualities)) allowedColors.push('C');
 
 	let maxCmc: number | undefined;
 	let exactCmc: number | undefined;
@@ -474,7 +859,8 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 	}
 
 	const statedQuality = Boolean(
-		requireBasic ||
+		named ||
+			requireBasic ||
 			requireLegendary ||
 			allowedTypes.length > 0 ||
 			allowedSubtypes.length > 0 ||
@@ -518,6 +904,7 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 		allowedColors: allowedColors.length > 0 ? allowedColors : undefined,
 		maxCmc,
 		exactCmc,
+		...(named ? { named } : {}),
 		destinations,
 		rawCriteriaText: rawCriteria
 	};
@@ -526,7 +913,14 @@ export function parseLibrarySearchSpec(oracleText: string): LibrarySearchSpec | 
 /**
  * Evaluates whether a `ScryfallCard` in a library satisfies `LibrarySearchSpec`.
  */
-export function matchesLibrarySearchSpec(card: ScryfallCard, spec: LibrarySearchSpec): boolean {
+export function matchesLibrarySearchSpec(
+	card: ScryfallCard,
+	spec: LibrarySearchSpec,
+	overrideColors?: readonly ManaColor[] | readonly string[]
+): boolean {
+	if (spec.named && card.name.toLowerCase() !== spec.named.toLowerCase()) {
+		return false;
+	}
 	const tl = card.typeLine;
 
 	if (spec.requireBasic && !/\bBasic\b/i.test(tl)) {
@@ -548,7 +942,7 @@ export function matchesLibrarySearchSpec(card: ScryfallCard, spec: LibrarySearch
 	}
 	if (spec.allowedColors && spec.allowedColors.length > 0) {
 		const wantsColorless = spec.allowedColors.includes('C');
-		const cardColors = card.colors || [];
+		const cardColors = overrideColors ?? card.colors ?? [];
 		const matchesColor =
 			(wantsColorless && cardColors.length === 0) ||
 			spec.allowedColors.some((c) => c !== 'C' && cardColors.includes(c));
@@ -592,3 +986,300 @@ export function describeLibrarySearchDestination(dest: LibrarySearchDestination)
 	}
 	return 'into hand';
 }
+
+// --- Track P13 ---
+import type { DungeonId, RoleTokenKind } from './ir.ts';
+
+export interface RoleTokenSpec {
+	name: string;
+	oracleText: string;
+}
+
+/** CR 111.10k–r: Predefined Role Aura token specifications. */
+export const ROLE_TOKEN_SPECS: Record<RoleTokenKind, RoleTokenSpec> = {
+	cursed: {
+		name: 'Cursed',
+		oracleText: 'Enchant creature\nEnchanted creature has base power and toughness 1/1.'
+	},
+	monster: {
+		name: 'Monster',
+		oracleText: 'Enchant creature\nEnchanted creature gets +1/+1 and has trample.'
+	},
+	royal: {
+		name: 'Royal',
+		oracleText: 'Enchant creature\nEnchanted creature gets +1/+1 and has ward {1}.'
+	},
+	sorcerer: {
+		name: 'Sorcerer',
+		oracleText:
+			'Enchant creature\nEnchanted creature gets +1/+1 and has "Whenever this creature attacks, scry 1."'
+	},
+	virtuous: {
+		name: 'Virtuous',
+		oracleText: 'Enchant creature\nEnchanted creature gets +1/+1 for each enchantment you control.'
+	},
+	wicked: {
+		name: 'Wicked',
+		oracleText:
+			'Enchant creature\nEnchanted creature gets +1/+1.\nWhen this Aura is put into a graveyard from the battlefield, each opponent loses 1 life.'
+	},
+	young_hero: {
+		name: 'Young Hero',
+		oracleText:
+			'Enchant creature\nWhenever enchanted creature attacks, if its toughness is 3 or less, put a +1/+1 counter on it.'
+	}
+};
+
+function buildRoleTokenScryfallCard(id: string, roleKind: RoleTokenKind): ScryfallCard {
+	const spec = ROLE_TOKEN_SPECS[roleKind];
+	return {
+		id,
+		name: spec.name,
+		manaCost: '',
+		cmc: 0,
+		typeLine: 'Token Enchantment — Aura Role',
+		oracleText: spec.oracleText,
+		colors: [],
+		colorIdentity: [],
+		keywords: ['Enchant'],
+		imageUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name)}&format=image&version=normal`,
+		artCropUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name)}&format=image&version=art_crop`,
+		legalCommander: true,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false
+	};
+}
+
+/** CR 114.1–114.5: Synthesize a plain-JSON `ScryfallCard` representing an Emblem in the command zone. */
+function buildEmblemScryfallCard(
+	id: string,
+	name: string,
+	abilities: readonly string[]
+): ScryfallCard {
+	return {
+		id,
+		name,
+		manaCost: '',
+		cmc: 0,
+		typeLine: 'Emblem',
+		oracleText: abilities.join('\n'),
+		colors: [],
+		colorIdentity: [],
+		keywords: [],
+		imageUrl: '',
+		artCropUrl: '',
+		legalCommander: true,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false
+	};
+}
+
+/** CR 701.54c: Cumulative ability lines on `The Ring` emblem for levels 1..4. */
+export const THE_RING_EMBLEM_ABILITIES: readonly string[] = [
+	"Your Ring-bearer is legendary and can't be blocked by creatures with greater power.",
+	'Whenever your Ring-bearer attacks, draw a card, then discard a card.',
+	'Whenever your Ring-bearer becomes blocked by a creature, that creature\'s controller sacrifices it at end of combat.',
+	'Whenever your Ring-bearer deals combat damage to a player, each opponent loses 3 life.'
+];
+
+function buildRingEmblemScryfallCard(id: string, ringLevel: number): ScryfallCard {
+	const clamped = Math.max(1, Math.min(4, ringLevel));
+	return buildEmblemScryfallCard(id, 'The Ring', THE_RING_EMBLEM_ABILITIES.slice(0, clamped));
+}
+
+export interface DungeonRoomSpec {
+	name: string;
+	effectText: string;
+	nextRooms: number[];
+}
+
+export interface DungeonSpec {
+	id: DungeonId;
+	name: string;
+	rooms: DungeonRoomSpec[];
+}
+
+/** CR 309 / 701.49 / 727: Authoritative room graphs and room abilities for the 3 standard dungeons + Undercity. */
+export const DUNGEON_SPECS: Record<DungeonId, DungeonSpec> = {
+	lost_mine: {
+		id: 'lost_mine',
+		name: 'Lost Mine of Phandelver',
+		rooms: [
+			{ name: 'Cave Entrance', effectText: 'Scry 1.', nextRooms: [1, 2] },
+			{
+				name: 'Goblin Lair',
+				effectText: 'Create a 1/1 red Goblin creature token.',
+				nextRooms: [3, 4]
+			},
+			{ name: 'Mine Tunnels', effectText: 'Create a Treasure token.', nextRooms: [4, 5] },
+			{
+				name: 'Storeroom',
+				effectText: 'Put a +1/+1 counter on target creature.',
+				nextRooms: [6]
+			},
+			{
+				name: 'Dark Pool',
+				effectText: 'Each opponent loses 1 life and you gain 1 life.',
+				nextRooms: [6]
+			},
+			{
+				name: 'Fungi Cavern',
+				effectText: 'Target creature gets -4/-0 until your next turn.',
+				nextRooms: [6]
+			},
+			{ name: 'Temple of Dumathoin', effectText: 'Draw a card.', nextRooms: [] }
+		]
+	},
+	mad_mage: {
+		id: 'mad_mage',
+		name: 'Dungeon of the Mad Mage',
+		rooms: [
+			{ name: 'Yawning Portal', effectText: 'You gain 1 life.', nextRooms: [1] },
+			{ name: 'Dungeon Level', effectText: 'Scry 1.', nextRooms: [2, 3] },
+			{ name: 'Goblin Bazaar', effectText: 'Create a Treasure token.', nextRooms: [4] },
+			{
+				name: 'Twisted Caverns',
+				effectText: "Target creature can't attack until your next turn.",
+				nextRooms: [4]
+			},
+			{ name: 'Lost Level', effectText: 'Scry 2.', nextRooms: [5, 6] },
+			{
+				name: 'Runestone Caverns',
+				effectText: 'Exile the top two cards of your library. You may play them this turn.',
+				nextRooms: [7]
+			},
+			{
+				name: 'Muiral\'s Graveyard',
+				effectText: 'Create two 1/1 black Skeleton creature tokens.',
+				nextRooms: [7]
+			},
+			{ name: 'Deep Mines', effectText: 'Scry 3.', nextRooms: [8] },
+			{
+				name: 'Mad Wizard\'s Lair',
+				effectText: 'Draw three cards.',
+				nextRooms: []
+			}
+		]
+	},
+	tomb: {
+		id: 'tomb',
+		name: 'Tomb of Annihilation',
+		rooms: [
+			{ name: 'Trapped Entry', effectText: 'Each player loses 1 life.', nextRooms: [1, 2] },
+			{
+				name: 'Veils of Fear',
+				effectText: 'Each player loses 2 life unless they discard a card.',
+				nextRooms: [3]
+			},
+			{
+				name: 'Oubliette',
+				effectText: 'Discard a card and sacrifice a creature, an artifact, and a land.',
+				nextRooms: [4]
+			},
+			{
+				name: 'Sandfall Cell',
+				effectText: 'Each player loses 2 life unless they sacrifice a creature, artifact, or land.',
+				nextRooms: [4]
+			},
+			{
+				name: 'Cradle of the Death God',
+				effectText: 'Create The Atropal, a legendary 4/4 black God Horror creature token with deathtouch.',
+				nextRooms: []
+			}
+		]
+	},
+	undercity: {
+		id: 'undercity',
+		name: 'Undercity',
+		rooms: [
+			{
+				name: 'Secret Entrance',
+				effectText: 'Search your library for a basic land card, reveal it, put it into your hand, then shuffle.',
+				nextRooms: [1, 2]
+			},
+			{
+				name: 'Forge',
+				effectText: 'Put two +1/+1 counters on target creature.',
+				nextRooms: [3, 4]
+			},
+			{ name: 'Lost Well', effectText: 'Scry 2.', nextRooms: [4, 5] },
+			{
+				name: 'Trap!',
+				effectText: 'Target player loses 5 life.',
+				nextRooms: [6]
+			},
+			{ name: 'Arena', effectText: 'Goad target creature.', nextRooms: [6] },
+			{ name: 'Stash', effectText: 'Create a Treasure token.', nextRooms: [6] },
+			{
+				name: 'Archives',
+				effectText: 'Draw a card.',
+				nextRooms: [7]
+			},
+			{
+				name: 'Catacombs',
+				effectText: 'Create a 4/1 black Skeleton creature token with menace.',
+				nextRooms: [8]
+			},
+			{
+				name: 'Throne of the Dead Three',
+				effectText: 'Draw a card.',
+				nextRooms: []
+			}
+		]
+	}
+};
+
+function buildDungeonScryfallCard(id: string, dungeonId: DungeonId): ScryfallCard {
+	const spec = DUNGEON_SPECS[dungeonId];
+	return {
+		id,
+		name: spec.name,
+		manaCost: '',
+		cmc: 0,
+		typeLine: 'Dungeon',
+		oracleText: spec.rooms.map((r) => `${r.name} — ${r.effectText}`).join('\n'),
+		colors: [],
+		colorIdentity: [],
+		keywords: [],
+		imageUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name)}&format=image&version=normal`,
+		artCropUrl: `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(spec.name)}&format=image&version=art_crop`,
+		legalCommander: true,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false
+	};
+}
+
+/** Build a single-ability synthesized ScryfallCard for resolving a specific Dungeon room trigger. */
+function buildDungeonRoomTriggerCard(
+	id: string,
+	dungeonId: DungeonId,
+	roomIndex: number
+): ScryfallCard {
+	const spec = DUNGEON_SPECS[dungeonId];
+	const room = spec.rooms[roomIndex] ?? spec.rooms[0];
+	return {
+		id,
+		name: `${spec.name} — ${room.name}`,
+		manaCost: '',
+		cmc: 0,
+		typeLine: 'Dungeon',
+		oracleText: room.effectText,
+		colors: [],
+		colorIdentity: [],
+		keywords: [],
+		imageUrl: '',
+		artCropUrl: '',
+		legalCommander: true,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false
+	};
+}
+// --- End Track P13 ---

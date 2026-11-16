@@ -6,6 +6,7 @@ import {
 	checkStateBasedActions,
 	createCardInstance,
 	createInitialGameState,
+	evaluatePermanent,
 	isCombatDeclarationPending,
 	sanitizeGameStateForViewer
 } from '../engine.ts';
@@ -44,6 +45,9 @@ function synthCard(overrides: Partial<ScryfallCard> & { name: string }): Scryfal
 		hasPartner: overrides.hasPartner ?? false,
 		hasChooseBackground: overrides.hasChooseBackground ?? false,
 		isBackground: overrides.isBackground ?? false,
+		...(overrides.layout ? { layout: overrides.layout } : {}),
+		...(overrides.colorIndicator ? { colorIndicator: overrides.colorIndicator } : {}),
+		...(overrides.faces ? { faces: overrides.faces } : {}),
 		imageUrl: '',
 		artCropUrl: ''
 	};
@@ -689,7 +693,7 @@ describe('Review 3 — Group C: prowess dedupe, objectManaValue, and playerComma
 						oracleText: boonCard.oracleText,
 						targets,
 						xValue: 0,
-						castMode: 'normal',
+						castOptionId: 'normal',
 						requiresGuidedResolution: false,
 						createdAt: 0
 					},
@@ -822,7 +826,7 @@ describe('Review 3 — Group C: prowess dedupe, objectManaValue, and playerComma
 			oracleText: nonXCard.oracleText,
 			targets: [],
 			xValue: 3,
-			castMode: 'normal' as const,
+			castOptionId: 'normal',
 			requiresGuidedResolution: false,
 			createdAt: 0
 		};
@@ -1119,5 +1123,261 @@ describe('Review 3 — Group E: leftovers (L1, L2)', () => {
 			true
 		);
 		assert.equal(p2.life, p2LifeBefore - 2, 'Remaining 2 excess trample damage is dealt to defender');
+	});
+});
+
+describe('Track B4 Phase 1: CR 708.5 / 406.3 viewer redaction & Clone face-down / TDFC copies', () => {
+	it('redacts face-down objects on battlefield, stack, prompt stackItem, and exile for non-authorized viewers (CR 708.5, 406.3)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+		const secretDragon = synthCard({
+			name: 'Secret Sky Dragon',
+			manaCost: '{4}{R}{R}',
+			cmc: 6,
+			typeLine: 'Creature — Dragon',
+			colors: ['R'],
+			power: '6',
+			toughness: '6',
+			oracleText: 'Flying',
+			keywords: ['Flying'],
+			imageUrl: 'https://example.test/dragon.jpg',
+			artCropUrl: 'https://example.test/dragon_crop.jpg'
+		});
+
+		const bfPerm = putInZone(state, p1, secretDragon, 'battlefield');
+		bfPerm.isFaceDown = true;
+		bfPerm.faceDownLabel = 'Face-Down Creature';
+		bfPerm.faceDownSpec = {
+			kind: 'disguise',
+			wardCost: '{2}',
+			turnUpCost: '{4}{R}{R}'
+		};
+		bfPerm.printedCard = secretDragon;
+		bfPerm.copiableCard = secretDragon;
+		bfPerm.copiableState = { card: secretDragon };
+
+		state.stack.push({
+			id: 'stk_fd',
+			kind: 'spell',
+			controllerId: p1.playerId,
+			sourceInstanceId: 'src_fd',
+			card: secretDragon,
+			title: secretDragon.name,
+			oracleText: secretDragon.oracleText,
+			targets: [],
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: 0,
+			isFaceDown: true,
+			faceDownLabel: 'Face-Down Spell',
+			faceDownSpec: { kind: 'morph', turnUpCost: '{4}{R}{R}' }
+		});
+		state.pendingPrompts.push({
+			id: 'prm_fd',
+			playerId: p2.playerId,
+			kind: 'guided_resolution',
+			title: 'Trigger',
+			description: 'Respond',
+			stackItem: {
+				id: 'stk_fd_prm',
+				kind: 'spell',
+				controllerId: p1.playerId,
+				sourceInstanceId: 'src_fd_prm',
+				card: secretDragon,
+				title: secretDragon.name,
+				oracleText: secretDragon.oracleText,
+				targets: [],
+				xValue: 0,
+				requiresGuidedResolution: false,
+				createdAt: 0,
+				isFaceDown: true,
+				faceDownLabel: 'Face-Down Spell'
+			}
+		});
+
+		const exilePerm = putInZone(state, p1, secretDragon, 'exile');
+		exilePerm.isFaceDown = true;
+		exilePerm.faceDownSpec = { kind: 'other' };
+
+		// Controller sees full battlefield and stack identity, but NOT face-down exile unless in knownToPlayerIds (CR 406.3)
+		const p1View = sanitizeGameStateForViewer(state, p1.playerId);
+		assert.equal(p1View.players[0].battlefield[0].card.name, 'Secret Sky Dragon');
+		assert.equal(p1View.players[0].battlefield[0].faceDownSpec?.turnUpCost, '{4}{R}{R}');
+		assert.equal(p1View.stack[0].card.name, 'Secret Sky Dragon');
+		assert.equal(p1View.players[0].exile[0].card.name, 'Face-Down Card');
+
+		// Opponent (and null spectator) get scrubbed battlefield, stack, prompt.stackItem, and exile
+		for (const viewer of [p2.playerId, null]) {
+			const view = sanitizeGameStateForViewer(state, viewer);
+			const oppBf = view.players[0].battlefield[0];
+			assert.equal(oppBf.card.name, 'Face-Down Creature');
+			assert.equal(oppBf.card.cmc, 0);
+			assert.equal(oppBf.card.oracleText, '');
+			assert.equal(oppBf.card.imageUrl, '');
+			assert.deepEqual(oppBf.card.keywords, ['Ward {2}']);
+			assert.equal(oppBf.printedCard, undefined);
+			assert.equal(oppBf.copiableCard, undefined);
+			assert.equal(oppBf.copiableState, undefined);
+			assert.equal(oppBf.faceDownSpec?.turnUpCost, undefined);
+
+			assert.equal(view.stack[0].card.name, 'Face-Down Spell');
+			assert.equal(view.stack[0].title, 'Face-Down Spell');
+			assert.equal(view.stack[0].oracleText, '');
+			assert.equal(view.players[0].exile[0].card.name, 'Face-Down Card');
+		}
+
+		// Spectator/opponent sees prompt stackItem scrubbed even when prompt.playerId === p2.playerId
+		const p2View = sanitizeGameStateForViewer(state, p2.playerId);
+		assert.equal(p2View.pendingPrompts[0].stackItem?.card.name, 'Face-Down Spell');
+		assert.equal(p2View.pendingPrompts[0].stackItem?.oracleText, '');
+
+		// knownToPlayerIds grants CR 406.3 / CR 708.5 visibility
+		exilePerm.faceDownSpec = { kind: 'other', knownToPlayerIds: [p1.playerId] };
+		const p1KnownView = sanitizeGameStateForViewer(state, p1.playerId);
+		assert.equal(p1KnownView.players[0].exile[0].card.name, 'Secret Sky Dragon');
+	});
+
+	it('Clone copying a face-down creature enters face-up as a 2/2 without hidden card characteristics (CR 708.2)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+		const hiddenAngel = synthCard({
+			name: 'Hidden Seraph',
+			manaCost: '{4}{W}{W}',
+			cmc: 6,
+			typeLine: 'Creature — Angel',
+			colors: ['W'],
+			power: '5',
+			toughness: '5',
+			oracleText: 'Flying',
+			keywords: ['Flying']
+		});
+		const fdPerm = putInZone(state, p2, hiddenAngel, 'battlefield');
+		fdPerm.isFaceDown = true;
+		fdPerm.faceDownSpec = { kind: 'disguise', wardCost: '{2}', turnUpCost: '{4}{W}' };
+
+		const cloneCard = synthCard({
+			name: 'Clone',
+			manaCost: '{3}{U}',
+			cmc: 4,
+			typeLine: 'Creature — Shapeshifter',
+			colors: ['U'],
+			power: '0',
+			toughness: '0',
+			oracleText: 'You may have Clone enter the battlefield as a copy of any creature on the battlefield.'
+		});
+		const cloneInst = putInZone(state, p1, cloneCard, 'hand');
+		p1.manaPool = { W: 0, U: 1, B: 0, R: 0, G: 0, C: 3 };
+
+		const cast1 = applyGameAction(state, p1.playerId, {
+			type: 'cast_spell',
+			instanceId: cloneInst.instanceId,
+			fromZone: 'hand',
+			targets: []
+		});
+		assert.equal(cast1.ok, true, cast1.error ?? 'cast failed');
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+
+		const prompt = state.pendingPrompts.find((pr) => pr.playerId === p1.playerId);
+		assert.ok(prompt, 'Clone prompts human controller to choose creature to copy');
+		const choice1 = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: prompt.id,
+			answer: { kind: 'chooseObjects', objectIds: [fdPerm.instanceId] }
+		});
+		assert.equal(choice1.ok, true, choice1.error ?? 'choice failed');
+
+		const copiedClone = p1.battlefield.find((c) => c.instanceId === cloneInst.instanceId);
+		assert.ok(copiedClone, 'Clone entered battlefield');
+		assert.equal(copiedClone.isFaceDown, false, 'Copy of face-down permanent is itself face-up');
+		const ev = evaluatePermanent(state, copiedClone);
+		assert.equal(ev.power, 2);
+		assert.equal(ev.toughness, 2);
+		assert.deepEqual(ev.colors, []);
+		assert.deepEqual(ev.activeKeywords, ['Ward {2}']);
+		assert.ok(!ev.activeKeywords.includes('Flying'));
+		assert.equal(objectManaValue(state, copiedClone), 0);
+	});
+
+	it('Clone copying a transformed TDFC becomes a single-face copy with MV 0 (CR 712.6d)', () => {
+		const { state, p1, p2 } = makeGame([false, false]);
+		const tdfc = synthCard({
+			name: 'Daylight Watcher',
+			layout: 'transform',
+			manaCost: '{2}{G}',
+			cmc: 3,
+			typeLine: 'Creature — Human',
+			colors: ['G'],
+			power: '2',
+			toughness: '2',
+			faces: [
+				{
+					name: 'Daylight Watcher',
+					manaCost: '{2}{G}',
+					cmc: 3,
+					typeLine: 'Creature — Human',
+					oracleText: '',
+					colors: ['G'],
+					power: '2',
+					toughness: '2',
+					imageUrl: ''
+				},
+				{
+					name: 'Nightfall Ravager',
+					manaCost: '',
+					cmc: 0,
+					typeLine: 'Creature — Werewolf',
+					oracleText: '',
+					colors: ['R', 'G'],
+					colorIndicator: ['R', 'G'],
+					power: '5',
+					toughness: '4',
+					imageUrl: ''
+				}
+			]
+		});
+		const tdfcPerm = putInZone(state, p2, tdfc, 'battlefield');
+		tdfcPerm.transformed = true;
+		tdfcPerm.activeFaceIndex = 1;
+
+		const cloneCard = synthCard({
+			name: 'Clone',
+			manaCost: '{3}{U}',
+			cmc: 4,
+			typeLine: 'Creature — Shapeshifter',
+			colors: ['U'],
+			power: '0',
+			toughness: '0',
+			oracleText: 'You may have Clone enter the battlefield as a copy of any creature on the battlefield.'
+		});
+		const cloneInst = putInZone(state, p1, cloneCard, 'hand');
+		p1.manaPool = { W: 0, U: 1, B: 0, R: 0, G: 0, C: 3 };
+
+		const cast2 = applyGameAction(state, p1.playerId, {
+			type: 'cast_spell',
+			instanceId: cloneInst.instanceId,
+			fromZone: 'hand',
+			targets: []
+		});
+		assert.equal(cast2.ok, true, cast2.error ?? 'cast failed');
+		assert.equal(applyGameAction(state, p1.playerId, { type: 'pass_priority' }).ok, true);
+		assert.equal(applyGameAction(state, p2.playerId, { type: 'pass_priority' }).ok, true);
+
+		const prompt = state.pendingPrompts.find((pr) => pr.playerId === p1.playerId);
+		assert.ok(prompt);
+		const choice2 = applyGameAction(state, p1.playerId, {
+			type: 'choice',
+			promptId: prompt.id,
+			answer: { kind: 'chooseObjects', objectIds: [tdfcPerm.instanceId] }
+		});
+		assert.equal(choice2.ok, true, choice2.error ?? 'choice failed');
+
+		const copiedClone = p1.battlefield.find((c) => c.instanceId === cloneInst.instanceId);
+		assert.ok(copiedClone);
+		const ev = evaluatePermanent(state, copiedClone);
+		assert.equal(ev.effectiveName, 'Nightfall Ravager');
+		assert.equal(ev.power, 5);
+		assert.equal(ev.toughness, 4);
+		assert.deepEqual(ev.colors, ['R', 'G']);
+		assert.equal(objectManaValue(state, tdfcPerm), 3, 'Transformed original keeps front MV 3');
+		assert.equal(objectManaValue(state, copiedClone), 0, 'CR 712.6d: single-face copy of back face has MV 0');
 	});
 });

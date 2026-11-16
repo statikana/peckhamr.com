@@ -1,4 +1,13 @@
-import type { CardInstance, CounterType, GamePhase, GameState, ScryfallCard, ZoneType } from '../types.ts';
+import type {
+	CardInstance,
+	CounterType,
+	GamePhase,
+	GameState,
+	ManaColor,
+	ScryfallCard,
+	TargetRef,
+	ZoneType
+} from '../types.ts';
 
 /**
  * Game events (ENGINE_ARCHITECTURE_PLAN.md section 2.3, Phase 2).
@@ -57,6 +66,37 @@ export interface LeftBattlefieldInfo {
 	tapped: boolean;
 	power?: number;
 	toughness?: number;
+	activeFaceIndex?: number;
+	unlockedFaces?: number[];
+	// --- Track P2 ---
+	/** Instance IDs of battlefield attachments attached to this permanent right before detachment (CR 603.10a). */
+	attachedIds?: string[];
+	// --- End Track P2 ---
+	// --- Track P3 ---
+	foretold?: boolean;
+	blitzed?: boolean;
+	saddled?: boolean;
+	// --- Track P4 ---
+	exerted?: boolean;
+	chosenSubType?: string;
+	chosenColor?: ManaColor;
+	// --- Track P5 ---
+	monstrous?: boolean;
+	// --- Track P6 ---
+	counters?: Partial<Record<CounterType, number>>;
+	// --- Track P9 ---
+	/** CR 603.10a / 704.8: non-innate Layer 6 granted 'dies' trigger keywords (e.g. undying, persist) active right before leaving. */
+	grantedDeathKeywords?: Record<string, number>;
+	// --- Track P10 ---
+	/** Source permanent `(sourceId, sourceVersion)` entries that dealt damage to this creature this turn prior to leaving the battlefield. */
+	damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
+	/** CR 603.10a: EOT-granted quoted ability texts active on this permanent right before leaving the battlefield. */
+	grantedAbilityTexts?: string[];
+	// --- End Track P10 ---
+	// --- Track P18a ---
+	/** CR 731.2b / 603.10a: Merged permanent components active right before leaving the battlefield. */
+	mergedComponents?: ScryfallCard[];
+	// --- End Track P18a ---
 }
 
 /** A spell was cast (it is already on the stack). */
@@ -65,6 +105,13 @@ export interface CastEvent extends EventBase {
 	playerId: string;
 	objectId: string;
 	object: CardInstance;
+	// --- Track P22b ---
+	targets?: TargetRef[];
+	manaSpentCount?: number;
+	coloredManaSpent?: number;
+	kicked?: boolean;
+	stackItemId?: string;
+	// --- End Track P22b ---
 }
 
 /** Attackers were declared (CR 508). */
@@ -101,6 +148,12 @@ export interface CounterPlacedEvent extends EventBase {
 	object: CardInstance;
 	counterType: CounterType;
 	amount: number;
+	// --- Track P1 ---
+	previousCount?: number;
+	newCount?: number;
+	// --- Track P16b ---
+	actorId?: string;
+	// --- End Track P16b ---
 }
 
 /** Blockers were declared by one defending player (CR 509). */
@@ -149,6 +202,9 @@ export interface TappedForManaEvent extends EventBase {
 	playerId: string;
 	objectId: string;
 	object: CardInstance;
+	// --- Track P19b ---
+	producedColors?: ManaColor[];
+	// --- End Track P19b ---
 }
 
 /** A player gained a positive amount of life (CR 119.9, 119.10: 0 life is not a life-gain event). */
@@ -164,6 +220,10 @@ export interface CardDrawnEvent extends EventBase {
 	playerId: string;
 	objectId: string;
 	object: CardInstance;
+	// --- Track P22b ---
+	/** 1-based ordinal among cards this player drew during their own draw step this turn. */
+	inOwnDrawStepOrdinal?: number;
+	// --- End Track P22b ---
 }
 
 /** An untapped permanent became tapped (CR 603.2e: does not fire if already tapped or entering tapped). */
@@ -171,13 +231,221 @@ export interface BecomesTappedEvent extends EventBase {
 	kind: 'BecomesTapped';
 	objectId: string;
 	object: CardInstance;
+	// --- Track P19b ---
+	actorId?: string;
+	// --- End Track P19b ---
 }
+
+/** A card was discarded from a player's hand (CR 701.9, CR 702.29c–d). */
+export interface CardDiscardedEvent extends EventBase {
+	kind: 'CardDiscarded';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	reason: 'discard' | 'cycle';
+	destZone: ZoneType;
+	// --- Track P16b ---
+	causeControllerId?: string;
+	// --- End Track P16b ---
+}
+
+/** A double-faced permanent transformed on the battlefield (CR 701.27). */
+export interface TransformedEvent extends EventBase {
+	kind: 'Transformed';
+	objectId: string;
+	object: CardInstance;
+	toFaceIndex: number;
+}
+
+/** A face-down permanent was turned face up on the battlefield (CR 708.8). */
+export interface TurnedFaceUpEvent extends EventBase {
+	kind: 'TurnedFaceUp';
+	objectId: string;
+	object: CardInstance;
+	playerId: string;
+	xValue?: number;
+}
+
+/** A player investigated once (CR 701.16a). */
+export interface InvestigatedEvent extends EventBase {
+	kind: 'Investigated';
+	playerId: string;
+	count: number;
+}
+
+/** A player surveilled N cards (CR 701.25). */
+export interface SurveilledEvent extends EventBase {
+	kind: 'Surveilled';
+	playerId: string;
+	count: number;
+	graveyardCount: number;
+}
+
+/** A permanent or object explored (CR 701.44). */
+export interface ExploredEvent extends EventBase {
+	kind: 'Explored';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	revealedLand: boolean;
+}
+
+/** A permanent or object connived (CR 701.50). */
+export interface ConnivedEvent extends EventBase {
+	kind: 'Connived';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	nonlandDiscardedCount: number;
+}
+
+/** A Vehicle became crewed by one or more creatures (CR 702.122d). */
+export interface BecomesCrewedEvent extends EventBase {
+	kind: 'BecomesCrewed';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	crewedByIds: string[];
+}
+
+// --- Track P3 ---
+/** A player exiled a card from hand face down via Foretell (CR 116.2h, CR 702.143a). */
+export interface ForetoldEvent extends EventBase {
+	kind: 'Foretold';
+	playerId: string;
+	objectId: string;
+	card: CardInstance;
+}
+
+/** A player exiled a card from hand face up via Plot (CR 116.2k, CR 702.170a). */
+export interface PlottedEvent extends EventBase {
+	kind: 'Plotted';
+	playerId: string;
+	objectId: string;
+	card: CardInstance;
+}
+
+/** A Mount became saddled by one or more creatures (CR 702.171c). */
+export interface BecomesSaddledEvent extends EventBase {
+	kind: 'BecomesSaddled';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	saddledByIds: string[];
+}
+
+/**
+ * One or more creatures dealt combat damage to a single player simultaneously in a combat damage step
+ * (CR 510.2, 510.4, 603.2c). Emitted once per damaged player after atomic combat damage dealing.
+ */
+export interface CombatDamageBatchPlayerEvent extends EventBase {
+	kind: 'CombatDamageBatchPlayer';
+	damagedPlayerId: string;
+	attackers: CardInstance[];
+}
+
+// --- Track P1 ---
+/** A player became the monarch (CR 726.1–3: not emitted if that player was already the monarch). */
+export interface BecameMonarchEvent extends EventBase {
+	kind: 'BecameMonarch';
+	playerId: string;
+	previousMonarchId: string | null;
+}
+
+// --- Track P4 ---
+/** A permanent on the battlefield was exerted by a player (CR 701.43a–d). */
+export interface ExertedEvent extends EventBase {
+	kind: 'Exerted';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+
+// --- Track P5 ---
+/** A player took the amass keyword action (CR 701.47a–c: emitted even if 0 counters were placed or token creation was prevented). */
+export interface AmassedEvent extends EventBase {
+	kind: 'Amassed';
+	playerId: string;
+	objectId?: string;
+	object?: CardInstance;
+	subtype: string;
+	amount: number;
+}
+
+/** A player manifested dread (CR 701.62a–b: emitted even if library had fewer than two cards). */
+export interface ManifestDreadEvent extends EventBase {
+	kind: 'ManifestDread';
+	playerId: string;
+	manifestedObject?: CardInstance;
+	graveyardObjectIds: string[];
+}
+
+/** A permanent became monstrous via Monstrosity N (CR 701.37a–c). */
+export interface BecameMonstrousEvent extends EventBase {
+	kind: 'BecameMonstrous';
+	objectId: string;
+	object: CardInstance;
+	playerId: string;
+	amount: number;
+}
+
+// --- Track P6 ---
+/** One or more counters of a single kind were removed from a permanent (CR 702.63a Vanishing). */
+export interface CounterRemovedEvent extends EventBase {
+	kind: 'CounterRemoved';
+	objectId: string;
+	object: CardInstance;
+	counterType: string;
+	amount: number;
+	previousCount: number;
+	newCount: number;
+}
+
+// --- Track P12 ---
+/** A Class enchantment gained a new level via its level-up ability (CR 717.3a–b). */
+export interface ClassLevelGainedEvent extends EventBase {
+	kind: 'ClassLevelGained';
+	objectId: string;
+	object: CardInstance;
+	controllerId: string;
+	classLevel: number;
+}
+
+/** A Case enchantment became solved via its to-solve ability (CR 720.2b / 702.169c). */
+export interface CaseSolvedEvent extends EventBase {
+	kind: 'CaseSolved';
+	objectId: string;
+	object: CardInstance;
+	controllerId: string;
+}
+
+/** A creature became renowned via its renown trigger (CR 702.112a–b). */
+export interface BecameRenownedEvent extends EventBase {
+	kind: 'BecameRenowned';
+	objectId: string;
+	object: CardInstance;
+	controllerId: string;
+	amount: number;
+}
+// --- End Track P12 ---
 
 export type GameEvent =
 	| TappedForManaEvent
 	| GainLifeEvent
 	| CardDrawnEvent
 	| BecomesTappedEvent
+	| CardDiscardedEvent
+	| TransformedEvent
+	| TurnedFaceUpEvent
+	| InvestigatedEvent
+	| SurveilledEvent
+	| ExploredEvent
+	| ConnivedEvent
+	| BecomesCrewedEvent
+	| ForetoldEvent
+	| PlottedEvent
+	| BecomesSaddledEvent
+	| CombatDamageBatchPlayerEvent
 	| ZoneChangeEvent
 	| CastEvent
 	| AttackDeclaredEvent
@@ -187,7 +455,404 @@ export type GameEvent =
 	| BlockersDeclaredEvent
 	| BecameTargetEvent
 	| SpellCopiedEvent
-	| AttachedEvent;
+	| AttachedEvent
+	// --- Track P1 ---
+	| BecameMonarchEvent
+	// --- Track P4 ---
+	| ExertedEvent
+	// --- Track P5 ---
+	| AmassedEvent
+	| ManifestDreadEvent
+	| BecameMonstrousEvent
+	// --- Track P6 ---
+	| CounterRemovedEvent
+	// --- Track P10 ---
+	| UnblockedAttackersEvent
+	| BecomesUntappedEvent
+	| ScriedEvent
+	| CrimeCommittedEvent
+	| ExploitedEvent
+	| ManaExpendedEvent
+	| SacrificedEvent
+	| GraveyardLeaveBatchEvent
+	| DiscoveredEvent
+	| ForagedEvent
+	// --- End Track P10 ---
+	// --- Track P12 ---
+	| ClassLevelGainedEvent
+	| CaseSolvedEvent
+	| BecameRenownedEvent
+	// --- End Track P12 ---
+	// --- Track P13 & P15 ---
+	| DoorUnlockedEvent
+	| RoomFullyUnlockedEvent
+	| RingTemptedEvent
+	| DungeonRoomEnteredEvent
+	| DungeonCompletedEvent
+	| TookInitiativeEvent
+	// --- End Track P13 & P15 ---
+	// --- Track P16b & P18a ---
+	| MutatedEvent
+	| SoulbondPairedEvent
+	| HauntedCreatureDiedEvent
+	| DayNightChangedEvent
+	| FacedDilemmaEvent
+	| LifeLostEvent
+	| ExhaustActivatedEvent
+	| UnattachedEvent
+	| PhasedInEvent
+	| CollectedEvidenceEvent
+	| LandPlayedEvent
+	| PlayerTargetedEvent
+	// --- End Track P16b & P18a ---
+	// --- Track P19b ---
+	| ManaAddedByLandAbilityEvent
+	| LibrarySearchedEvent
+	| PlayerLostGameEvent
+	| CoinFlippedEvent
+	| DieRolledEvent
+	| EnergyGainedEvent
+	| ProliferatedEvent
+	| EvolvedEvent
+	| CrewedVehicleEvent
+	// --- End Track P19b ---
+	// --- Track P22b ---
+	| AbilityActivatedEvent
+	| PlayersFinishedVotingEvent
+	| ClashEvent
+	| LibraryShuffledEvent
+	| SpellCounteredEvent
+	| SagaChapterResolvedEvent
+	| SaddledMountEvent;
+	// --- End Track P22b ---
+
+// --- Track P10 ---
+export interface UnblockedAttackersEvent extends EventBase {
+	kind: 'UnblockedAttackers';
+	defenderPlayerId: string;
+	attackerIds: string[];
+}
+
+export interface BecomesUntappedEvent extends EventBase {
+	kind: 'BecomesUntapped';
+	objectId: string;
+	object: CardInstance;
+}
+
+export interface ScriedEvent extends EventBase {
+	kind: 'Scried';
+	playerId: string;
+	amount: number;
+}
+
+export interface CrimeCommittedEvent extends EventBase {
+	kind: 'CrimeCommitted';
+	playerId: string;
+	stackItemId?: string;
+}
+
+export interface ExploitedEvent extends EventBase {
+	kind: 'Exploited';
+	playerId: string;
+	exploiterId: string;
+	exploiterVersion?: number;
+	exploitedId: string;
+	exploited: CardInstance;
+	exploitedLki?: LeftBattlefieldInfo;
+}
+
+export interface ManaExpendedEvent extends EventBase {
+	kind: 'ManaExpended';
+	playerId: string;
+	previousTotal: number;
+	newTotal: number;
+	amountSpent: number;
+}
+
+export interface SacrificedEvent extends EventBase {
+	kind: 'Sacrificed';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	lki?: LeftBattlefieldInfo;
+}
+
+export interface GraveyardLeaveBatchEvent extends EventBase {
+	kind: 'GraveyardLeaveBatch';
+	ownerId: string;
+	objects: CardInstance[];
+}
+
+export interface DiscoveredEvent extends EventBase {
+	kind: 'Discovered';
+	playerId: string;
+	n: number;
+	hitCard?: CardInstance;
+	wasCast?: boolean;
+}
+
+export interface ForagedEvent extends EventBase {
+	kind: 'Foraged';
+	playerId: string;
+}
+// --- End Track P10 ---
+
+// --- Track P13 ---
+export interface DoorUnlockedEvent extends EventBase {
+	kind: 'DoorUnlocked';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	faceIndex: number;
+}
+
+export interface RoomFullyUnlockedEvent extends EventBase {
+	kind: 'RoomFullyUnlocked';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+
+export interface RingTemptedEvent extends EventBase {
+	kind: 'RingTempted';
+	playerId: string;
+	ringLevel: number;
+	ringBearerId?: string | null;
+}
+
+export interface DungeonRoomEnteredEvent extends EventBase {
+	kind: 'DungeonRoomEntered';
+	playerId: string;
+	dungeonId: 'lost_mine' | 'mad_mage' | 'tomb' | 'undercity';
+	roomIndex: number;
+	roomName: string;
+}
+
+export interface DungeonCompletedEvent extends EventBase {
+	kind: 'DungeonCompleted';
+	playerId: string;
+	dungeonId: 'lost_mine' | 'mad_mage' | 'tomb' | 'undercity';
+	dungeonName: string;
+}
+
+export interface TookInitiativeEvent extends EventBase {
+	kind: 'TookInitiative';
+	playerId: string;
+}
+// --- End Track P13 ---
+
+// --- Track P16b ---
+export interface MutatedEvent extends EventBase {
+	kind: 'Mutated';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	mutateCount: number;
+}
+
+export interface SoulbondPairedEvent extends EventBase {
+	kind: 'SoulbondPaired';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	partnerId: string;
+	partner: CardInstance;
+}
+
+export interface HauntedCreatureDiedEvent extends EventBase {
+	kind: 'HauntedCreatureDied';
+	haunterId: string;
+	haunter: CardInstance;
+	hauntedId: string;
+	hauntedObject: CardInstance;
+	lki?: LeftBattlefieldInfo;
+}
+
+export interface DayNightChangedEvent extends EventBase {
+	kind: 'DayNightChanged';
+	previous?: 'day' | 'night';
+	current: 'day' | 'night';
+}
+
+export interface FacedDilemmaEvent extends EventBase {
+	kind: 'FacedDilemma';
+	playerId: string;
+	sourceControllerId?: string;
+	stackItemId?: string;
+}
+
+export interface LifeLostEvent extends EventBase {
+	kind: 'LifeLost';
+	playerId: string;
+	amount: number;
+}
+
+export interface ExhaustActivatedEvent extends EventBase {
+	kind: 'ExhaustActivated';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+
+export interface UnattachedEvent extends EventBase {
+	kind: 'Unattached';
+	attachmentId: string;
+	attachment: CardInstance;
+	hostId: string;
+	host?: CardInstance;
+}
+
+export interface PhasedInEvent extends EventBase {
+	kind: 'PhasedIn';
+	objectId: string;
+	object: CardInstance;
+	controllerId?: string;
+}
+
+export interface CollectedEvidenceEvent extends EventBase {
+	kind: 'CollectedEvidence';
+	playerId: string;
+	amount?: number;
+	totalManaValue?: number;
+}
+
+export interface LandPlayedEvent extends EventBase {
+	kind: 'LandPlayed';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	fromZone?: ZoneType;
+}
+
+export interface PlayerTargetedEvent extends EventBase {
+	kind: 'PlayerTargeted';
+	targetPlayerId: string;
+	by: 'spell' | 'ability';
+	controllerId: string;
+	stackItemId?: string;
+}
+// --- End Track P16b ---
+
+// --- Track P19b ---
+export interface ManaAddedByLandAbilityEvent extends EventBase {
+	kind: 'ManaAddedByLandAbility';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+	producedColors: ManaColor[];
+}
+
+export interface LibrarySearchedEvent extends EventBase {
+	kind: 'LibrarySearched';
+	playerId: string;
+}
+
+export interface PlayerLostGameEvent extends EventBase {
+	kind: 'PlayerLostGame';
+	playerId: string;
+}
+
+export interface CoinFlippedEvent extends EventBase {
+	kind: 'CoinFlipped';
+	playerId: string;
+	won: boolean;
+	wins?: number;
+	flips?: number;
+}
+
+export interface DieRolledEvent extends EventBase {
+	kind: 'DieRolled';
+	playerId: string;
+	result: number;
+	naturalResult?: number;
+	sides?: number;
+	count?: number;
+}
+
+export interface EnergyGainedEvent extends EventBase {
+	kind: 'EnergyGained';
+	playerId: string;
+	amount: number;
+}
+
+export interface ProliferatedEvent extends EventBase {
+	kind: 'Proliferated';
+	playerId: string;
+}
+
+export interface EvolvedEvent extends EventBase {
+	kind: 'Evolved';
+	objectId: string;
+	object: CardInstance;
+	playerId: string;
+}
+
+export interface CrewedVehicleEvent extends EventBase {
+	kind: 'CrewedVehicle';
+	creatureId: string;
+	creature: CardInstance;
+	vehicleId: string;
+	vehicle: CardInstance;
+	playerId: string;
+}
+// --- End Track P19b ---
+
+// --- Track P22b ---
+export interface AbilityActivatedEvent extends EventBase {
+	kind: 'AbilityActivated';
+	playerId: string;
+	sourceId: string;
+	source: CardInstance;
+	abilityId?: string;
+	isManaAbility: boolean;
+	isLoyaltyAbility: boolean;
+	lifePaid?: number;
+	stackItemId?: string;
+}
+
+export interface PlayersFinishedVotingEvent extends EventBase {
+	kind: 'PlayersFinishedVoting';
+	controllerId: string;
+}
+
+export interface ClashEvent extends EventBase {
+	kind: 'Clash';
+	playerId: string;
+	won: boolean;
+}
+
+export interface LibraryShuffledEvent extends EventBase {
+	kind: 'LibraryShuffled';
+	playerId: string;
+}
+
+export interface SpellCounteredEvent extends EventBase {
+	kind: 'SpellCountered';
+	counteredStackItemId: string;
+	counteredCard: ScryfallCard;
+	byControllerId: string;
+	bySourceId?: string;
+	bySpellOrAbility: boolean;
+}
+
+export interface SagaChapterResolvedEvent extends EventBase {
+	kind: 'SagaChapterResolved';
+	objectId: string;
+	object: CardInstance;
+	controllerId: string;
+	chapterNumbers: number[];
+	isFinalChapter: boolean;
+}
+
+export interface SaddledMountEvent extends EventBase {
+	kind: 'SaddledMount';
+	creatureId: string;
+	creature: CardInstance;
+	mountId: string;
+	mount: CardInstance;
+	playerId: string;
+}
+// --- End Track P22b ---
 
 export type GameEventKind = GameEvent['kind'];
 type EventOf<K extends GameEventKind> = Extract<GameEvent, { kind: K }>;

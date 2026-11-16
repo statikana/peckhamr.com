@@ -1,4 +1,19 @@
 {
+	"Abuelo, Ancestral Echo": {
+		"oracleText": "Flying, ward {2}\n{1}{W}{U}: Exile another target creature or artifact you control. Return it to the battlefield under its owner's control at the beginning of the next end step.",
+		"typeLine": "Legendary Creature — Spirit",
+		"manaCost": "{1}{W}{U}"
+	},
+	"Adaptive Automaton": {
+		"oracleText": "As this creature enters, choose a creature type.\nThis creature is the chosen type in addition to its other types.\nOther creatures you control of the chosen type get +1/+1.",
+		"typeLine": "Artifact Creature — Construct",
+		"manaCost": "{3}"
+	},
+	"Aether Channeler": {
+		"oracleText": "When this creature enters, choose one —\n• Create a 1/1 white Bird creature token with flying.\n• Return another target nonland permanent to its owner's hand.\n• Draw a card.",
+		"typeLine": "Creature — Human Wizard",
+		"manaCost": "{2}{U}"
+	},
 	"Akroma's Memorial": {
 		"oracleText": "Creatures you control have flying, first strike, vigilance, trample, haste, and protection from black and from red.",
 		"typeLine": "Legendary Artifact",
@@ -29,6 +44,11 @@
 		"typeLine": "Artifact",
 		"manaCost": "{2}"
 	},
+	"Archaeomancer": {
+		"oracleText": "When this creature enters, return target instant or sorcery card from your graveyard to your hand.",
+		"typeLine": "Creature — Human Wizard",
+		"manaCost": "{2}{U}{U}"
+	},
 	"Archetype of Imagination": {
 		"oracleText": "Creatures you control have flying.\nCreatures your opponents control lose flying and can't have or gain flying.",
 		"typeLine": "Enchantment Creature — Human Wizard",
@@ -48,6 +68,16 @@
 		"oracleText": "Flying, vigilance, deathtouch, lifelink\nAt the beginning of your end step, proliferate. (Choose any number of permanents and/or players, then give each another counter of each kind already there.)",
 		"typeLine": "Legendary Creature — Phyrexian Angel Horror",
 		"manaCost": "{G}{W}{U}{B}"
+	},
+	"Azorius Signet": {
+		"oracleText": "{1}, {T}: Add {W}{U}.",
+		"typeLine": "Artifact",
+		"manaCost": "{2}"
+	},
+	"Banner of Kinship": {
+		"oracleText": "As this artifact enters, choose a creature type. This artifact enters with a fellowship counter on it for each creature you control of the chosen type.\nCreatures you control of the chosen type get +1/+1 for each fellowship counter on this artifact.",
+		"typeLine": "Artifact",
+		"manaCost": "{5}"
 	},
 	"Beast Whisperer": {
 		"oracleText": "Whenever you cast a creature spell, draw a card.",
@@ -74,6 +104,11 @@
 		"typeLine": "Enchantment",
 		"manaCost": "{1}{G}"
 	},
+	"Brago, King Eternal": {
+		"oracleText": "Flying\nWhenever Brago deals combat damage to a player, exile any number of target nonland permanents you control, then return those cards to the battlefield under their owner's control.",
+		"typeLine": "Legendary Creature — Spirit Noble",
+		"manaCost": "{2}{W}{U}"
+	},
 	"Brainstorm": {
 		"oracleText": "Draw three cards, then put two cards from your hand on top of your library in any order.",
 		"typeLine": "Instant",
@@ -99,6 +134,21 @@
 		"typeLine": "Creature — Shapeshifter",
 		"manaCost": "{3}{U}"
 	},
+	"Cloud of Faeries": {
+		"oracleText": "Flying\nWhen this creature enters, untap up to two lands.\nCycling {2} ({2}, Discard this card: Draw a card.)",
+		"typeLine": "Creature — Faerie",
+		"manaCost": "{1}{U}"
+	},
+	"Cloudblazer": {
+		"oracleText": "Flying\nWhen this creature enters, you gain 2 life and draw two cards.",
+		"typeLine": "Creature — Human Scout",
+		"manaCost": "{3}{W}{U}"
+	},
+	"Cloudshift": {
+		"oracleText": "Exile target creature you control, then return that card to the battlefield under your control.",
+		"typeLine": "Instant",
+		"manaCost": "{W}"
+	},
 	"Command Tower": {
 		"oracleText": "{T}: Add one mana of any color in your commander's color identity.",
 		"typeLine": "Land",
@@ -108,6 +158,11 @@
 		"oracleText": "{T}: Add one mana of any color in your commander's color identity.\nSacrifice this artifact: Draw a card.",
 		"typeLine": "Artifact",
 		"manaCost": "{3}"
+	},
+	"Conjurer's Closet": {
+		"oracleText": "At the beginning of your end step, you may exile target creature you control, then return that card to the battlefield under your control.",
+		"typeLine": "Artifact",
+		"manaCost": "{5}"
 	},
 	"Corpse Dance": {
 		"oracleText": "Buyback {2} (You may pay an additional {2} as you cast this spell. If you do, put this card into your hand as it resolves.)\nReturn the top creature card of your graveyard to the battlefield. That creature gains haste until end of turn. Exile it at the beginning of the next end step.",
@@ -149,10 +204,30 @@
 		"typeLine": "Enchantment — Aura",
 		"manaCost": "{1}{W}"
 	},
+	"Deadeye Navigator": {
+		"oracleText": "Soulbond (You may pair this creature with another unpaired creature when either enters. They remain paired for as long as you control both of them.)\nAs long as Deadeye Navigator is paired with another creature, each of those creatures has \"{1}{U}: Exile this creature, then return it to the battlefield under your control.\"",
+		"typeLine": "Creature — Spirit",
+		"manaCost": "{4}{U}{U}"
+	},
 	"Demonic Tutor": {
 		"oracleText": "Search your library for a card, put that card into your hand, then shuffle.",
 		"typeLine": "Sorcery",
 		"manaCost": "{1}{B}"
+	},
+	"Distant Melody": {
+		"oracleText": "Choose a creature type. Draw a card for each permanent you control of that type.",
+		"typeLine": "Sorcery",
+		"manaCost": "{3}{U}"
+	},
+	"Dour Port-Mage": {
+		"oracleText": "Whenever one or more other creatures you control leave the battlefield without dying, draw a card.\n{1}{U}, {T}: Return another target creature you control to its owner's hand.",
+		"typeLine": "Creature — Frog Wizard",
+		"manaCost": "{1}{U}"
+	},
+	"Dovin's Veto": {
+		"oracleText": "This spell can't be countered.\nCounter target noncreature spell.",
+		"typeLine": "Instant",
+		"manaCost": "{W}{U}"
 	},
 	"Drannith Magistrate": {
 		"oracleText": "Your opponents can't cast spells from anywhere other than their hands.",
@@ -164,6 +239,26 @@
 		"typeLine": "Enchantment",
 		"manaCost": "{1}{U}"
 	},
+	"Drogskol Captain": {
+		"oracleText": "Flying\nOther Spirit creatures you control get +1/+1 and have hexproof. (They can't be the targets of spells or abilities your opponents control.)",
+		"typeLine": "Creature — Spirit Soldier",
+		"manaCost": "{1}{W}{U}"
+	},
+	"Drogskol Reinforcements": {
+		"oracleText": "Melee (Whenever this creature attacks, it gets +1/+1 until end of turn for each opponent you attacked this combat.)\nOther Spirits you control have melee.\nPrevent all noncombat damage that would be dealt to Spirits you control.",
+		"typeLine": "Creature — Spirit Soldier",
+		"manaCost": "{3}{W}"
+	},
+	"Eerie Interlude": {
+		"oracleText": "Exile any number of target creatures you control. Return those cards to the battlefield under their owner's control at the beginning of the next end step.",
+		"typeLine": "Instant",
+		"manaCost": "{2}{W}"
+	},
+	"Elesh Norn, Mother of Machines": {
+		"oracleText": "Vigilance\nIf a permanent entering causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time.\nPermanents entering don't cause abilities of permanents your opponents control to trigger.",
+		"typeLine": "Legendary Creature — Phyrexian Praetor",
+		"manaCost": "{4}{W}"
+	},
 	"Elvish Archdruid": {
 		"oracleText": "Other Elf creatures you control get +1/+1.\n{T}: Add {G} for each Elf you control.",
 		"typeLine": "Creature — Elf Druid",
@@ -174,10 +269,30 @@
 		"typeLine": "Creature — Elf Druid",
 		"manaCost": "{G}"
 	},
+	"Empyrean Eagle": {
+		"oracleText": "Flying\nOther creatures you control with flying get +1/+1.",
+		"typeLine": "Creature — Bird Spirit",
+		"manaCost": "{1}{W}{U}"
+	},
+	"Ephemerate": {
+		"oracleText": "Exile target creature you control, then return it to the battlefield under its owner's control.\nRebound (If you cast this spell from your hand, exile it as it resolves. At the beginning of your next upkeep, you may cast this card from exile without paying its mana cost.)",
+		"typeLine": "Instant",
+		"manaCost": "{W}"
+	},
+	"Essence Flux": {
+		"oracleText": "Exile target creature you control, then return that card to the battlefield under its owner's control. If it's a Spirit, put a +1/+1 counter on it.",
+		"typeLine": "Instant",
+		"manaCost": "{U}"
+	},
 	"Eternal Witness": {
 		"oracleText": "When this creature enters, you may return target card from your graveyard to your hand.",
 		"typeLine": "Creature — Human Shaman",
 		"manaCost": "{1}{G}{G}"
+	},
+	"Ethereal Investigator": {
+		"oracleText": "Flying\nWhen this creature enters, investigate X times, where X is the number of opponents you have. (To investigate, create a Clue token. It's an artifact with \"{2}, Sacrifice this token: Draw a card.\")\nWhenever you draw your second card each turn, create a 1/1 white Spirit creature token with flying.",
+		"typeLine": "Creature — Spirit",
+		"manaCost": "{3}{U}"
 	},
 	"Evolution Sage": {
 		"oracleText": "Landfall — Whenever a land you control enters, proliferate. (Choose any number of permanents and/or players, then give each another counter of each kind already there.)",
@@ -214,6 +329,11 @@
 		"typeLine": "Sorcery",
 		"manaCost": "{1}{B}"
 	},
+	"Felidar Guardian": {
+		"oracleText": "When this creature enters, you may exile another target permanent you control, then return that card to the battlefield under its owner's control.",
+		"typeLine": "Creature — Cat Beast",
+		"manaCost": "{3}{W}"
+	},
 	"Felidar Sovereign": {
 		"oracleText": "Vigilance (Attacking doesn't cause this creature to tap.)\nLifelink (Damage dealt by this creature also causes you to gain that much life.)\nAt the beginning of your upkeep, if you have 40 or more life, you win the game.",
 		"typeLine": "Creature — Cat Beast",
@@ -228,6 +348,16 @@
 		"oracleText": "Take an extra turn after this one. At the beginning of that turn's end step, you lose the game.",
 		"typeLine": "Instant",
 		"manaCost": "{R}{R}"
+	},
+	"Flickerwisp": {
+		"oracleText": "Flying\nWhen this creature enters, exile another target permanent. Return that card to the battlefield under its owner's control at the beginning of the next end step.",
+		"typeLine": "Creature — Elemental",
+		"manaCost": "{1}{W}{W}"
+	},
+	"Flowering of the White Tree": {
+		"oracleText": "Legendary creatures you control get +2/+1 and have ward {1}.\nNonlegendary creatures you control get +1/+1.",
+		"typeLine": "Legendary Enchantment",
+		"manaCost": "{W}{W}"
 	},
 	"Flux Channeler": {
 		"oracleText": "Whenever you cast a noncreature spell, proliferate. (Choose any number of permanents and/or players, then give each another counter of each kind already there.)",
@@ -254,10 +384,20 @@
 		"typeLine": "Instant",
 		"manaCost": "{2}{W}"
 	},
+	"Ghostly Flicker": {
+		"oracleText": "Exile two target artifacts, creatures, and/or lands you control, then return those cards to the battlefield under your control.",
+		"typeLine": "Instant",
+		"manaCost": "{2}{U}"
+	},
 	"Ghostly Prison": {
 		"oracleText": "Creatures can't attack you unless their controller pays {2} for each creature they control that's attacking you.",
 		"typeLine": "Enchantment",
 		"manaCost": "{2}{W}"
+	},
+	"Glacial Fortress": {
+		"oracleText": "This land enters tapped unless you control a Plains or an Island.\n{T}: Add {W} or {U}.",
+		"typeLine": "Land",
+		"manaCost": ""
 	},
 	"Goblin Electromancer": {
 		"oracleText": "Instant and sorcery spells you cast cost {1} less to cast.",
@@ -274,15 +414,35 @@
 		"typeLine": "Creature — Spirit",
 		"manaCost": "{1}{W}"
 	},
+	"Guardian of Faith": {
+		"oracleText": "Flash\nVigilance\nWhen this creature enters, any number of other target creatures you control phase out. (Treat them and anything attached to them as though they don't exist until their controller's next turn.)",
+		"typeLine": "Creature — Spirit Knight",
+		"manaCost": "{1}{W}{W}"
+	},
 	"Guttersnipe": {
 		"oracleText": "Whenever you cast an instant or sorcery spell, this creature deals 2 damage to each opponent.",
 		"typeLine": "Creature — Goblin Shaman",
 		"manaCost": "{2}{R}"
 	},
+	"Hanged Executioner": {
+		"oracleText": "Flying\nWhen this creature enters, create a 1/1 white Spirit creature token with flying.\n{3}{W}, Exile this creature: Exile target creature.",
+		"typeLine": "Creature — Spirit",
+		"manaCost": "{2}{W}"
+	},
+	"Haunted Library": {
+		"oracleText": "Whenever a creature an opponent controls dies, you may pay {1}. If you do, create a 1/1 white Spirit creature token with flying.",
+		"typeLine": "Enchantment",
+		"manaCost": "{1}{W}"
+	},
 	"Hellkite Charger": {
 		"oracleText": "Flying, haste\nWhenever this creature attacks, you may pay {5}{R}{R}. If you do, untap all attacking creatures and after this phase, there is an additional combat phase.",
 		"typeLine": "Creature — Dragon",
 		"manaCost": "{4}{R}{R}"
+	},
+	"Herald's Horn": {
+		"oracleText": "As this artifact enters, choose a creature type.\nCreature spells you cast of the chosen type cost {1} less to cast.\nAt the beginning of your upkeep, look at the top card of your library. If it's a creature card of the chosen type, you may reveal it and put it into your hand.",
+		"typeLine": "Artifact",
+		"manaCost": "{3}"
 	},
 	"Heroic Intervention": {
 		"oracleText": "Permanents you control gain hexproof and indestructible until end of turn.",
@@ -319,10 +479,20 @@
 		"typeLine": "Sorcery",
 		"manaCost": "{2}{R}"
 	},
+	"Karmic Guide": {
+		"oracleText": "Flying, protection from black\nEcho {3}{W}{W} (At the beginning of your upkeep, if this came under your control since the beginning of your last upkeep, sacrifice it unless you pay its echo cost.)\nWhen this creature enters, return target creature card from your graveyard to the battlefield.",
+		"typeLine": "Creature — Angel Spirit",
+		"manaCost": "{3}{W}{W}"
+	},
 	"Kenrith's Transformation": {
 		"oracleText": "Enchant creature\nWhen this Aura enters, draw a card.\nEnchanted creature loses all abilities and is a green Elk creature with base power and toughness 3/3. (It loses all other card types and creature types.)",
 		"typeLine": "Enchantment — Aura",
 		"manaCost": "{1}{G}"
+	},
+	"Kindred Discovery": {
+		"oracleText": "As this enchantment enters, choose a creature type.\nWhenever a creature you control of the chosen type enters or attacks, draw a card.",
+		"typeLine": "Enchantment",
+		"manaCost": "{3}{U}{U}"
 	},
 	"Kodama's Reach": {
 		"oracleText": "Search your library for up to two basic land cards, reveal those cards, put one onto the battlefield tapped and the other into your hand, then shuffle.",
@@ -333,6 +503,11 @@
 		"oracleText": "If you would draw a card while your library has no cards in it, you win the game instead.",
 		"typeLine": "Creature — Human Wizard",
 		"manaCost": "{2}{U}"
+	},
+	"Lae'zel's Acrobatics": {
+		"oracleText": "Exile all nontoken creatures you control, then roll a d20.\n1—9 | Return those cards to the battlefield under their owner's control at the beginning of the next end step.\n10—20 | Return those cards to the battlefield under their owner's control, then exile them again. Return those cards to the battlefield under their owner's control at the beginning of the next end step.",
+		"typeLine": "Instant",
+		"manaCost": "{3}{W}"
 	},
 	"Lathliss, Dragon Queen": {
 		"oracleText": "Flying\nWhenever another nontoken Dragon you control enters, create a 5/5 red Dragon creature token with flying.\n{1}{R}: Dragons you control get +1/+0 until end of turn.",
@@ -384,6 +559,11 @@
 		"typeLine": "Artifact",
 		"manaCost": "{2}"
 	},
+	"Moonshaker Cavalry": {
+		"oracleText": "Flying\nWhen this creature enters, creatures you control gain flying and get +X/+X until end of turn, where X is the number of creatures you control.",
+		"typeLine": "Creature — Spirit Knight",
+		"manaCost": "{5}{W}{W}{W}"
+	},
 	"Mortify": {
 		"oracleText": "Destroy target creature or enchantment.",
 		"typeLine": "Instant",
@@ -393,6 +573,11 @@
 		"oracleText": "({T}: Add {R}.)",
 		"typeLine": "Basic Land — Mountain",
 		"manaCost": ""
+	},
+	"Mulldrifter": {
+		"oracleText": "Flying\nWhen this creature enters, draw two cards.\nEvoke {2}{U} (You may cast this spell for its evoke cost. If you do, it's sacrificed when it enters.)",
+		"typeLine": "Creature — Elemental",
+		"manaCost": "{4}{U}"
 	},
 	"Mycosynth Lattice": {
 		"oracleText": "All permanents are artifacts in addition to their other types.\nAll cards that aren't on the battlefield, spells, and permanents are colorless.\nPlayers may spend mana as though it were mana of any color.",
@@ -408,6 +593,11 @@
 		"oracleText": "Search your library for a Forest card, put that card onto the battlefield, then shuffle.",
 		"typeLine": "Sorcery",
 		"manaCost": "{1}{G}"
+	},
+	"Nebelgast Herald": {
+		"oracleText": "Flash\nFlying\nWhenever this creature or another Spirit you control enters, tap target creature an opponent controls.",
+		"typeLine": "Creature — Spirit",
+		"manaCost": "{2}{U}"
 	},
 	"Negate": {
 		"oracleText": "Counter target noncreature spell.",
@@ -444,6 +634,16 @@
 		"typeLine": "Instant",
 		"manaCost": "{U}"
 	},
+	"Panharmonicon": {
+		"oracleText": "If an artifact or creature entering causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time.",
+		"typeLine": "Artifact",
+		"manaCost": "{4}"
+	},
+	"Patchwork Banner": {
+		"oracleText": "As this artifact enters, choose a creature type.\nCreatures you control of the chosen type get +1/+1.\n{T}: Add one mana of any color.",
+		"typeLine": "Artifact",
+		"manaCost": "{3}"
+	},
 	"Path of Ancestry": {
 		"oracleText": "This land enters tapped.\n{T}: Add one mana of any color in your commander's color identity. When that mana is spent to cast a creature spell that shares a creature type with your commander, scry 1. (Look at the top card of your library. You may put that card on the bottom.)",
 		"typeLine": "Land",
@@ -453,6 +653,16 @@
 		"oracleText": "Exile target creature. Its controller may search their library for a basic land card, put that card onto the battlefield tapped, then shuffle.",
 		"typeLine": "Instant",
 		"manaCost": "{W}"
+	},
+	"Patrician Geist": {
+		"oracleText": "Flying\nOther Spirits you control get +1/+1.\nSpells you cast from your graveyard cost {1} less to cast.",
+		"typeLine": "Creature — Spirit Knight",
+		"manaCost": "{2}{U}"
+	},
+	"Peregrine Drake": {
+		"oracleText": "Flying\nWhen this creature enters, untap up to five lands.",
+		"typeLine": "Creature — Drake",
+		"manaCost": "{4}{U}"
 	},
 	"Plains": {
 		"oracleText": "({T}: Add {W}.)",
@@ -479,15 +689,15 @@
 		"typeLine": "Creature — Elf Druid",
 		"manaCost": "{1}{G}"
 	},
-	"Puresteel Paladin": {
-		"oracleText": "Whenever an Equipment you control enters, you may draw a card.\nMetalcraft — Equipment you control have equip {0} as long as you control three or more artifacts.",
-		"typeLine": "Creature — Human Knight",
-		"manaCost": "{W}{W}"
-	},
 	"Propaganda": {
 		"oracleText": "Creatures can't attack you unless their controller pays {2} for each creature they control that's attacking you.",
 		"typeLine": "Enchantment",
 		"manaCost": "{2}{U}"
+	},
+	"Puresteel Paladin": {
+		"oracleText": "Whenever an Equipment you control enters, you may draw a card.\nMetalcraft — Equipment you control have equip {0} as long as you control three or more artifacts.",
+		"typeLine": "Creature — Human Knight",
+		"manaCost": "{W}{W}"
 	},
 	"Putrefy": {
 		"oracleText": "Destroy target artifact or creature. It can't be regenerated.",
@@ -499,6 +709,11 @@
 		"typeLine": "Sorcery",
 		"manaCost": "{1}{G}"
 	},
+	"Rattlechains": {
+		"oracleText": "Flash\nFlying\nWhen this creature enters, target Spirit gains hexproof until end of turn.\nYou may cast Spirit spells as though they had flash.",
+		"typeLine": "Creature — Spirit",
+		"manaCost": "{1}{U}"
+	},
 	"Read the Bones": {
 		"oracleText": "Scry 2, then draw two cards. You lose 2 life. (To scry 2, look at the top two cards of your library, then put any number of them on the bottom and the rest on top in any order.)",
 		"typeLine": "Sorcery",
@@ -508,6 +723,11 @@
 		"oracleText": "Put target creature card from a graveyard onto the battlefield under your control. You lose life equal to that card's mana value.",
 		"typeLine": "Sorcery",
 		"manaCost": "{B}"
+	},
+	"Reflector Mage": {
+		"oracleText": "When this creature enters, return target creature an opponent controls to its owner's hand. That creature's owner can't cast spells with the same name as that creature until your next turn.",
+		"typeLine": "Creature — Human Wizard",
+		"manaCost": "{1}{W}{U}"
 	},
 	"Reliquary Tower": {
 		"oracleText": "You have no maximum hand size.\n{T}: Add {C}.",
@@ -519,6 +739,11 @@
 		"typeLine": "Enchantment",
 		"manaCost": "{1}{W}"
 	},
+	"Restoration Angel": {
+		"oracleText": "Flash\nFlying\nWhen this creature enters, you may exile target non-Angel creature you control, then return that card to the battlefield under your control.",
+		"typeLine": "Creature — Angel",
+		"manaCost": "{3}{W}"
+	},
 	"Rhystic Study": {
 		"oracleText": "Whenever an opponent casts a spell, you may draw a card unless that player pays {1}.",
 		"typeLine": "Enchantment",
@@ -529,6 +754,11 @@
 		"typeLine": "Sorcery",
 		"manaCost": "{2}{R}"
 	},
+	"Riptide Gearhulk": {
+		"oracleText": "Double strike\nProwess (Whenever you cast a noncreature spell, this creature gets +1/+1 until end of turn.)\nWhen this creature enters, for each opponent, put up to one target nonland permanent that player controls into its owner's library third from the top.",
+		"typeLine": "Artifact Creature — Construct",
+		"manaCost": "{1}{W}{W}{U}{U}"
+	},
 	"Rule of Law": {
 		"oracleText": "Each player can't cast more than one spell each turn.",
 		"typeLine": "Enchantment",
@@ -538,6 +768,11 @@
 		"oracleText": "Flying\nWhenever this creature or another Dragon you control enters, it deals X damage to any target, where X is the number of Dragons you control.\n{R}: This creature gets +1/+0 until end of turn.",
 		"typeLine": "Creature — Dragon",
 		"manaCost": "{2}{R}{R}{R}"
+	},
+	"Selfless Spirit": {
+		"oracleText": "Flying\nSacrifice this creature: Creatures you control gain indestructible until end of turn.",
+		"typeLine": "Creature — Spirit Cleric",
+		"manaCost": "{1}{W}"
 	},
 	"Shadowspear": {
 		"oracleText": "Equipped creature gets +1/+1 and has trample and lifelink.\n{1}: Permanents your opponents control lose hexproof and indestructible until end of turn.\nEquip {2}",
@@ -559,6 +794,11 @@
 		"typeLine": "Sorcery",
 		"manaCost": "{B}{B}"
 	},
+	"Skyclave Apparition": {
+		"oracleText": "When this creature enters, exile up to one target nonland, nontoken permanent you don't control with mana value 4 or less.\nWhen this creature leaves the battlefield, the exiled card's owner creates an X/X blue Illusion creature token, where X is the mana value of the exiled card.",
+		"typeLine": "Creature — Kor Spirit",
+		"manaCost": "{1}{W}{W}"
+	},
 	"Slip Out the Back": {
 		"oracleText": "Put a +1/+1 counter on target creature. It phases out. (Treat it and anything attached to it as though they don't exist until its controller's next turn.)",
 		"typeLine": "Instant",
@@ -579,25 +819,65 @@
 		"typeLine": "Artifact",
 		"manaCost": ""
 	},
+	"Solemn Simulacrum": {
+		"oracleText": "When this creature enters, you may search your library for a basic land card, put that card onto the battlefield tapped, then shuffle.\nWhen this creature dies, you may draw a card.",
+		"typeLine": "Artifact Creature — Golem",
+		"manaCost": "{4}"
+	},
 	"Song of the Dryads": {
 		"oracleText": "Enchant permanent\nEnchanted permanent is a colorless Forest land.",
 		"typeLine": "Enchantment — Aura",
 		"manaCost": "{2}{G}"
+	},
+	"Soulherder": {
+		"oracleText": "Whenever a creature is exiled from the battlefield, put a +1/+1 counter on this creature.\nAt the beginning of your end step, you may exile another target creature you control, then return that card to the battlefield under its owner's control.",
+		"typeLine": "Creature — Spirit",
+		"manaCost": "{1}{W}{U}"
+	},
+	"Spirited Companion": {
+		"oracleText": "When this creature enters, draw a card.",
+		"typeLine": "Enchantment Creature — Dog",
+		"manaCost": "{1}{W}"
+	},
+	"Starfield Vocalist": {
+		"oracleText": "If a permanent entering the battlefield causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time.\nWarp {1}{U} (You may cast this card from your hand for its warp cost. Exile this creature at the beginning of the next end step, then you may cast it from exile on a later turn.)",
+		"typeLine": "Creature — Human Bard",
+		"manaCost": "{3}{U}"
 	},
 	"Steelshaper's Gift": {
 		"oracleText": "Search your library for an Equipment card, reveal that card, put it into your hand, then shuffle.",
 		"typeLine": "Sorcery",
 		"manaCost": "{W}"
 	},
+	"Stonehorn Dignitary": {
+		"oracleText": "When this creature enters, target opponent skips their next combat phase.",
+		"typeLine": "Creature — Rhino Soldier",
+		"manaCost": "{3}{W}"
+	},
 	"Storm-Kiln Artist": {
 		"oracleText": "This creature gets +1/+0 for each artifact you control.\nMagecraft — Whenever you cast or copy an instant or sorcery spell, create a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")",
 		"typeLine": "Creature — Dwarf Shaman",
 		"manaCost": "{3}{R}"
 	},
+	"Strionic Resonator": {
+		"oracleText": "{2}, {T}: Copy target triggered ability you control. You may choose new targets for the copy. (A triggered ability uses the words \"when,\" \"whenever,\" or \"at.\")",
+		"typeLine": "Artifact",
+		"manaCost": "{2}"
+	},
 	"Sundial of the Infinite": {
 		"oracleText": "{1}, {T}: End the turn. Activate only during your turn. (Exile all spells and abilities from the stack. Discard down to your maximum hand size. Damage wears off, and \"this turn\" and \"until end of turn\" effects end.)",
 		"typeLine": "Artifact",
 		"manaCost": "{2}"
+	},
+	"Supreme Phantom": {
+		"oracleText": "Flying\nOther Spirits you control get +1/+1.",
+		"typeLine": "Creature — Spirit",
+		"manaCost": "{1}{U}"
+	},
+	"Supreme Verdict": {
+		"oracleText": "This spell can't be countered.\nDestroy all creatures.",
+		"typeLine": "Sorcery",
+		"manaCost": "{1}{W}{W}{U}"
 	},
 	"Swamp": {
 		"oracleText": "({T}: Add {B}.)",
@@ -614,6 +894,11 @@
 		"typeLine": "Instant",
 		"manaCost": "{W}"
 	},
+	"Talisman of Progress": {
+		"oracleText": "{T}: Add {C}.\n{T}: Add {W} or {U}. This artifact deals 1 damage to you.",
+		"typeLine": "Artifact",
+		"manaCost": "{2}"
+	},
 	"Talrand, Sky Summoner": {
 		"oracleText": "Whenever you cast an instant or sorcery spell, create a 2/2 blue Drake creature token with flying.",
 		"typeLine": "Legendary Creature — Merfolk Wizard",
@@ -623,6 +908,11 @@
 		"oracleText": "Until your next turn, your life total can't change and you gain protection from everything. All permanents you control phase out. (While they're phased out, they're treated as though they don't exist. They phase in before you untap during your untap step.)\nExile Teferi's Protection.",
 		"typeLine": "Instant",
 		"manaCost": "{2}{W}"
+	},
+	"Teleportation Circle": {
+		"oracleText": "At the beginning of your end step, exile up to one target artifact or creature you control, then return that card to the battlefield under its owner's control.",
+		"typeLine": "Enchantment",
+		"manaCost": "{3}{W}"
 	},
 	"Terror of the Peaks": {
 		"oracleText": "Flying\nSpells your opponents cast that target this creature cost an additional 3 life to cast.\nWhenever another creature you control enters, this creature deals damage equal to that creature's power to any target.",
@@ -669,15 +959,30 @@
 		"typeLine": "Instant",
 		"manaCost": "{B}"
 	},
+	"Vanquisher's Banner": {
+		"oracleText": "As this artifact enters, choose a creature type.\nCreatures you control of the chosen type get +1/+1.\nWhenever you cast a creature spell of the chosen type, draw a card.",
+		"typeLine": "Artifact",
+		"manaCost": "{5}"
+	},
 	"Vedalken Orrery": {
 		"oracleText": "You may cast spells as though they had flash.",
 		"typeLine": "Artifact",
 		"manaCost": "{4}"
 	},
+	"Venser, Shaper Savant": {
+		"oracleText": "Flash (You may cast this spell any time you could cast an instant.)\nWhen Venser enters, return target spell or permanent to its owner's hand.",
+		"typeLine": "Legendary Creature — Human Wizard",
+		"manaCost": "{2}{U}{U}"
+	},
 	"Veyran, Voice of Duality": {
 		"oracleText": "Magecraft — Whenever you cast or copy an instant or sorcery spell, Veyran gets +1/+1 until end of turn.\nIf you casting or copying an instant or sorcery spell causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time.",
 		"typeLine": "Legendary Creature — Efreet Wizard",
 		"manaCost": "{1}{U}{R}"
+	},
+	"Wall of Omens": {
+		"oracleText": "Defender\nWhen this creature enters, draw a card.",
+		"typeLine": "Creature — Wall",
+		"manaCost": "{1}{W}"
 	},
 	"Wastes": {
 		"oracleText": "{T}: Add {C}.",

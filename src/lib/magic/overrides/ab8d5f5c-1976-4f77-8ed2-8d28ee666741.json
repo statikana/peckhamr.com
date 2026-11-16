@@ -1,0 +1,87 @@
+{
+  "oracleId": "ab8d5f5c-1976-4f77-8ed2-8d28ee666741",
+  "cardName": "Tireless Provisioner",
+  "expectedTextHash": "cda06806",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Landfall modal trigger creates a Food token or a Treasure token.",
+  "faces": [
+    {
+      "name": "Tireless Provisioner",
+      "characteristics": {
+        "manaCost": "{2}{G}",
+        "types": ["Creature"],
+        "subtypes": ["Elf", "Scout"],
+        "supertypes": [],
+        "colors": ["G"],
+        "power": 3,
+        "toughness": 2
+      },
+      "abilities": [
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "zoneChange",
+            "filter": {
+              "to": "battlefield",
+              "object": { "types": ["Land"], "controller": "you" }
+            }
+          },
+          "targets": [],
+          "effect": [],
+          "modal": {
+            "min": 1,
+            "max": 1,
+            "modes": [
+              {
+                "targets": [],
+                "effect": [
+                  {
+                    "verb": "createToken",
+                    "subject": { "k": "player", "filter": { "relation": "you" } },
+                    "amount": { "k": "const", "n": 1 },
+                    "params": {
+                      "token": {
+                        "name": "Food",
+                        "power": 0,
+                        "toughness": 0,
+                        "colors": [],
+                        "typeLine": "Token Artifact — Food",
+                        "keywords": []
+                      }
+                    },
+                    "span": { "start": 47, "end": 68 }
+                  }
+                ],
+                "span": { "start": 47, "end": 68 }
+              },
+              {
+                "targets": [],
+                "effect": [
+                  {
+                    "verb": "createToken",
+                    "subject": { "k": "player", "filter": { "relation": "you" } },
+                    "amount": { "k": "const", "n": 1 },
+                    "params": {
+                      "token": {
+                        "name": "Treasure",
+                        "power": 0,
+                        "toughness": 0,
+                        "colors": [],
+                        "typeLine": "Token Artifact — Treasure",
+                        "keywords": []
+                      }
+                    },
+                    "span": { "start": 72, "end": 88 }
+                  }
+                ],
+                "span": { "start": 72, "end": 88 }
+              }
+            ]
+          },
+          "text": "Landfall — Whenever a land you control enters, create a Food token or a Treasure token.",
+          "span": { "start": 0, "end": 89 }
+        }
+      ]
+    }
+  ]
+}

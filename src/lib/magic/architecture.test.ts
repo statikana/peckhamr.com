@@ -134,6 +134,25 @@ function countCardNames(text: string, names: string[]): number {
 	return n;
 }
 
+/**
+ * Regex or substring scans over `.text` on abilities (e.g. `ab.text.match(...)`,
+ * `ab.text.toLowerCase().includes(...)`, `/.../.test(ab.text)`). Display pass-throughs (`n.text`,
+ * `displayAbilityText(ab.text ?? '', ...)`) are permitted; pattern matching on rules text is not.
+ */
+const ABILITY_TEXT_SCANS = [
+	/\.text(?:\s*\?\?\s*['"][^'"]*['"])?(?:\.(?:trim|toLowerCase|toUpperCase)\(\))*\s*\.\s*(?:match|matchAll|search|replace|includes|startsWith|endsWith|slice|split)\(/g,
+	/(?:\/(?:\\.|[^/\n])+\/[gimsuy]*|new\s+RegExp\([^)]*\))\s*\.\s*(?:test|exec)\(\s*[^)\n]*\.text\b/g
+];
+
+function countAbilityTextScans(text: string): number {
+	const code = stripComments(text);
+	let n = 0;
+	for (const re of ABILITY_TEXT_SCANS) {
+		n += (code.match(re) || []).length;
+	}
+	return n;
+}
+
 function listFiles(dir: string, include: (rel: string) => boolean): string[] {
 	const out: string[] = [];
 	for (const entry of readdirSync(dir)) {
@@ -164,7 +183,8 @@ describe('Architecture ratchet', () => {
 			count: (text: string) => countMatches(text, re)
 		})),
 		{ rule: 'legacyTextHelperCall', files: runtimeFiles, count: (text) => countLegacyHelperCalls(text, helpers) },
-		{ rule: 'cardNameInCode', files: nameScanFiles, count: (text) => countCardNames(text, names) }
+		{ rule: 'cardNameInCode', files: nameScanFiles, count: (text) => countCardNames(text, names) },
+		{ rule: 'abilityTextScan', files: runtimeFiles, count: (text) => countAbilityTextScans(text) }
 	];
 
 	it('TEXT_FREE_ORACLE_EXPORTS only lists existing oracle.ts exports', () => {

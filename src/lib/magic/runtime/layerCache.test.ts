@@ -261,6 +261,44 @@ describe('Layer cache: results track board mutations (Phase 6a)', () => {
 		);
 	});
 
+	it('invalidates cache on copiableState, activeFaceIndex, unlockedFaces, and faceDownSpec mutations (B4 Phase 1)', () => {
+		const multi = card({
+			name: 'Cache Twin',
+			layout: 'split',
+			typeLine: 'Enchantment — Room',
+			faces: [
+				{ name: 'Left', manaCost: '{1}{W}', cmc: 2, typeLine: 'Enchantment — Room', oracleText: '', colors: ['W'], imageUrl: '' },
+				{ name: 'Right', manaCost: '{2}{U}', cmc: 3, typeLine: 'Enchantment — Room', oracleText: '', colors: ['U'], imageUrl: '' }
+			]
+		});
+		let perm!: CardInstance;
+		let room!: CardInstance;
+		scenario(
+			(b) => {
+				perm = b.add(SKY);
+				room = b.add(multi);
+				room.unlockedFaces = [0];
+			},
+			[
+				['copiableState set', () => (perm.copiableState = { card: BRUTE })],
+				['copiableState except', () => (perm.copiableState = { card: BRUTE, except: { power: 7, toughness: 7 } })],
+				['faceDown morph', () => {
+					perm.isFaceDown = true;
+					perm.faceDownSpec = { kind: 'morph' };
+				}],
+				['faceDown disguise ward', () => {
+					perm.faceDownSpec = { kind: 'disguise', wardCost: '{2}' };
+				}],
+				['face up + activeFaceIndex', () => {
+					perm.isFaceDown = false;
+					perm.faceDownSpec = undefined;
+					perm.activeFaceIndex = 1;
+				}],
+				['room unlock second half', () => (room.unlockedFaces = [0, 1])]
+			]
+		);
+	});
+
 	it('changing control (with and without moving battlefields)', () => {
 		let lord!: CardInstance;
 		let elf!: CardInstance;

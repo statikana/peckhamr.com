@@ -1,0 +1,160 @@
+{
+	"oracleId": "15d5b198-edbe-40f3-87e2-d72f7f0c58ab",
+	"expectedTextHash": "738e4f34",
+	"faces": [
+		{
+			"name": "Dance of the Dead",
+			"characteristics": {
+				"manaCost": "{1}{B}",
+				"types": ["Enchantment"],
+				"subtypes": ["Aura"],
+				"supertypes": [],
+				"colors": ["B"]
+			},
+			"abilities": [
+				{
+					"kind": "keyword",
+					"keyword": {
+						"name": "enchant",
+						"param": "creature card in a graveyard",
+						"enchantFilter": {
+							"types": ["Creature"],
+							"zone": "graveyard"
+						}
+					},
+					"span": { "start": 0, "end": 36 }
+				},
+				{
+					"kind": "triggered",
+					"trigger": {
+						"event": "zoneChange",
+						"filter": {
+							"object": "self",
+							"to": "battlefield"
+						}
+					},
+					"condition": {
+						"k": "selfInZone",
+						"zone": "battlefield"
+					},
+					"targets": [],
+					"effect": [
+						{
+							"verb": "move",
+							"subject": {
+								"k": "all",
+								"filter": {
+									"zone": "graveyard",
+									"attachedToRef": "hostOfSelf"
+								}
+							},
+							"params": {
+								"from": "graveyard",
+								"to": "battlefield",
+								"underYourControl": true,
+								"tapped": true
+							},
+							"bindAs": "reanimated",
+							"span": { "start": 182, "end": 276 }
+						},
+						{
+							"verb": "attach",
+							"subject": {
+								"k": "binding",
+								"name": "reanimated"
+							},
+							"span": { "start": 261, "end": 276 }
+						}
+					],
+					"text": "When ~ enters, if it's on the battlefield, it loses \"enchant creature card in a graveyard\" and gains \"enchant creature put onto the battlefield with ~.\" Put enchanted creature card onto the battlefield tapped under your control and attach ~ to it.",
+					"span": { "start": 37, "end": 277 }
+				},
+				{
+					"kind": "triggered",
+					"trigger": {
+						"event": "zoneChange",
+						"filter": {
+							"object": "self",
+							"from": "battlefield"
+						}
+					},
+					"targets": [],
+					"effect": [
+						{
+							"verb": "sacrifice",
+							"subject": {
+								"k": "all",
+								"filter": {
+									"controller": "any",
+									"zone": "battlefield",
+									"attachedToRef": "reanimatedBySelf"
+								}
+							},
+							"span": { "start": 313, "end": 357 }
+						}
+					],
+					"text": "When ~ leaves the battlefield, that creature's controller sacrifices it.",
+					"span": { "start": 278, "end": 357 }
+				},
+				{
+					"kind": "static",
+					"static": {
+						"k": "continuous",
+						"layer": "7c",
+						"affected": "attachedTo",
+						"mod": {
+							"k": "pt",
+							"power": { "k": "const", "n": 1 },
+							"toughness": { "k": "const", "n": 1 }
+						}
+					},
+					"span": { "start": 358, "end": 441 }
+				},
+				{
+					"kind": "static",
+					"static": {
+						"k": "restriction",
+						"affected": "attachedTo",
+						"restriction": "doesntUntap"
+					},
+					"span": { "start": 358, "end": 441 }
+				},
+				{
+					"kind": "triggered",
+					"trigger": {
+						"event": "phaseBegin",
+						"filter": {
+							"phase": "upkeep",
+							"enchantedControllerUpkeep": true,
+							"attachedFilter": {
+								"types": ["Creature"]
+							}
+						},
+						"scope": "each_turn"
+					},
+					"targets": [],
+					"effect": [
+						{
+							"verb": "payCost",
+							"subject": { "k": "none" },
+							"optional": {
+								"chooser": { "k": "eventPlayer" },
+								"cost": [{ "k": "mana", "cost": "{1}{B}" }],
+								"mode": "doIfPaid"
+							},
+							"span": { "start": 509, "end": 535 }
+						},
+						{
+							"verb": "untap",
+							"subject": { "k": "eventObject" },
+							"span": { "start": 558, "end": 577 },
+							"ifPrecedingAccepted": 0
+						}
+					],
+					"text": "At the beginning of the upkeep of enchanted creature's controller, that player may pay {1}{B}. If the player does, untap that creature.",
+					"span": { "start": 442, "end": 577 }
+				}
+			]
+		}
+	]
+}

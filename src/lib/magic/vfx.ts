@@ -1,4 +1,177 @@
-import type { VfxEvent } from './types.ts';
+import type { GameState, TargetRef, VfxEvent } from './types.ts';
+
+export interface ArenaArrowBuildParams {
+	gameState: GameState;
+	isMyTurn: boolean;
+	draftAttackers: Record<string, string>;
+	draftAttackerWalkers: Record<string, string | null>;
+	draftBlockers: Record<string, string>;
+	selectedBlockerId: string | null;
+	focusedInstanceId: string | null;
+	targetingSession: {
+		instanceId: string;
+		selectedTargets: TargetRef[];
+		cursorLabel: string;
+	} | null;
+	mousePos: { x: number; y: number };
+	viewportWidth: number;
+	viewportHeight: number;
+}
+
+function pushArrowIfVisible(
+	list: ArrowLine[],
+	id: string,
+	fromId: string,
+	toId: string,
+	kind: ArrowLine['kind']
+): void {
+	const p1 = getElementCenterByGameId(fromId);
+	const p2 = getElementCenterByGameId(toId);
+	if (p1 && p2) list.push({ id, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, kind });
+}
+
+export function buildArenaArrowLines(params: ArenaArrowBuildParams): ArrowLine[] {
+	const {
+		gameState,
+		isMyTurn,
+		draftAttackers,
+		draftAttackerWalkers,
+		draftBlockers,
+		selectedBlockerId,
+		focusedInstanceId,
+		targetingSession,
+		mousePos,
+		viewportWidth,
+		viewportHeight
+	} = params;
+	const next: ArrowLine[] = [];
+
+	if (gameState.combat.active) {
+		for (const atk of gameState.combat.attackers) {
+			pushArrowIfVisible(
+				next,
+				`atk_${atk.attackerInstanceId}`,
+				atk.attackerInstanceId,
+				atk.defenderPlaneswalkerId || atk.defenderPlayerId,
+				'attack'
+			);
+			for (const bId of atk.blockerInstanceIds) {
+				pushArrowIfVisible(
+					next,
+					`blk_${bId}_${atk.attackerInstanceId}`,
+					bId,
+					atk.attackerInstanceId,
+					'block'
+				);
+			}
+		}
+	}
+
+	if (gameState.phase === 'declare_attackers' && isMyTurn) {
+		for (const [atkId, defId] of Object.entries(draftAttackers)) {
+			pushArrowIfVisible(
+				next,
+				`draft_atk_${atkId}`,
+				atkId,
+				draftAttackerWalkers[atkId] || defId,
+				'attack'
+			);
+		}
+	}
+
+	if (gameState.phase === 'declare_blockers') {
+		for (const [blkId, atkId] of Object.entries(draftBlockers)) {
+			pushArrowIfVisible(next, `draft_blk_${blkId}`, blkId, atkId, 'block');
+		}
+		if (selectedBlockerId) {
+			const blkSrc = getElementCenterByGameId(selectedBlockerId);
+			if (blkSrc) {
+				next.push({
+					id: 'cursor_blocker',
+					x1: blkSrc.x,
+					y1: blkSrc.y,
+					x2: mousePos.x,
+					y2: mousePos.y,
+					kind: 'block'
+				});
+			}
+		}
+	}
+
+	if (focusedInstanceId) {
+		for (const p of gameState.players) {
+			for (const c of p.battlefield) {
+				if (!c.attachedToId || c.phasedOut) continue;
+				if (focusedInstanceId === c.instanceId || focusedInstanceId === c.attachedToId) {
+					pushArrowIfVisible(
+						next,
+						`att_${c.instanceId}_${c.attachedToId}`,
+						c.instanceId,
+						c.attachedToId,
+						'attachment'
+					);
+				}
+			}
+		}
+	}
+
+	for (const item of gameState.stack) {
+		for (const t of item.targets) {
+			pushArrowIfVisible(next, `stk_t_${item.id}_${t.id}`, item.id, t.id, 'target');
+		}
+	}
+
+	if (targetingSession) {
+		const src = getElementCenterByGameId(targetingSession.instanceId) || {
+			x: viewportWidth * 0.5,
+			y: viewportHeight * 0.85
+		};
+		for (const selT of targetingSession.selectedTargets) {
+			const tPos = getElementCenterByGameId(selT.id);
+			if (tPos) {
+				next.push({
+					id: `sel_t_${selT.id}`,
+					x1: src.x,
+					y1: src.y,
+					x2: tPos.x,
+					y2: tPos.y,
+					kind: 'target'
+				});
+			}
+		}
+		next.push({
+			id: 'cursor_target',
+			x1: src.x,
+			y1: src.y,
+			x2: mousePos.x,
+			y2: mousePos.y,
+			kind: 'active_cursor',
+			label: targetingSession.cursorLabel
+		});
+	}
+
+	return next;
+}
+
+export function areArrowListsEqual(a: ArrowLine[], b: ArrowLine[]): boolean {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) {
+		const x = a[i];
+		const y = b[i];
+		if (
+			x.id !== y.id ||
+			x.x1 !== y.x1 ||
+			x.y1 !== y.y1 ||
+			x.x2 !== y.x2 ||
+			x.y2 !== y.y2 ||
+			x.kind !== y.kind ||
+			x.label !== y.label
+		) {
+			return false;
+		}
+	}
+	return true;
+}
 
 export interface VfxParticle {
 	x: number;
@@ -66,12 +239,17 @@ export class ArenaVfxController {
 	seenEventIds = new Set<string>();
 	screenShake = 0;
 
+	ingestEvents(events: VfxEvent[]): boolean {
+		return this.processEvents(events);
+	}
+
 	processEvents(events: VfxEvent[]): boolean {
 		let triggeredShake = false;
 		const W = typeof window !== 'undefined' ? window.innerWidth : 1280;
 		const H = typeof window !== 'undefined' ? window.innerHeight : 720;
 
 		let phaseBannerOffset = 0;
+		let tokenBannerOffset = 0;
 		for (const ev of events) {
 			if (this.seenEventIds.has(ev.id)) continue;
 			this.seenEventIds.add(ev.id);
@@ -117,6 +295,39 @@ export class ArenaVfxController {
 				}
 				case 'stack_resolve': {
 					this.spawnBurst(targetPos.x, targetPos.y, 24, ['#a9dc76', '#ffd866', '#78dce8']);
+					break;
+				}
+				case 'attack_declare': {
+					this.spawnBurst(targetPos.x, targetPos.y, 30, ['#ff6188', '#fc9867', '#ffd866']);
+					this.addBanner(
+						targetPos.x,
+						targetPos.y - 16,
+						ev.label || (ev.amount ? `${ev.amount} Attacker(s)` : 'ATTACK!'),
+						'#ff6188'
+					);
+					break;
+				}
+				case 'block_declare': {
+					this.spawnBurst(targetPos.x, targetPos.y, 26, ['#78dce8', '#ab9df2', '#fcfcfa']);
+					if (ev.label || ev.amount) {
+						this.addBanner(
+							targetPos.x,
+							targetPos.y - 16,
+							ev.label || `${ev.amount} Blocker(s)`,
+							'#78dce8'
+						);
+					}
+					break;
+				}
+				case 'token_create': {
+					this.spawnBurst(targetPos.x, targetPos.y, 24, ['#a9dc76', '#ffd866', '#78dce8']);
+					this.addBanner(
+						targetPos.x,
+						targetPos.y - 14 + tokenBannerOffset,
+						ev.label ? `+Token: ${ev.label}` : '+Token',
+						'#a9dc76'
+					);
+					tokenBannerOffset = (tokenBannerOffset + 22) % 88;
 					break;
 				}
 				case 'damage': {

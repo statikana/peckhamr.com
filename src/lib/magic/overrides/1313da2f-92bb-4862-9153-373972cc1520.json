@@ -1,0 +1,77 @@
+{
+  "oracleId": "1313da2f-92bb-4862-9153-373972cc1520",
+  "cardName": "Descent into Avernus",
+  "expectedTextHash": "383f70b9",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Upkeep trigger places 2 descent counters, then each player creates X Treasures and takes X damage.",
+  "faces": [
+    {
+      "name": "Descent into Avernus",
+      "characteristics": {
+        "manaCost": "{2}{R}",
+        "types": ["Enchantment"],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": ["R"]
+      },
+      "abilities": [
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "phaseBegin",
+            "scope": "controller_turn",
+            "filter": { "phase": "upkeep" }
+          },
+          "targets": [],
+          "effect": [
+            {
+              "verb": "putCounters",
+              "subject": { "k": "self" },
+              "amount": { "k": "const", "n": 2 },
+              "params": { "counter": "descent" },
+              "span": { "start": 32, "end": 75 }
+            },
+            {
+              "verb": "createToken",
+              "subject": {
+                "k": "player",
+                "filter": { "relation": "each_player" }
+              },
+              "amount": {
+                "k": "countersOn",
+                "counter": "descent",
+                "of": { "k": "self" }
+              },
+              "params": {
+                "token": {
+                  "name": "Treasure",
+                  "power": 0,
+                  "toughness": 0,
+                  "colors": [],
+                  "typeLine": "Token Artifact — Treasure",
+                  "keywords": []
+                }
+              },
+              "span": { "start": 82, "end": 120 }
+            },
+            {
+              "verb": "damage",
+              "subject": {
+                "k": "player",
+                "filter": { "relation": "each_player" }
+              },
+              "amount": {
+                "k": "countersOn",
+                "counter": "descent",
+                "of": { "k": "self" }
+              },
+              "span": { "start": 125, "end": 236 }
+            }
+          ],
+          "text": "At the beginning of your upkeep, put two descent counters on ~. Then each player creates X Treasure tokens and ~ deals X damage to each player, where X is the number of descent counters on ~.",
+          "span": { "start": 0, "end": 236 }
+        }
+      ]
+    }
+  ]
+}

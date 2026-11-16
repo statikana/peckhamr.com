@@ -1,0 +1,2079 @@
+{
+	"cards": [
+		{
+			"id": "40eee689-2514-421a-8056-eb7668be66ff",
+			"oracleId": "eaa9baac-72f2-4bde-9146-860878d9860b",
+			"layout": "normal",
+			"name": "Abuelo, Ancestral Echo",
+			"manaCost": "{1}{W}{U}",
+			"cmc": 3,
+			"typeLine": "Legendary Creature — Spirit",
+			"oracleText": "Flying, ward {2}\n{1}{W}{U}: Exile another target creature or artifact you control. Return it to the battlefield under its owner's control at the beginning of the next end step.",
+			"colors": [
+				"U",
+				"W"
+			],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [
+				"Flying",
+				"Ward"
+			],
+			"power": "2",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/4/0/40eee689-2514-421a-8056-eb7668be66ff.jpg?1783913735",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/4/0/40eee689-2514-421a-8056-eb7668be66ff.jpg?1783913735",
+			"rarity": "rare",
+			"setCode": "lci",
+			"collectorNumber": "219",
+			"legalCommander": true,
+			"canBeCommander": true,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "e35e614c-51a9-4d5c-b7fa-1a0a87108785",
+			"oracleId": "53c730c6-2f8c-4af8-b400-b9d573a71e60",
+			"layout": "normal",
+			"name": "Adaptive Automaton",
+			"manaCost": "{3}",
+			"cmc": 3,
+			"typeLine": "Artifact Creature — Construct",
+			"oracleText": "As this creature enters, choose a creature type.\nThis creature is the chosen type in addition to its other types.\nOther creatures you control of the chosen type get +1/+1.",
+			"colors": [],
+			"colorIdentity": [],
+			"keywords": [],
+			"power": "2",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/e/3/e35e614c-51a9-4d5c-b7fa-1a0a87108785.jpg?1783908889",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/e/3/e35e614c-51a9-4d5c-b7fa-1a0a87108785.jpg?1783908889",
+			"rarity": "rare",
+			"setCode": "fdn",
+			"collectorNumber": "723",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "d5859a42-5a82-47db-9f1d-ffe3f2b61a02",
+			"oracleId": "fb220f46-f8b8-4804-baa4-e7d50b4871f7",
+			"layout": "normal",
+			"name": "Aether Channeler",
+			"manaCost": "{2}{U}",
+			"cmc": 3,
+			"typeLine": "Creature — Human Wizard",
+			"oracleText": "When this creature enters, choose one —\n• Create a 1/1 white Bird creature token with flying.\n• Return another target nonland permanent to its owner's hand.\n• Draw a card.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [],
+			"power": "2",
+			"toughness": "1",
+			"imageUrl": "https://cards.scryfall.io/normal/front/d/5/d5859a42-5a82-47db-9f1d-ffe3f2b61a02.jpg?1783908779",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/d/5/d5859a42-5a82-47db-9f1d-ffe3f2b61a02.jpg?1783908779",
+			"rarity": "rare",
+			"setCode": "j25",
+			"collectorNumber": "283",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "aac088e2-dd80-42f2-b20d-4e7a6a419e63",
+			"oracleId": "a91a3266-cadd-47a0-9b20-160307f14c07",
+			"layout": "normal",
+			"name": "Archaeomancer",
+			"manaCost": "{2}{U}{U}",
+			"cmc": 4,
+			"typeLine": "Creature — Human Wizard",
+			"oracleText": "When this creature enters, return target instant or sorcery card from your graveyard to your hand.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [],
+			"power": "1",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/a/a/aac088e2-dd80-42f2-b20d-4e7a6a419e63.jpg?1783908780",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/a/a/aac088e2-dd80-42f2-b20d-4e7a6a419e63.jpg?1783908780",
+			"rarity": "common",
+			"setCode": "j25",
+			"collectorNumber": "285",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "af690536-b0bc-4d85-8bb8-f6856b9f927b",
+			"oracleId": "e018773f-95b3-49a3-9674-6f04ddef2092",
+			"layout": "normal",
+			"name": "Azorius Signet",
+			"manaCost": "{2}",
+			"cmc": 2,
+			"typeLine": "Artifact",
+			"oracleText": "{1}, {T}: Add {W}{U}.",
+			"colors": [],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/a/f/af690536-b0bc-4d85-8bb8-f6856b9f927b.jpg?1789599829",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/a/f/af690536-b0bc-4d85-8bb8-f6856b9f927b.jpg?1789599829",
+			"rarity": "uncommon",
+			"setCode": "frc",
+			"collectorNumber": "53",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "a14c16c0-4053-46b0-8fa6-be8b4a7a1c8a",
+			"oracleId": "8c220dbd-6572-4715-aae6-dd09a4252d68",
+			"layout": "normal",
+			"name": "Banner of Kinship",
+			"manaCost": "{5}",
+			"cmc": 5,
+			"typeLine": "Artifact",
+			"oracleText": "As this artifact enters, choose a creature type. This artifact enters with a fellowship counter on it for each creature you control of the chosen type.\nCreatures you control of the chosen type get +1/+1 for each fellowship counter on this artifact.",
+			"colors": [],
+			"colorIdentity": [],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/a/1/a14c16c0-4053-46b0-8fa6-be8b4a7a1c8a.jpg?1783909089",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/a/1/a14c16c0-4053-46b0-8fa6-be8b4a7a1c8a.jpg?1783909089",
+			"rarity": "rare",
+			"setCode": "fdn",
+			"collectorNumber": "127",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "0ac3fb08-741a-49e5-9fae-b26819677d24",
+			"oracleId": "fcb0c7db-bd07-4c25-b7f8-b6c207e4f6be",
+			"layout": "normal",
+			"name": "Brago, King Eternal",
+			"manaCost": "{2}{W}{U}",
+			"cmc": 4,
+			"typeLine": "Legendary Creature — Spirit Noble",
+			"oracleText": "Flying\nWhenever Brago deals combat damage to a player, exile any number of target nonland permanents you control, then return those cards to the battlefield under their owner's control.",
+			"colors": [
+				"U",
+				"W"
+			],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [
+				"Flying"
+			],
+			"power": "2",
+			"toughness": "4",
+			"imageUrl": "https://cards.scryfall.io/normal/front/0/a/0ac3fb08-741a-49e5-9fae-b26819677d24.jpg?1783928307",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/0/a/0ac3fb08-741a-49e5-9fae-b26819677d24.jpg?1783928307",
+			"rarity": "rare",
+			"setCode": "khc",
+			"collectorNumber": "82",
+			"legalCommander": true,
+			"canBeCommander": true,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "03aff125-8962-4a0a-a2b4-e5d693b75400",
+			"oracleId": "adc1f3b4-cce7-42c9-a208-dbab1d1924f5",
+			"layout": "normal",
+			"name": "Cloud of Faeries",
+			"manaCost": "{1}{U}",
+			"cmc": 2,
+			"typeLine": "Creature — Faerie",
+			"oracleText": "Flying\nWhen this creature enters, untap up to two lands.\nCycling {2} ({2}, Discard this card: Draw a card.)",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [
+				"Flying",
+				"Cycling"
+			],
+			"power": "1",
+			"toughness": "1",
+			"imageUrl": "https://cards.scryfall.io/normal/front/0/3/03aff125-8962-4a0a-a2b4-e5d693b75400.jpg?1783917172",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/0/3/03aff125-8962-4a0a-a2b4-e5d693b75400.jpg?1783917172",
+			"rarity": "common",
+			"setCode": "moc",
+			"collectorNumber": "219",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "a9c966ab-0d92-4fa7-8a91-1f77089d8fc7",
+			"oracleId": "f84d1291-1f82-4b67-a26e-b79624b4ce1d",
+			"layout": "normal",
+			"name": "Cloudblazer",
+			"manaCost": "{3}{W}{U}",
+			"cmc": 5,
+			"typeLine": "Creature — Human Scout",
+			"oracleText": "Flying\nWhen this creature enters, you gain 2 life and draw two cards.",
+			"colors": [
+				"U",
+				"W"
+			],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [
+				"Flying"
+			],
+			"power": "2",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/a/9/a9c966ab-0d92-4fa7-8a91-1f77089d8fc7.jpg?1783908913",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/a/9/a9c966ab-0d92-4fa7-8a91-1f77089d8fc7.jpg?1783908913",
+			"rarity": "uncommon",
+			"setCode": "fdn",
+			"collectorNumber": "653",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "6dc0c976-26d2-40c9-a571-c370e9139d1d",
+			"oracleId": "6879f5ce-7a1b-4606-bad1-885779b0d456",
+			"layout": "normal",
+			"name": "Cloudshift",
+			"manaCost": "{W}",
+			"cmc": 1,
+			"typeLine": "Instant",
+			"oracleText": "Exile target creature you control, then return that card to the battlefield under your control.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/6/d/6dc0c976-26d2-40c9-a571-c370e9139d1d.jpg?1783904809",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/6/d/6dc0c976-26d2-40c9-a571-c370e9139d1d.jpg?1783904809",
+			"rarity": "common",
+			"setCode": "tle",
+			"collectorNumber": "152",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "af2115e4-009e-4432-99bb-05e844bc18b6",
+			"oracleId": "cd1eda60-53e4-44d0-9b2c-7a57395e291f",
+			"layout": "normal",
+			"name": "Conjurer's Closet",
+			"manaCost": "{5}",
+			"cmc": 5,
+			"typeLine": "Artifact",
+			"oracleText": "At the beginning of your end step, you may exile target creature you control, then return that card to the battlefield under your control.",
+			"colors": [],
+			"colorIdentity": [],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/a/f/af2115e4-009e-4432-99bb-05e844bc18b6.jpg?1783908066",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/a/f/af2115e4-009e-4432-99bb-05e844bc18b6.jpg?1783908066",
+			"rarity": "rare",
+			"setCode": "inr",
+			"collectorNumber": "259",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "4f0791b5-fdb4-4378-8fd3-7e7367ffc05c",
+			"oracleId": "ebef6d84-b724-4a84-bcde-8eb6dc06717d",
+			"layout": "normal",
+			"name": "Deadeye Navigator",
+			"manaCost": "{4}{U}{U}",
+			"cmc": 6,
+			"typeLine": "Creature — Spirit",
+			"oracleText": "Soulbond (You may pair this creature with another unpaired creature when either enters. They remain paired for as long as you control both of them.)\nAs long as Deadeye Navigator is paired with another creature, each of those creatures has \"{1}{U}: Exile this creature, then return it to the battlefield under your control.\"",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [
+				"Soulbond"
+			],
+			"power": "5",
+			"toughness": "5",
+			"imageUrl": "https://cards.scryfall.io/normal/front/4/f/4f0791b5-fdb4-4378-8fd3-7e7367ffc05c.jpg?1783908166",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/4/f/4f0791b5-fdb4-4378-8fd3-7e7367ffc05c.jpg?1783908166",
+			"rarity": "rare",
+			"setCode": "inr",
+			"collectorNumber": "59",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "f1d7e8c9-0936-47eb-8996-309e7a7edcad",
+			"oracleId": "ac6c5852-71c7-4f19-8c87-ccb345052862",
+			"layout": "normal",
+			"name": "Distant Melody",
+			"manaCost": "{3}{U}",
+			"cmc": 4,
+			"typeLine": "Sorcery",
+			"oracleText": "Choose a creature type. Draw a card for each permanent you control of that type.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/f/1/f1d7e8c9-0936-47eb-8996-309e7a7edcad.jpg?1783911526",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/f/1/f1d7e8c9-0936-47eb-8996-309e7a7edcad.jpg?1783911526",
+			"rarity": "common",
+			"setCode": "ecc",
+			"collectorNumber": "45",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "6402133e-eed1-4a46-9667-8b7a310362c1",
+			"oracleId": "cf58e309-00e8-438e-813e-2e1c1002db23",
+			"layout": "normal",
+			"name": "Dour Port-Mage",
+			"manaCost": "{1}{U}",
+			"cmc": 2,
+			"typeLine": "Creature — Frog Wizard",
+			"oracleText": "Whenever one or more other creatures you control leave the battlefield without dying, draw a card.\n{1}{U}, {T}: Return another target creature you control to its owner's hand.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [],
+			"power": "1",
+			"toughness": "3",
+			"imageUrl": "https://cards.scryfall.io/normal/front/6/4/6402133e-eed1-4a46-9667-8b7a310362c1.jpg?1783910852",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/6/4/6402133e-eed1-4a46-9667-8b7a310362c1.jpg?1783910852",
+			"rarity": "rare",
+			"setCode": "blb",
+			"collectorNumber": "47",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "5d6b5054-2224-4f68-9d82-3ed17c5dacc4",
+			"oracleId": "1b388371-f9ef-45b4-82a3-ca20a8cd7807",
+			"layout": "normal",
+			"name": "Dovin's Veto",
+			"manaCost": "{W}{U}",
+			"cmc": 2,
+			"typeLine": "Instant",
+			"oracleText": "This spell can't be countered.\nCounter target noncreature spell.",
+			"colors": [
+				"U",
+				"W"
+			],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/5/d/5d6b5054-2224-4f68-9d82-3ed17c5dacc4.jpg?1783933400",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/5/d/5d6b5054-2224-4f68-9d82-3ed17c5dacc4.jpg?1783933400",
+			"rarity": "uncommon",
+			"setCode": "war",
+			"collectorNumber": "193",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "c88e7e22-6300-4871-9af8-923eedfe4b32",
+			"oracleId": "c33604ac-636a-43ad-9efe-8d7b3a28bf81",
+			"layout": "normal",
+			"name": "Drogskol Captain",
+			"manaCost": "{1}{W}{U}",
+			"cmc": 3,
+			"typeLine": "Creature — Spirit Soldier",
+			"oracleText": "Flying\nOther Spirit creatures you control get +1/+1 and have hexproof. (They can't be the targets of spells or abilities your opponents control.)",
+			"colors": [
+				"U",
+				"W"
+			],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [
+				"Flying"
+			],
+			"power": "2",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/c/8/c88e7e22-6300-4871-9af8-923eedfe4b32.jpg?1783924946",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/c/8/c88e7e22-6300-4871-9af8-923eedfe4b32.jpg?1783924946",
+			"rarity": "uncommon",
+			"setCode": "voc",
+			"collectorNumber": "154",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "c86bdb28-9b0c-426d-b603-cc10cd301cc6",
+			"oracleId": "6d174448-52f5-4439-9586-3abc5af940d7",
+			"layout": "normal",
+			"name": "Drogskol Reinforcements",
+			"manaCost": "{3}{W}",
+			"cmc": 4,
+			"typeLine": "Creature — Spirit Soldier",
+			"oracleText": "Melee (Whenever this creature attacks, it gets +1/+1 until end of turn for each opponent you attacked this combat.)\nOther Spirits you control have melee.\nPrevent all noncombat damage that would be dealt to Spirits you control.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [
+				"Melee"
+			],
+			"power": "2",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/c/8/c86bdb28-9b0c-426d-b603-cc10cd301cc6.jpg?1783925010",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/c/8/c86bdb28-9b0c-426d-b603-cc10cd301cc6.jpg?1783925010",
+			"rarity": "rare",
+			"setCode": "voc",
+			"collectorNumber": "5",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "4ba9f15f-00d2-4797-9228-91b320e85705",
+			"oracleId": "0634091a-a74c-4cea-b6d1-7324a725554a",
+			"layout": "normal",
+			"name": "Eerie Interlude",
+			"manaCost": "{2}{W}",
+			"cmc": 3,
+			"typeLine": "Instant",
+			"oracleText": "Exile any number of target creatures you control. Return those cards to the battlefield under their owner's control at the beginning of the next end step.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/4/b/4ba9f15f-00d2-4797-9228-91b320e85705.jpg?1783928332",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/4/b/4ba9f15f-00d2-4797-9228-91b320e85705.jpg?1783928332",
+			"rarity": "rare",
+			"setCode": "khc",
+			"collectorNumber": "22",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "44dcab01-1d13-4dfc-ae2f-fbaa3dd35087",
+			"oracleId": "5ade11c0-41dd-4b6a-9f5b-c5903a3a0d7f",
+			"layout": "normal",
+			"name": "Elesh Norn, Mother of Machines",
+			"manaCost": "{4}{W}",
+			"cmc": 5,
+			"typeLine": "Legendary Creature — Phyrexian Praetor",
+			"oracleText": "Vigilance\nIf a permanent entering causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time.\nPermanents entering don't cause abilities of permanents your opponents control to trigger.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [
+				"Vigilance"
+			],
+			"power": "4",
+			"toughness": "7",
+			"imageUrl": "https://cards.scryfall.io/normal/front/4/4/44dcab01-1d13-4dfc-ae2f-fbaa3dd35087.jpg?1783918082",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/4/4/44dcab01-1d13-4dfc-ae2f-fbaa3dd35087.jpg?1783918082",
+			"rarity": "mythic",
+			"setCode": "one",
+			"collectorNumber": "10",
+			"legalCommander": true,
+			"canBeCommander": true,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "577e99a7-4a55-4314-8f08-2ae0c33b85c7",
+			"oracleId": "270d14b2-07bc-46bc-918f-658102265ccf",
+			"layout": "normal",
+			"name": "Empyrean Eagle",
+			"manaCost": "{1}{W}{U}",
+			"cmc": 3,
+			"typeLine": "Creature — Bird Spirit",
+			"oracleText": "Flying\nOther creatures you control with flying get +1/+1.",
+			"colors": [
+				"U",
+				"W"
+			],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [
+				"Flying"
+			],
+			"power": "2",
+			"toughness": "3",
+			"imageUrl": "https://cards.scryfall.io/normal/front/5/7/577e99a7-4a55-4314-8f08-2ae0c33b85c7.jpg?1783909053",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/5/7/577e99a7-4a55-4314-8f08-2ae0c33b85c7.jpg?1783909053",
+			"rarity": "uncommon",
+			"setCode": "fdn",
+			"collectorNumber": "239",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "2da5f3f8-5eef-498f-ba2c-2f3fbc3745aa",
+			"oracleId": "0fd57894-b917-41c8-a394-360d1d31b236",
+			"layout": "normal",
+			"name": "Ephemerate",
+			"manaCost": "{W}",
+			"cmc": 1,
+			"typeLine": "Instant",
+			"oracleText": "Exile target creature you control, then return it to the battlefield under its owner's control.\nRebound (If you cast this spell from your hand, exile it as it resolves. At the beginning of your next upkeep, you may cast this card from exile without paying its mana cost.)",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [
+				"Rebound"
+			],
+			"imageUrl": "https://cards.scryfall.io/normal/front/2/d/2da5f3f8-5eef-498f-ba2c-2f3fbc3745aa.jpg?1783933164",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/2/d/2da5f3f8-5eef-498f-ba2c-2f3fbc3745aa.jpg?1783933164",
+			"rarity": "common",
+			"setCode": "mh1",
+			"collectorNumber": "7",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "c94b37df-aaa5-4981-be3b-c934a7971123",
+			"oracleId": "64824ae5-efab-4b55-9d3c-b9c690bad857",
+			"layout": "normal",
+			"name": "Essence Flux",
+			"manaCost": "{U}",
+			"cmc": 1,
+			"typeLine": "Instant",
+			"oracleText": "Exile target creature you control, then return that card to the battlefield under its owner's control. If it's a Spirit, put a +1/+1 counter on it.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/c/9/c94b37df-aaa5-4981-be3b-c934a7971123.jpg?1783908166",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/c/9/c94b37df-aaa5-4981-be3b-c934a7971123.jpg?1783908166",
+			"rarity": "common",
+			"setCode": "inr",
+			"collectorNumber": "64",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "c675428b-2dc4-408d-9632-81c1a700090f",
+			"oracleId": "24038629-7c12-45ef-8ec4-0d2bb3e2265c",
+			"layout": "normal",
+			"name": "Ethereal Investigator",
+			"manaCost": "{3}{U}",
+			"cmc": 4,
+			"typeLine": "Creature — Spirit",
+			"oracleText": "Flying\nWhen this creature enters, investigate X times, where X is the number of opponents you have. (To investigate, create a Clue token. It's an artifact with \"{2}, Sacrifice this token: Draw a card.\")\nWhenever you draw your second card each turn, create a 1/1 white Spirit creature token with flying.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [
+				"Flying",
+				"Investigate"
+			],
+			"power": "2",
+			"toughness": "3",
+			"imageUrl": "https://cards.scryfall.io/normal/front/c/6/c675428b-2dc4-408d-9632-81c1a700090f.jpg?1783913017",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/c/6/c675428b-2dc4-408d-9632-81c1a700090f.jpg?1783913017",
+			"rarity": "rare",
+			"setCode": "mkc",
+			"collectorNumber": "105",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "44bdbed8-5d21-4bf5-8a32-9623b1139c85",
+			"oracleId": "33869ba6-13e5-4e48-8963-92f7965648fb",
+			"layout": "normal",
+			"name": "Felidar Guardian",
+			"manaCost": "{3}{W}",
+			"cmc": 4,
+			"typeLine": "Creature — Cat Beast",
+			"oracleText": "When this creature enters, you may exile another target permanent you control, then return that card to the battlefield under its owner's control.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [],
+			"power": "1",
+			"toughness": "4",
+			"imageUrl": "https://cards.scryfall.io/normal/front/4/4/44bdbed8-5d21-4bf5-8a32-9623b1139c85.jpg?1783936780",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/4/4/44bdbed8-5d21-4bf5-8a32-9623b1139c85.jpg?1783936780",
+			"rarity": "uncommon",
+			"setCode": "aer",
+			"collectorNumber": "19",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "f6cccf30-2025-49bb-9b1e-240bbef03f27",
+			"oracleId": "b23a3d30-6b8e-4aad-890f-db0c3af43ace",
+			"layout": "normal",
+			"name": "Flickerwisp",
+			"manaCost": "{1}{W}{W}",
+			"cmc": 3,
+			"typeLine": "Creature — Elemental",
+			"oracleText": "Flying\nWhen this creature enters, exile another target permanent. Return that card to the battlefield under its owner's control at the beginning of the next end step.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [
+				"Flying"
+			],
+			"power": "3",
+			"toughness": "1",
+			"imageUrl": "https://cards.scryfall.io/normal/front/f/6/f6cccf30-2025-49bb-9b1e-240bbef03f27.jpg?1783921935",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/f/6/f6cccf30-2025-49bb-9b1e-240bbef03f27.jpg?1783921935",
+			"rarity": "uncommon",
+			"setCode": "2x2",
+			"collectorNumber": "11",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "2203b2cd-48e5-471a-85fe-dc81012e5d61",
+			"oracleId": "3cda958a-f777-433d-850e-a6c8f581db4e",
+			"layout": "normal",
+			"name": "Flowering of the White Tree",
+			"manaCost": "{W}{W}",
+			"cmc": 2,
+			"typeLine": "Legendary Enchantment",
+			"oracleText": "Legendary creatures you control get +2/+1 and have ward {1}.\nNonlegendary creatures you control get +1/+1.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/2/2/2203b2cd-48e5-471a-85fe-dc81012e5d61.jpg?1783916332",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/2/2/2203b2cd-48e5-471a-85fe-dc81012e5d61.jpg?1783916332",
+			"rarity": "rare",
+			"setCode": "ltr",
+			"collectorNumber": "15",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "dc143ba3-2a58-4980-9fa0-a05a9e9ed082",
+			"oracleId": "ad0070db-6454-41cb-861f-8f5b8fc2a3b8",
+			"layout": "normal",
+			"name": "Ghostly Flicker",
+			"manaCost": "{2}{U}",
+			"cmc": 3,
+			"typeLine": "Instant",
+			"oracleText": "Exile two target artifacts, creatures, and/or lands you control, then return those cards to the battlefield under your control.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/d/c/dc143ba3-2a58-4980-9fa0-a05a9e9ed082.jpg?1783915697",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/d/c/dc143ba3-2a58-4980-9fa0-a05a9e9ed082.jpg?1783915697",
+			"rarity": "common",
+			"setCode": "cmm",
+			"collectorNumber": "98",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "d306154a-7adb-4b35-b0cf-9c8d2fc1f72f",
+			"oracleId": "027dd013-baa7-4111-b3c9-f4d1414e9c45",
+			"layout": "normal",
+			"name": "Glacial Fortress",
+			"manaCost": "",
+			"cmc": 0,
+			"typeLine": "Land",
+			"oracleText": "This land enters tapped unless you control a Plains or an Island.\n{T}: Add {W} or {U}.",
+			"colors": [],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/d/3/d306154a-7adb-4b35-b0cf-9c8d2fc1f72f.jpg?1793021313",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/d/3/d306154a-7adb-4b35-b0cf-9c8d2fc1f72f.jpg?1793021313",
+			"rarity": "rare",
+			"setCode": "trc",
+			"collectorNumber": "535",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "037739cd-e05c-4aae-9123-f924e420010c",
+			"oracleId": "8e04a5e0-e22c-430b-a39a-c9f38e16ea86",
+			"layout": "normal",
+			"name": "Guardian of Faith",
+			"manaCost": "{1}{W}{W}",
+			"cmc": 3,
+			"typeLine": "Creature — Spirit Knight",
+			"oracleText": "Flash\nVigilance\nWhen this creature enters, any number of other target creatures you control phase out. (Treat them and anything attached to them as though they don't exist until their controller's next turn.)",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [
+				"Vigilance",
+				"Flash"
+			],
+			"power": "3",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/0/3/037739cd-e05c-4aae-9123-f924e420010c.jpg?1783903808",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/0/3/037739cd-e05c-4aae-9123-f924e420010c.jpg?1783903808",
+			"rarity": "rare",
+			"setCode": "soc",
+			"collectorNumber": "148",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "7676deeb-b80d-49c9-b810-5ed0a68fa618",
+			"oracleId": "6ff4ff67-ad08-447f-a112-1a071c1474a4",
+			"layout": "normal",
+			"name": "Hanged Executioner",
+			"manaCost": "{2}{W}",
+			"cmc": 3,
+			"typeLine": "Creature — Spirit",
+			"oracleText": "Flying\nWhen this creature enters, create a 1/1 white Spirit creature token with flying.\n{3}{W}, Exile this creature: Exile target creature.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [
+				"Flying"
+			],
+			"power": "1",
+			"toughness": "1",
+			"imageUrl": "https://cards.scryfall.io/normal/front/7/6/7676deeb-b80d-49c9-b810-5ed0a68fa618.jpg?1783924973",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/7/6/7676deeb-b80d-49c9-b810-5ed0a68fa618.jpg?1783924973",
+			"rarity": "rare",
+			"setCode": "voc",
+			"collectorNumber": "89",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "b0193151-0f5f-457b-a6b2-08f66b53c9b2",
+			"oracleId": "e787ec12-ba0f-4a85-af6b-422423c90155",
+			"layout": "normal",
+			"name": "Haunted Library",
+			"manaCost": "{1}{W}",
+			"cmc": 2,
+			"typeLine": "Enchantment",
+			"oracleText": "Whenever a creature an opponent controls dies, you may pay {1}. If you do, create a 1/1 white Spirit creature token with flying.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/b/0/b0193151-0f5f-457b-a6b2-08f66b53c9b2.jpg?1783925008",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/b/0/b0193151-0f5f-457b-a6b2-08f66b53c9b2.jpg?1783925008",
+			"rarity": "rare",
+			"setCode": "voc",
+			"collectorNumber": "6",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "e8fcf84c-0c2e-42c4-b860-622227e3cde3",
+			"oracleId": "c02c5547-b9c9-4b2d-9d12-e87bfba8f2d2",
+			"layout": "normal",
+			"name": "Herald's Horn",
+			"manaCost": "{3}",
+			"cmc": 3,
+			"typeLine": "Artifact",
+			"oracleText": "As this artifact enters, choose a creature type.\nCreature spells you cast of the chosen type cost {1} less to cast.\nAt the beginning of your upkeep, look at the top card of your library. If it's a creature card of the chosen type, you may reveal it and put it into your hand.",
+			"colors": [],
+			"colorIdentity": [],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/e/8/e8fcf84c-0c2e-42c4-b860-622227e3cde3.jpg?1793197563",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/e/8/e8fcf84c-0c2e-42c4-b860-622227e3cde3.jpg?1793197563",
+			"rarity": "uncommon",
+			"setCode": "trc",
+			"collectorNumber": "493",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "b26d50dd-54a1-43ce-9884-3999f698d97b",
+			"oracleId": "8c31fec9-e4b3-4761-990e-7be38eb05604",
+			"layout": "normal",
+			"name": "Karmic Guide",
+			"manaCost": "{3}{W}{W}",
+			"cmc": 5,
+			"typeLine": "Creature — Angel Spirit",
+			"oracleText": "Flying, protection from black\nEcho {3}{W}{W} (At the beginning of your upkeep, if this came under your control since the beginning of your last upkeep, sacrifice it unless you pay its echo cost.)\nWhen this creature enters, return target creature card from your graveyard to the battlefield.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [
+				"Echo",
+				"Flying",
+				"Protection"
+			],
+			"power": "2",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/b/2/b26d50dd-54a1-43ce-9884-3999f698d97b.jpg?1783903811",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/b/2/b26d50dd-54a1-43ce-9884-3999f698d97b.jpg?1783903811",
+			"rarity": "rare",
+			"setCode": "soc",
+			"collectorNumber": "151",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "19bdedb2-768b-4adf-8193-917a10c8f729",
+			"oracleId": "005ee549-1bf5-478f-bc3f-3e791bd7eecf",
+			"layout": "normal",
+			"name": "Kindred Discovery",
+			"manaCost": "{3}{U}{U}",
+			"cmc": 5,
+			"typeLine": "Enchantment",
+			"oracleText": "As this enchantment enters, choose a creature type.\nWhenever a creature you control of the chosen type enters or attacks, draw a card.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/1/9/19bdedb2-768b-4adf-8193-917a10c8f729.jpg?1783903239",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/1/9/19bdedb2-768b-4adf-8193-917a10c8f729.jpg?1783903239",
+			"rarity": "rare",
+			"setCode": "msc",
+			"collectorNumber": "150",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "0d102241-4463-437f-b2bb-f574d9dbbd1e",
+			"oracleId": "3efe6ac8-f92e-4108-913b-077e41c0a841",
+			"layout": "normal",
+			"name": "Lae'zel's Acrobatics",
+			"manaCost": "{3}{W}",
+			"cmc": 4,
+			"typeLine": "Instant",
+			"oracleText": "Exile all nontoken creatures you control, then roll a d20.\n1—9 | Return those cards to the battlefield under their owner's control at the beginning of the next end step.\n10—20 | Return those cards to the battlefield under their owner's control, then exile them again. Return those cards to the battlefield under their owner's control at the beginning of the next end step.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/0/d/0d102241-4463-437f-b2bb-f574d9dbbd1e.jpg?1783922809",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/0/d/0d102241-4463-437f-b2bb-f574d9dbbd1e.jpg?1783922809",
+			"rarity": "rare",
+			"setCode": "clb",
+			"collectorNumber": "30",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "ca90d382-7e13-4637-a624-2a1b82abe56c",
+			"oracleId": "b3f16f34-d78c-4b61-821b-05fc6bd0da37",
+			"layout": "normal",
+			"name": "Moonshaker Cavalry",
+			"manaCost": "{5}{W}{W}{W}",
+			"cmc": 8,
+			"typeLine": "Creature — Spirit Knight",
+			"oracleText": "Flying\nWhen this creature enters, creatures you control gain flying and get +X/+X until end of turn, where X is the number of creatures you control.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [
+				"Flying"
+			],
+			"power": "6",
+			"toughness": "6",
+			"imageUrl": "https://cards.scryfall.io/normal/front/c/a/ca90d382-7e13-4637-a624-2a1b82abe56c.jpg?1783903824",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/c/a/ca90d382-7e13-4637-a624-2a1b82abe56c.jpg?1783903824",
+			"rarity": "mythic",
+			"setCode": "soc",
+			"collectorNumber": "110",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "3de308cc-14ac-407e-99e7-568572ecd0e7",
+			"oracleId": "24d0f5e7-0d9e-4b76-900e-a7274e80312d",
+			"layout": "normal",
+			"name": "Mulldrifter",
+			"manaCost": "{4}{U}",
+			"cmc": 5,
+			"typeLine": "Creature — Elemental",
+			"oracleText": "Flying\nWhen this creature enters, draw two cards.\nEvoke {2}{U} (You may cast this spell for its evoke cost. If you do, it's sacrificed when it enters.)",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [
+				"Flying",
+				"Evoke"
+			],
+			"power": "2",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/3/d/3de308cc-14ac-407e-99e7-568572ecd0e7.jpg?1783904564",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/3/d/3de308cc-14ac-407e-99e7-568572ecd0e7.jpg?1783904564",
+			"rarity": "uncommon",
+			"setCode": "ecc",
+			"collectorNumber": "67",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "51173564-cd0e-410f-82fc-3d071e6f4d17",
+			"oracleId": "cf336e4c-a0d3-43aa-ad23-b98effb2b751",
+			"layout": "normal",
+			"name": "Nebelgast Herald",
+			"manaCost": "{2}{U}",
+			"cmc": 3,
+			"typeLine": "Creature — Spirit",
+			"oracleText": "Flash\nFlying\nWhenever this creature or another Spirit you control enters, tap target creature an opponent controls.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [
+				"Flying",
+				"Flash"
+			],
+			"power": "2",
+			"toughness": "1",
+			"imageUrl": "https://cards.scryfall.io/normal/front/5/1/51173564-cd0e-410f-82fc-3d071e6f4d17.jpg?1783908159",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/5/1/51173564-cd0e-410f-82fc-3d071e6f4d17.jpg?1783908159",
+			"rarity": "uncommon",
+			"setCode": "inr",
+			"collectorNumber": "78",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "998d0cc8-ca2a-41c3-ab65-d05c26ab8278",
+			"oracleId": "76678885-3674-443d-b9a2-2a460cf6aac0",
+			"layout": "normal",
+			"name": "Panharmonicon",
+			"manaCost": "{4}",
+			"cmc": 4,
+			"typeLine": "Artifact",
+			"oracleText": "If an artifact or creature entering causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time.",
+			"colors": [],
+			"colorIdentity": [],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/9/9/998d0cc8-ca2a-41c3-ab65-d05c26ab8278.jpg?1783921789",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/9/9/998d0cc8-ca2a-41c3-ab65-d05c26ab8278.jpg?1783921789",
+			"rarity": "rare",
+			"setCode": "2x2",
+			"collectorNumber": "310",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "537ea7e7-e8e8-4736-bdd9-1085f1a7c259",
+			"oracleId": "4fb00dbe-1f82-4ba6-b18c-97e816d10d3a",
+			"layout": "normal",
+			"name": "Patchwork Banner",
+			"manaCost": "{3}",
+			"cmc": 3,
+			"typeLine": "Artifact",
+			"oracleText": "As this artifact enters, choose a creature type.\nCreatures you control of the chosen type get +1/+1.\n{T}: Add one mana of any color.",
+			"colors": [],
+			"colorIdentity": [],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/5/3/537ea7e7-e8e8-4736-bdd9-1085f1a7c259.jpg?1783903215",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/5/3/537ea7e7-e8e8-4736-bdd9-1085f1a7c259.jpg?1783903215",
+			"rarity": "uncommon",
+			"setCode": "msc",
+			"collectorNumber": "207",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "de2b0c63-c929-42ec-aada-dddb2a26550c",
+			"oracleId": "1f65c853-5262-4b75-b324-1fe0c165170d",
+			"layout": "normal",
+			"name": "Patrician Geist",
+			"manaCost": "{2}{U}",
+			"cmc": 3,
+			"typeLine": "Creature — Spirit Knight",
+			"oracleText": "Flying\nOther Spirits you control get +1/+1.\nSpells you cast from your graveyard cost {1} less to cast.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [
+				"Flying"
+			],
+			"power": "2",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/d/e/de2b0c63-c929-42ec-aada-dddb2a26550c.jpg?1783925634",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/d/e/de2b0c63-c929-42ec-aada-dddb2a26550c.jpg?1783925634",
+			"rarity": "rare",
+			"setCode": "mid",
+			"collectorNumber": "69",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "611c8fa2-b53f-483b-9efa-759ac59dc30f",
+			"oracleId": "0bd67481-6bd9-48d6-92bd-8933b5ea1eae",
+			"layout": "normal",
+			"name": "Peregrine Drake",
+			"manaCost": "{4}{U}",
+			"cmc": 5,
+			"typeLine": "Creature — Drake",
+			"oracleText": "Flying\nWhen this creature enters, untap up to five lands.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [
+				"Flying"
+			],
+			"power": "2",
+			"toughness": "3",
+			"imageUrl": "https://cards.scryfall.io/normal/front/6/1/611c8fa2-b53f-483b-9efa-759ac59dc30f.jpg?1783918487",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/6/1/611c8fa2-b53f-483b-9efa-759ac59dc30f.jpg?1783918487",
+			"rarity": "common",
+			"setCode": "dmr",
+			"collectorNumber": "65",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "709f6376-9a33-4900-a7ae-00767fb9f9bf",
+			"oracleId": "ee2ca311-7639-436d-8ecb-d2aad075f25f",
+			"layout": "normal",
+			"name": "Rattlechains",
+			"manaCost": "{1}{U}",
+			"cmc": 2,
+			"typeLine": "Creature — Spirit",
+			"oracleText": "Flash\nFlying\nWhen this creature enters, target Spirit gains hexproof until end of turn.\nYou may cast Spirit spells as though they had flash.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [
+				"Flying",
+				"Flash"
+			],
+			"power": "2",
+			"toughness": "1",
+			"imageUrl": "https://cards.scryfall.io/normal/front/7/0/709f6376-9a33-4900-a7ae-00767fb9f9bf.jpg?1783924962",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/7/0/709f6376-9a33-4900-a7ae-00767fb9f9bf.jpg?1783924962",
+			"rarity": "rare",
+			"setCode": "voc",
+			"collectorNumber": "110",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "9473fe01-83f6-4432-ab01-f7953d2ca904",
+			"oracleId": "5398362d-c45e-4d56-a622-8be1124730b9",
+			"layout": "normal",
+			"name": "Reflector Mage",
+			"manaCost": "{1}{W}{U}",
+			"cmc": 3,
+			"typeLine": "Creature — Human Wizard",
+			"oracleText": "When this creature enters, return target creature an opponent controls to its owner's hand. That creature's owner can't cast spells with the same name as that creature until your next turn.",
+			"colors": [
+				"U",
+				"W"
+			],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [],
+			"power": "2",
+			"toughness": "3",
+			"imageUrl": "https://cards.scryfall.io/normal/front/9/4/9473fe01-83f6-4432-ab01-f7953d2ca904.jpg?1783937896",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/9/4/9473fe01-83f6-4432-ab01-f7953d2ca904.jpg?1783937896",
+			"rarity": "uncommon",
+			"setCode": "ogw",
+			"collectorNumber": "157",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "f17f85d3-58e5-4128-90c5-98b524256af8",
+			"oracleId": "dfbd3afc-9905-4cff-a4f4-df08a4d0a7fa",
+			"layout": "normal",
+			"name": "Restoration Angel",
+			"manaCost": "{3}{W}",
+			"cmc": 4,
+			"typeLine": "Creature — Angel",
+			"oracleText": "Flash\nFlying\nWhen this creature enters, you may exile target non-Angel creature you control, then return that card to the battlefield under your control.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [
+				"Flying",
+				"Flash"
+			],
+			"power": "3",
+			"toughness": "4",
+			"imageUrl": "https://cards.scryfall.io/normal/front/f/1/f17f85d3-58e5-4128-90c5-98b524256af8.jpg?1783908175",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/f/1/f17f85d3-58e5-4128-90c5-98b524256af8.jpg?1783908175",
+			"rarity": "rare",
+			"setCode": "inr",
+			"collectorNumber": "38",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "44bfb0f7-18ca-4f6e-ba64-92120010456e",
+			"oracleId": "f3838ff1-5403-4f3f-8531-36029c13fcfc",
+			"layout": "normal",
+			"name": "Riptide Gearhulk",
+			"manaCost": "{1}{W}{W}{U}{U}",
+			"cmc": 5,
+			"typeLine": "Artifact Creature — Construct",
+			"oracleText": "Double strike\nProwess (Whenever you cast a noncreature spell, this creature gets +1/+1 until end of turn.)\nWhen this creature enters, for each opponent, put up to one target nonland permanent that player controls into its owner's library third from the top.",
+			"colors": [
+				"U",
+				"W"
+			],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [
+				"Prowess",
+				"Double strike"
+			],
+			"power": "2",
+			"toughness": "5",
+			"imageUrl": "https://cards.scryfall.io/normal/front/4/4/44bfb0f7-18ca-4f6e-ba64-92120010456e.jpg?1783907853",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/4/4/44bfb0f7-18ca-4f6e-ba64-92120010456e.jpg?1783907853",
+			"rarity": "mythic",
+			"setCode": "dft",
+			"collectorNumber": "219",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "9cd16dac-3bf9-4a71-a906-0cfbf98cdca5",
+			"oracleId": "71d785a9-ddc8-472e-a778-a551b444a4bd",
+			"layout": "normal",
+			"name": "Selfless Spirit",
+			"manaCost": "{1}{W}",
+			"cmc": 2,
+			"typeLine": "Creature — Spirit Cleric",
+			"oracleText": "Flying\nSacrifice this creature: Creatures you control gain indestructible until end of turn.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [
+				"Flying"
+			],
+			"power": "2",
+			"toughness": "1",
+			"imageUrl": "https://cards.scryfall.io/normal/front/9/c/9cd16dac-3bf9-4a71-a906-0cfbf98cdca5.jpg?1783903802",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/9/c/9cd16dac-3bf9-4a71-a906-0cfbf98cdca5.jpg?1783903802",
+			"rarity": "rare",
+			"setCode": "soc",
+			"collectorNumber": "167",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "e671de25-c47c-48a1-919b-6aa30dab142f",
+			"oracleId": "d90af00a-d322-4265-9954-7b1e80702e18",
+			"layout": "normal",
+			"name": "Skyclave Apparition",
+			"manaCost": "{1}{W}{W}",
+			"cmc": 3,
+			"typeLine": "Creature — Kor Spirit",
+			"oracleText": "When this creature enters, exile up to one target nonland, nontoken permanent you don't control with mana value 4 or less.\nWhen this creature leaves the battlefield, the exiled card's owner creates an X/X blue Illusion creature token, where X is the mana value of the exiled card.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [],
+			"power": "2",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/e/6/e671de25-c47c-48a1-919b-6aa30dab142f.jpg?1783903800",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/e/6/e671de25-c47c-48a1-919b-6aa30dab142f.jpg?1783903800",
+			"rarity": "rare",
+			"setCode": "soc",
+			"collectorNumber": "173",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "daafd816-f7c1-4630-9e5c-a1e5db570a35",
+			"oracleId": "00c0543c-2a1f-4425-8283-4062d74a1637",
+			"layout": "normal",
+			"name": "Solemn Simulacrum",
+			"manaCost": "{4}",
+			"cmc": 4,
+			"typeLine": "Artifact Creature — Golem",
+			"oracleText": "When this creature enters, you may search your library for a basic land card, put that card onto the battlefield tapped, then shuffle.\nWhen this creature dies, you may draw a card.",
+			"colors": [],
+			"colorIdentity": [],
+			"keywords": [],
+			"power": "2",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/d/a/daafd816-f7c1-4630-9e5c-a1e5db570a35.jpg?1783903212",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/d/a/daafd816-f7c1-4630-9e5c-a1e5db570a35.jpg?1783903212",
+			"rarity": "rare",
+			"setCode": "msc",
+			"collectorNumber": "215",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "50bc0f5b-7421-45b9-af85-86dd9821b7d8",
+			"oracleId": "92019547-f6db-4ea6-8356-d0a90ace5662",
+			"layout": "normal",
+			"name": "Soulherder",
+			"manaCost": "{1}{W}{U}",
+			"cmc": 3,
+			"typeLine": "Creature — Spirit",
+			"oracleText": "Whenever a creature is exiled from the battlefield, put a +1/+1 counter on this creature.\nAt the beginning of your end step, you may exile another target creature you control, then return that card to the battlefield under its owner's control.",
+			"colors": [
+				"U",
+				"W"
+			],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [],
+			"power": "1",
+			"toughness": "1",
+			"imageUrl": "https://cards.scryfall.io/normal/front/5/0/50bc0f5b-7421-45b9-af85-86dd9821b7d8.jpg?1783928301",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/5/0/50bc0f5b-7421-45b9-af85-86dd9821b7d8.jpg?1783928301",
+			"rarity": "uncommon",
+			"setCode": "khc",
+			"collectorNumber": "93",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "99c27e8e-1a9b-4175-a7fb-c8224bc08e68",
+			"oracleId": "9c5f0d91-9d86-4e66-94fd-4af93ad01838",
+			"layout": "normal",
+			"name": "Spirited Companion",
+			"manaCost": "{1}{W}",
+			"cmc": 2,
+			"typeLine": "Enchantment Creature — Dog",
+			"oracleText": "When this creature enters, draw a card.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [],
+			"power": "1",
+			"toughness": "1",
+			"imageUrl": "https://cards.scryfall.io/normal/front/9/9/99c27e8e-1a9b-4175-a7fb-c8224bc08e68.jpg?1783908788",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/9/9/99c27e8e-1a9b-4175-a7fb-c8224bc08e68.jpg?1783908788",
+			"rarity": "common",
+			"setCode": "j25",
+			"collectorNumber": "256",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "deca0b2a-e7f3-444a-883d-7c41dd62c9cc",
+			"oracleId": "4add809e-9caa-45ae-bb0d-4760a360b8e2",
+			"layout": "normal",
+			"name": "Starfield Vocalist",
+			"manaCost": "{3}{U}",
+			"cmc": 4,
+			"typeLine": "Creature — Human Bard",
+			"oracleText": "If a permanent entering the battlefield causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time.\nWarp {1}{U} (You may cast this card from your hand for its warp cost. Exile this creature at the beginning of the next end step, then you may cast it from exile on a later turn.)",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [
+				"Warp"
+			],
+			"power": "3",
+			"toughness": "4",
+			"imageUrl": "https://cards.scryfall.io/normal/front/d/e/deca0b2a-e7f3-444a-883d-7c41dd62c9cc.jpg?1783905975",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/d/e/deca0b2a-e7f3-444a-883d-7c41dd62c9cc.jpg?1783905975",
+			"rarity": "rare",
+			"setCode": "eoe",
+			"collectorNumber": "78",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "c3797f7f-489d-4735-af56-6359e0fa0a6b",
+			"oracleId": "65368569-68bf-4498-9979-d2935942ca49",
+			"layout": "normal",
+			"name": "Stonehorn Dignitary",
+			"manaCost": "{3}{W}",
+			"cmc": 4,
+			"typeLine": "Creature — Rhino Soldier",
+			"oracleText": "When this creature enters, target opponent skips their next combat phase.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [],
+			"power": "1",
+			"toughness": "4",
+			"imageUrl": "https://cards.scryfall.io/normal/front/c/3/c3797f7f-489d-4735-af56-6359e0fa0a6b.jpg?1783941097",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/c/3/c3797f7f-489d-4735-af56-6359e0fa0a6b.jpg?1783941097",
+			"rarity": "common",
+			"setCode": "m12",
+			"collectorNumber": "37",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "b9edb215-f967-4968-905e-d1dc3b5d3424",
+			"oracleId": "cf751552-156f-4f81-ac94-9814dce099f9",
+			"layout": "normal",
+			"name": "Strionic Resonator",
+			"manaCost": "{2}",
+			"cmc": 2,
+			"typeLine": "Artifact",
+			"oracleText": "{2}, {T}: Copy target triggered ability you control. You may choose new targets for the copy. (A triggered ability uses the words \"when,\" \"whenever,\" or \"at.\")",
+			"colors": [],
+			"colorIdentity": [],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/b/9/b9edb215-f967-4968-905e-d1dc3b5d3424.jpg?1783917105",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/b/9/b9edb215-f967-4968-905e-d1dc3b5d3424.jpg?1783917105",
+			"rarity": "rare",
+			"setCode": "moc",
+			"collectorNumber": "384",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "cbf4ca25-73cc-45ba-bed5-dbaa517e8bb8",
+			"oracleId": "9c5f4d02-eedb-4c6c-9f13-1b7a45382483",
+			"layout": "normal",
+			"name": "Supreme Phantom",
+			"manaCost": "{1}{U}",
+			"cmc": 2,
+			"typeLine": "Creature — Spirit",
+			"oracleText": "Flying\nOther Spirits you control get +1/+1.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [
+				"Flying"
+			],
+			"power": "1",
+			"toughness": "3",
+			"imageUrl": "https://cards.scryfall.io/normal/front/c/b/cbf4ca25-73cc-45ba-bed5-dbaa517e8bb8.jpg?1783924962",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/c/b/cbf4ca25-73cc-45ba-bed5-dbaa517e8bb8.jpg?1783924962",
+			"rarity": "rare",
+			"setCode": "voc",
+			"collectorNumber": "115",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "000cdcf7-fb26-4abc-970d-c39086b2eff2",
+			"oracleId": "0230de18-8d15-4cfa-9d42-7ccddd9f9570",
+			"layout": "normal",
+			"name": "Supreme Verdict",
+			"manaCost": "{1}{W}{W}{U}",
+			"cmc": 4,
+			"typeLine": "Sorcery",
+			"oracleText": "This spell can't be countered.\nDestroy all creatures.",
+			"colors": [
+				"U",
+				"W"
+			],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/0/0/000cdcf7-fb26-4abc-970d-c39086b2eff2.jpg?1793111927",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/0/0/000cdcf7-fb26-4abc-970d-c39086b2eff2.jpg?1793111927",
+			"rarity": "rare",
+			"setCode": "trc",
+			"collectorNumber": "480",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "5fd601c4-44a9-45d0-a2a4-03a2eca700c7",
+			"oracleId": "00e35322-1a9a-41e3-9ce1-359c8eaa3bc7",
+			"layout": "normal",
+			"name": "Talisman of Progress",
+			"manaCost": "{2}",
+			"cmc": 2,
+			"typeLine": "Artifact",
+			"oracleText": "{T}: Add {C}.\n{T}: Add {W} or {U}. This artifact deals 1 damage to you.",
+			"colors": [],
+			"colorIdentity": [
+				"U",
+				"W"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/5/f/5fd601c4-44a9-45d0-a2a4-03a2eca700c7.jpg?1793021219",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/5/f/5fd601c4-44a9-45d0-a2a4-03a2eca700c7.jpg?1793021219",
+			"rarity": "uncommon",
+			"setCode": "trc",
+			"collectorNumber": "508",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "90140bc0-4a9c-4422-b07c-3400c7ccde56",
+			"oracleId": "c786a0aa-d86f-42c3-a7ea-5cb6ab72b5ec",
+			"layout": "normal",
+			"name": "Teleportation Circle",
+			"manaCost": "{3}{W}",
+			"cmc": 4,
+			"typeLine": "Enchantment",
+			"oracleText": "At the beginning of your end step, exile up to one target artifact or creature you control, then return that card to the battlefield under its owner's control.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/9/0/90140bc0-4a9c-4422-b07c-3400c7ccde56.jpg?1783926523",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/9/0/90140bc0-4a9c-4422-b07c-3400c7ccde56.jpg?1783926523",
+			"rarity": "rare",
+			"setCode": "afr",
+			"collectorNumber": "39",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "efa6944e-b5e2-4584-ae37-f5b59a8ec75e",
+			"oracleId": "8cf38025-5821-45a0-9483-266353b7e82d",
+			"layout": "normal",
+			"name": "Vanquisher's Banner",
+			"manaCost": "{5}",
+			"cmc": 5,
+			"typeLine": "Artifact",
+			"oracleText": "As this artifact enters, choose a creature type.\nCreatures you control of the chosen type get +1/+1.\nWhenever you cast a creature spell of the chosen type, draw a card.",
+			"colors": [],
+			"colorIdentity": [],
+			"keywords": [],
+			"imageUrl": "https://cards.scryfall.io/normal/front/e/f/efa6944e-b5e2-4584-ae37-f5b59a8ec75e.jpg?1783913835",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/e/f/efa6944e-b5e2-4584-ae37-f5b59a8ec75e.jpg?1783913835",
+			"rarity": "rare",
+			"setCode": "lcc",
+			"collectorNumber": "316",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "61c1b191-e471-479b-96a8-6d0325965767",
+			"oracleId": "0f41cefc-d6ff-4db7-ba35-502b7e081de1",
+			"layout": "normal",
+			"name": "Venser, Shaper Savant",
+			"manaCost": "{2}{U}{U}",
+			"cmc": 4,
+			"typeLine": "Legendary Creature — Human Wizard",
+			"oracleText": "Flash (You may cast this spell any time you could cast an instant.)\nWhen Venser enters, return target spell or permanent to its owner's hand.",
+			"colors": [
+				"U"
+			],
+			"colorIdentity": [
+				"U"
+			],
+			"keywords": [
+				"Flash"
+			],
+			"power": "2",
+			"toughness": "2",
+			"imageUrl": "https://cards.scryfall.io/normal/front/6/1/61c1b191-e471-479b-96a8-6d0325965767.jpg?1783908849",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/6/1/61c1b191-e471-479b-96a8-6d0325965767.jpg?1783908849",
+			"rarity": "rare",
+			"setCode": "j25",
+			"collectorNumber": "66",
+			"legalCommander": true,
+			"canBeCommander": true,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		},
+		{
+			"id": "3d134bb2-17ec-4e65-976e-f06fa983f3fb",
+			"oracleId": "5f601f48-d24b-4883-9fde-b3f620e7c9ea",
+			"layout": "normal",
+			"name": "Wall of Omens",
+			"manaCost": "{1}{W}",
+			"cmc": 2,
+			"typeLine": "Creature — Wall",
+			"oracleText": "Defender\nWhen this creature enters, draw a card.",
+			"colors": [
+				"W"
+			],
+			"colorIdentity": [
+				"W"
+			],
+			"keywords": [
+				"Defender"
+			],
+			"power": "0",
+			"toughness": "4",
+			"imageUrl": "https://cards.scryfall.io/normal/front/3/d/3d134bb2-17ec-4e65-976e-f06fa983f3fb.jpg?1783907116",
+			"artCropUrl": "https://cards.scryfall.io/art_crop/front/3/d/3d134bb2-17ec-4e65-976e-f06fa983f3fb.jpg?1783907116",
+			"rarity": "uncommon",
+			"setCode": "tdc",
+			"collectorNumber": "138",
+			"legalCommander": true,
+			"canBeCommander": false,
+			"hasPartner": false,
+			"hasChooseBackground": false,
+			"isBackground": false
+		}
+	],
+	"decks": [
+		{
+			"id": "precon_archidekt_20701889",
+			"archidektId": 20701889,
+			"archidektUrl": "https://archidekt.com/decks/20701889",
+			"name": "Bragos Spirit",
+			"description": "Archidekt precon #20701889 led by Brago, King Eternal.",
+			"commanderNames": [
+				"Brago, King Eternal"
+			],
+			"nonBasicCounts": [
+				[
+					"Abuelo, Ancestral Echo",
+					1
+				],
+				[
+					"Adaptive Automaton",
+					1
+				],
+				[
+					"Aether Channeler",
+					1
+				],
+				[
+					"Arcane Signet",
+					1
+				],
+				[
+					"Archaeomancer",
+					1
+				],
+				[
+					"Azorius Signet",
+					1
+				],
+				[
+					"Banner of Kinship",
+					1
+				],
+				[
+					"Cloud of Faeries",
+					1
+				],
+				[
+					"Cloudblazer",
+					1
+				],
+				[
+					"Cloudshift",
+					1
+				],
+				[
+					"Command Tower",
+					1
+				],
+				[
+					"Conjurer's Closet",
+					1
+				],
+				[
+					"Counterspell",
+					1
+				],
+				[
+					"Deadeye Navigator",
+					1
+				],
+				[
+					"Distant Melody",
+					1
+				],
+				[
+					"Dour Port-Mage",
+					1
+				],
+				[
+					"Dovin's Veto",
+					1
+				],
+				[
+					"Drogskol Captain",
+					1
+				],
+				[
+					"Drogskol Reinforcements",
+					1
+				],
+				[
+					"Eerie Interlude",
+					1
+				],
+				[
+					"Elesh Norn, Mother of Machines",
+					1
+				],
+				[
+					"Empyrean Eagle",
+					1
+				],
+				[
+					"Ephemerate",
+					1
+				],
+				[
+					"Essence Flux",
+					1
+				],
+				[
+					"Ethereal Investigator",
+					1
+				],
+				[
+					"Felidar Guardian",
+					1
+				],
+				[
+					"Flickerwisp",
+					1
+				],
+				[
+					"Flowering of the White Tree",
+					1
+				],
+				[
+					"Ghostly Flicker",
+					1
+				],
+				[
+					"Glacial Fortress",
+					1
+				],
+				[
+					"Guardian of Faith",
+					1
+				],
+				[
+					"Hanged Executioner",
+					1
+				],
+				[
+					"Haunted Library",
+					1
+				],
+				[
+					"Herald's Horn",
+					1
+				],
+				[
+					"Karmic Guide",
+					1
+				],
+				[
+					"Kindred Discovery",
+					1
+				],
+				[
+					"Lae'zel's Acrobatics",
+					1
+				],
+				[
+					"Lightning Greaves",
+					1
+				],
+				[
+					"Mind Stone",
+					1
+				],
+				[
+					"Moonshaker Cavalry",
+					1
+				],
+				[
+					"Mulldrifter",
+					1
+				],
+				[
+					"Nebelgast Herald",
+					1
+				],
+				[
+					"Panharmonicon",
+					1
+				],
+				[
+					"Patchwork Banner",
+					1
+				],
+				[
+					"Path of Ancestry",
+					1
+				],
+				[
+					"Path to Exile",
+					1
+				],
+				[
+					"Patrician Geist",
+					1
+				],
+				[
+					"Peregrine Drake",
+					1
+				],
+				[
+					"Rattlechains",
+					1
+				],
+				[
+					"Reflector Mage",
+					1
+				],
+				[
+					"Restoration Angel",
+					1
+				],
+				[
+					"Riptide Gearhulk",
+					1
+				],
+				[
+					"Selfless Spirit",
+					1
+				],
+				[
+					"Skyclave Apparition",
+					1
+				],
+				[
+					"Sol Ring",
+					1
+				],
+				[
+					"Solemn Simulacrum",
+					1
+				],
+				[
+					"Soulherder",
+					1
+				],
+				[
+					"Spirited Companion",
+					1
+				],
+				[
+					"Starfield Vocalist",
+					1
+				],
+				[
+					"Stonehorn Dignitary",
+					1
+				],
+				[
+					"Strionic Resonator",
+					1
+				],
+				[
+					"Supreme Phantom",
+					1
+				],
+				[
+					"Supreme Verdict",
+					1
+				],
+				[
+					"Swords to Plowshares",
+					1
+				],
+				[
+					"Talisman of Progress",
+					1
+				],
+				[
+					"Teleportation Circle",
+					1
+				],
+				[
+					"Thought Vessel",
+					1
+				],
+				[
+					"Vanquisher's Banner",
+					1
+				],
+				[
+					"Venser, Shaper Savant",
+					1
+				],
+				[
+					"Wall of Omens",
+					1
+				]
+			],
+			"basicCounts": [
+				[
+					"Island",
+					14
+				],
+				[
+					"Plains",
+					15
+				]
+			]
+		}
+	]
+}

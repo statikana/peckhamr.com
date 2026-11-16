@@ -19,5 +19,8 @@
 	"cardNameInCode": {
 		"engine.ts": 0,
 		"oracle.ts": 0
+	},
+	"abilityTextScan": {
+		"runtime/layers.ts": 0
 	}
 }

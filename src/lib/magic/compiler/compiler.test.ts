@@ -3,8 +3,28 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { clearCompileCache, compileCard } from './index.ts';
+import {
+	clearCompileCache,
+	compileCard,
+	compiledStackItemEffects,
+	describeModalModes,
+	expandModalEffects,
+	getAbilityModal,
+	resolveCompiledDelayedSteps
+} from './index.ts';
+import { getCardActivatedAbilities } from '../ruleTree.ts';
 import { normalizeFace } from './normalize.ts';
+import { runtimeTriggers } from './triggers.ts';
+import {
+	ALTERNATIVE_COST_KEYWORDS,
+	GRANTABLE_KEYWORDS,
+	GRANTED_TRIGGER_KEYWORD_EVENTS,
+	IMPLEMENTED_KEYWORDS,
+	KEYWORD_LABELS,
+	KEYWORD_REGISTRY,
+	KNOWN_KEYWORDS,
+	STATIC_CONTINUOUS_KEYWORDS
+} from '../keywords.ts';
 import { STAPLE_CARDS } from '../precons.ts';
 import type { ScryfallCard } from '../types.ts';
 import type { CardDefinition } from '../ir.ts';
@@ -206,3 +226,1250 @@ describe('Precon data integrity', () => {
 		assert.deepEqual(problems, []);
 	});
 });
+
+describe('KEYWORD_REGISTRY and Track B3 Slice 1 keyword compilation', () => {
+	it('derives consistent views across compiler and runtime from KEYWORD_REGISTRY', () => {
+		const entries = Object.values(KEYWORD_REGISTRY);
+		const knownSet = new Set(KNOWN_KEYWORDS);
+		assert.equal(Object.keys(KEYWORD_REGISTRY).length, entries.length);
+		assert.equal(knownSet.size, entries.length);
+		for (const spec of entries) {
+			assert.equal(knownSet.has(spec.name), true);
+			if (spec.status === 'implemented') {
+				assert.equal(IMPLEMENTED_KEYWORDS.has(spec.name), true);
+			} else {
+				assert.equal(IMPLEMENTED_KEYWORDS.has(spec.name), false);
+			}
+		}
+		assert.equal(STATIC_CONTINUOUS_KEYWORDS.has('battle cry'), true);
+		assert.equal(GRANTABLE_KEYWORDS.includes('battle cry'), true);
+		assert.equal(GRANTABLE_KEYWORDS.includes('prowess'), true);
+		assert.equal(GRANTABLE_KEYWORDS.includes('afterlife'), false);
+		assert.equal(KEYWORD_LABELS['battle cry'], 'Battle cry');
+		assert.equal(KEYWORD_LABELS['living weapon'], 'Living weapon');
+		assert.equal(KEYWORD_LABELS['for mirrodin!'], 'For Mirrodin!');
+		assert.equal(KEYWORD_LABELS.exploit, 'Exploit');
+		assert.equal('flashback' in ALTERNATIVE_COST_KEYWORDS, true);
+		assert.equal('overload' in ALTERNATIVE_COST_KEYWORDS, true);
+		assert.equal(GRANTED_TRIGGER_KEYWORD_EVENTS.has('cast'), true);
+		assert.equal(GRANTED_TRIGGER_KEYWORD_EVENTS.has('attacks'), true);
+	});
+
+	it('compiles all 7 B3 Slice 1 keywords into pure IR with runtime triggers and zero unsupported', () => {
+		const affArtifacts = compileFresh(
+			synthetic({
+				name: 'Bronze Sentinel',
+				manaCost: '{7}',
+				cmc: 7,
+				typeLine: 'Artifact Creature — Golem',
+				oracleText: 'Affinity for artifacts'
+			})
+		);
+		const affAb = affArtifacts.faces[0].abilities[0];
+		assert.equal(affAb.kind, 'keyword');
+		if (affAb.kind === 'keyword') {
+			assert.equal(affAb.keyword.name, 'affinity');
+			assert.equal(affAb.keyword.param, 'for artifacts');
+			assert.deepEqual(affAb.keyword.affinityFilter, { types: ['Artifact'] });
+		}
+
+		const affOutlaws = compileFresh(
+			synthetic({
+				name: 'Shadow Syndicate',
+				manaCost: '{5}{B}',
+				cmc: 6,
+				typeLine: 'Sorcery',
+				oracleText: 'Affinity for outlaws'
+			})
+		);
+		const outlawAb = affOutlaws.faces[0].abilities[0];
+		assert.equal(outlawAb.kind, 'keyword');
+		if (outlawAb.kind === 'keyword') {
+			assert.deepEqual(outlawAb.keyword.affinityFilter, {
+				subtypes: ['Assassin', 'Mercenary', 'Pirate', 'Rogue', 'Warlock']
+			});
+		}
+
+		const afterlifeCard = compileFresh(
+			synthetic({
+				name: 'Orzhov Pontiff Probe',
+				manaCost: '{2}{W}{B}',
+				cmc: 4,
+				typeLine: 'Creature — Human Cleric',
+				oracleText: 'Afterlife 2'
+			})
+		);
+		assert.equal(afterlifeCard.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const aftTrig = runtimeTriggers(afterlifeCard);
+		assert.equal(aftTrig.length, 1);
+		assert.equal(aftTrig[0].trigger.event, 'zoneChange');
+		assert.equal(aftTrig[0].effect?.steps[0].verb, 'createToken');
+
+		const battleCryCard = compileFresh(
+			synthetic({
+				name: 'Accorder Probe',
+				manaCost: '{1}{W}',
+				cmc: 2,
+				typeLine: 'Creature — Human Knight',
+				oracleText: 'Battle cry'
+			})
+		);
+		const bcTrig = runtimeTriggers(battleCryCard);
+		assert.equal(bcTrig.length, 1);
+		assert.equal(bcTrig[0].trigger.event, 'attacks');
+		assert.equal(bcTrig[0].effect?.steps[0].verb, 'pump');
+
+		const bushidoCard = compileFresh(
+			synthetic({
+				name: 'Samurai Probe',
+				manaCost: '{2}{W}',
+				cmc: 3,
+				typeLine: 'Creature — Human Samurai',
+				oracleText: 'Bushido 3'
+			})
+		);
+		const buTrig = runtimeTriggers(bushidoCard);
+		assert.equal(buTrig.length, 1);
+		assert.equal(buTrig[0].trigger.event, 'blocks');
+		assert.equal(buTrig[0].trigger.or?.[0].event, 'becomesBlocked');
+
+		const exploitCard = compileFresh(
+			synthetic({
+				name: 'Sidisi Probe',
+				manaCost: '{3}{B}',
+				cmc: 4,
+				typeLine: 'Creature — Zombie Wizard',
+				oracleText: 'Exploit'
+			})
+		);
+		const exTrig = runtimeTriggers(exploitCard);
+		assert.equal(exTrig.length, 1);
+		assert.equal(exTrig[0].effect?.steps[0].verb, 'sacrifice');
+		assert.equal(Boolean(exTrig[0].effect?.steps[0].optional), true);
+
+		const mirrodinCard = compileFresh(
+			synthetic({
+				name: 'Hexplate Probe',
+				manaCost: '{2}{R}',
+				cmc: 3,
+				typeLine: 'Artifact — Equipment',
+				oracleText: 'For Mirrodin!\nEquip {2}'
+			})
+		);
+		assert.equal(mirrodinCard.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const fmTrig = runtimeTriggers(mirrodinCard);
+		assert.equal(fmTrig.length, 1);
+		assert.equal(fmTrig[0].effect?.steps[0].verb, 'createToken');
+		assert.equal(fmTrig[0].effect?.steps[1].verb, 'attach');
+
+		const livingCard = compileFresh(
+			synthetic({
+				name: 'Flayer Husk Probe',
+				manaCost: '{1}',
+				cmc: 1,
+				typeLine: 'Artifact — Equipment',
+				oracleText: 'Living weapon\nEquip {2}'
+			})
+		);
+		assert.equal(livingCard.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const lwTrig = runtimeTriggers(livingCard);
+		assert.equal(lwTrig.length, 1);
+		assert.equal(lwTrig[0].effect?.steps[0].verb, 'createToken');
+		assert.equal(lwTrig[0].effect?.steps[1].verb, 'attach');
+	});
+
+	it('rejects malformed or unsupported keyword parameters cleanly as keyword_not_implemented', () => {
+		const malformedCases = [
+			'Afterlife X',
+			'Afterlife',
+			'Bushido',
+			'Bushido X',
+			'Affinity',
+			'Affinity for emblems',
+			'Flying 2'
+		];
+		for (const line of malformedCases) {
+			const def = compileFresh(
+				synthetic({
+					name: `Malformed ${line}`,
+					manaCost: '{2}',
+					cmc: 2,
+					typeLine: 'Creature — Human',
+					oracleText: line
+				})
+			);
+			const ab = def.faces[0].abilities[0];
+			assert.equal(ab.kind, 'unsupported', `Expected "${line}" to compile to unsupported`);
+			if (ab.kind === 'unsupported') {
+				assert.equal(ab.reason, 'keyword_not_implemented', `Expected reason for "${line}"`);
+			}
+		}
+	});
+
+	it('preserves synthetic rename invariance for B3 Slice 1 keywords', () => {
+		const baseText = 'Affinity for artifacts\nAfterlife 2\nBattle cry\nBushido 1\nExploit';
+		const cardA = compileFresh(
+			synthetic({ name: 'Alpha Keyword Probe', manaCost: '{6}', cmc: 6, oracleText: baseText })
+		);
+		const cardB = compileFresh(
+			synthetic({ name: 'Zeta Keyword Mirror', manaCost: '{6}', cmc: 6, oracleText: baseText })
+		);
+		assert.deepEqual(cardA.faces[0].abilities, cardB.faces[0].abilities);
+	});
+});
+
+describe('Track B3 Slice 2 keyword compilation (Exalted, Annihilator, Landwalk)', () => {
+	it('compiles Exalted, Annihilator N, and all Landwalk variants into IR with zero unsupported', () => {
+		const exaltedCard = compileFresh(
+			synthetic({
+				name: 'Squire of Grace Probe',
+				manaCost: '{1}{W}',
+				cmc: 2,
+				typeLine: 'Creature — Human Knight',
+				oracleText: 'Exalted, exalted'
+			})
+		);
+		assert.equal(exaltedCard.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const exTrigs = runtimeTriggers(exaltedCard);
+		assert.equal(exTrigs.length, 2);
+		assert.equal(exTrigs[0].trigger.event, 'attacks');
+		assert.equal(exTrigs[0].trigger.filter.alone, true);
+		assert.equal(exTrigs[0].effect?.steps[0].verb, 'pump');
+		assert.deepEqual(exTrigs[0].effect?.steps[0].subject, { k: 'eventObject' });
+
+		const annihilatorCard = compileFresh(
+			synthetic({
+				name: 'Eldrazi Crusher Probe',
+				manaCost: '{8}',
+				cmc: 8,
+				typeLine: 'Creature — Eldrazi',
+				oracleText: 'Annihilator 3'
+			})
+		);
+		assert.equal(annihilatorCard.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const anTrigs = runtimeTriggers(annihilatorCard);
+		assert.equal(anTrigs.length, 1);
+		assert.equal(anTrigs[0].trigger.event, 'attacks');
+		assert.equal(anTrigs[0].trigger.filter.object, 'self');
+		assert.equal(anTrigs[0].effect?.steps[0].verb, 'sacrifice');
+		assert.deepEqual(anTrigs[0].effect?.steps[0].actor, { k: 'defendingPlayer' });
+		assert.deepEqual(anTrigs[0].effect?.steps[0].amount, { k: 'const', n: 3 });
+
+		const landwalkCard = compileFresh(
+			synthetic({
+				name: 'Walker of Shores Probe',
+				manaCost: '{3}',
+				cmc: 3,
+				typeLine: 'Creature — Merfolk',
+				oracleText:
+					'Landwalk, plainswalk, islandwalk, swampwalk, mountainwalk, forestwalk, nonbasic landwalk'
+			})
+		);
+		assert.equal(landwalkCard.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		assert.deepEqual(
+			landwalkCard.faces[0].abilities.map((a) => (a.kind === 'keyword' ? a.keyword.name : '')),
+			[
+				'landwalk',
+				'plainswalk',
+				'islandwalk',
+				'swampwalk',
+				'mountainwalk',
+				'forestwalk',
+				'nonbasic landwalk'
+			]
+		);
+		assert.equal(STATIC_CONTINUOUS_KEYWORDS.has('exalted'), true);
+		assert.equal(GRANTABLE_KEYWORDS.includes('exalted'), true);
+		assert.equal(GRANTABLE_KEYWORDS.includes('islandwalk'), true);
+		assert.equal(GRANTABLE_KEYWORDS.includes('nonbasic landwalk'), true);
+		assert.equal(GRANTABLE_KEYWORDS.includes('annihilator'), false);
+	});
+
+	it('rejects malformed Annihilator parameters and preserves synthetic rename invariance', () => {
+		for (const bad of ['Annihilator', 'Annihilator X', 'Annihilator {2}', 'Annihilator two']) {
+			const def = compileFresh(
+				synthetic({
+					name: `Bad ${bad}`,
+					manaCost: '{4}',
+					cmc: 4,
+					typeLine: 'Creature — Eldrazi',
+					oracleText: bad
+				})
+			);
+			const ab = def.faces[0].abilities[0];
+			assert.equal(ab.kind, 'unsupported', `Expected "${bad}" to be unsupported`);
+			if (ab.kind === 'unsupported') {
+				assert.equal(ab.reason, 'keyword_not_implemented');
+			}
+		}
+
+		const text = 'Exalted\nAnnihilator 2\nIslandwalk, nonbasic landwalk';
+		const a = compileFresh(synthetic({ name: 'Silverwind Vanguard', oracleText: text }));
+		const b = compileFresh(synthetic({ name: 'Thornpeak Ravager', oracleText: text }));
+		assert.deepEqual(a.faces[0].abilities, b.faces[0].abilities);
+	});
+
+	it('compiles Kicker and Multikicker costs, conditions, ETB replacements, and rejects instead overrides', () => {
+		const single = compileFresh(
+			synthetic({
+				name: 'Kicker Bolt',
+				typeLine: 'Instant',
+				oracleText: 'Kicker {1}{R}\nKicker Bolt deals 2 damage to any target.\nIf Kicker Bolt was kicked, it deals 1 damage to any target.'
+			})
+		);
+		assert.equal(single.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const kKw = single.faces[0].abilities.find((a) => a.kind === 'keyword');
+		assert.equal(kKw?.kind, 'keyword');
+		if (kKw?.kind === 'keyword') {
+			assert.equal(kKw.keyword.name, 'kicker');
+			assert.equal(kKw.keyword.kickerCosts?.[0]?.cost, '{1}{R}');
+			assert.ok(kKw.keyword.kickerCosts?.[0]?.tags.includes('{1}{R}'));
+			assert.ok(kKw.keyword.kickerCosts?.[0]?.tags.includes('red'));
+		}
+		const kSpell = single.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.equal(kSpell?.kind, 'spell');
+		if (kSpell?.kind === 'spell') {
+			assert.equal(kSpell.targets.length, 2);
+			assert.equal(kSpell.targets[0].condition, undefined);
+			assert.deepEqual(kSpell.targets[1].condition, { k: 'kicked' });
+			assert.deepEqual(kSpell.effect[1].condition, { k: 'kicked' });
+		}
+
+		const dual = compileFresh(
+			synthetic({
+				name: 'Dual Kicker Squire',
+				typeLine: 'Creature — Human',
+				oracleText:
+					'Kicker {W} and/or {B}\nWhen Dual Kicker Squire enters, if it was kicked with its {W} kicker, you gain 4 life.\nWhen Dual Kicker Squire enters, if it was kicked with its {B} kicker, target player discards a card.'
+			})
+		);
+		assert.equal(dual.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const dualKw = dual.faces[0].abilities.find((a) => a.kind === 'keyword');
+		if (dualKw?.kind === 'keyword') {
+			assert.equal(dualKw.keyword.kickerCosts?.length, 2);
+			assert.ok(dualKw.keyword.kickerCosts?.[0]?.tags.includes('{W}'));
+			assert.ok(dualKw.keyword.kickerCosts?.[0]?.tags.includes('white'));
+			assert.ok(dualKw.keyword.kickerCosts?.[1]?.tags.includes('{B}'));
+			assert.ok(dualKw.keyword.kickerCosts?.[1]?.tags.includes('black'));
+		}
+
+		const dashAndMulti = compileFresh(
+			synthetic({
+				name: 'Multi Hydra',
+				typeLine: 'Creature — Hydra',
+				oracleText:
+					'Multikicker {1}{G}\nMulti Hydra enters with two +1/+1 counters on it for each time it was kicked.'
+			})
+		);
+		assert.equal(dashAndMulti.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const rep = dashAndMulti.faces[0].abilities.find((a) => a.kind === 'replacement');
+		assert.equal(rep?.kind, 'replacement');
+		if (rep?.kind === 'replacement' && !Array.isArray(rep.replacement.with) && rep.replacement.with.k === 'modify') {
+			assert.deepEqual(rep.replacement.with.counters, {
+				counter: '+1/+1',
+				amount: { k: 'kickedCount', multiplier: 2 }
+			});
+		}
+
+		const nonMana = compileFresh(
+			synthetic({
+				name: 'Blood Kicker',
+				typeLine: 'Creature — Vampire',
+				oracleText:
+					'Kicker—Pay 3 life.\nIf Blood Kicker was kicked, it enters tapped.'
+			})
+		);
+		assert.equal(nonMana.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+
+		for (const bad of ['Kicker', 'Multikicker', 'Kicker—Florb a glorb.']) {
+			const badDef = compileFresh(synthetic({ name: `Bad ${bad}`, oracleText: bad }));
+			const ab = badDef.faces[0].abilities[0];
+			assert.equal(ab?.kind, 'unsupported', `Expected "${bad}" to be unsupported`);
+			if (ab?.kind === 'unsupported') assert.equal(ab.reason, 'unparsed');
+		}
+
+		const insteadDef = compileFresh(
+			synthetic({
+				name: 'Instead Shock',
+				typeLine: 'Instant',
+				oracleText:
+					'Kicker {2}\nInstead Shock deals 2 damage to any target. If Instead Shock was kicked, it deals 4 damage to that target instead.'
+			})
+		);
+		assert.equal(insteadDef.faces[0].abilities.some((a) => a.kind === 'unsupported'), true);
+
+		const textA = 'Kicker {2}\n~ deals 2 damage to any target.\nIf ~ was kicked, draw a card.';
+		const inv1 = compileFresh(synthetic({ name: 'Amber Flare', typeLine: 'Instant', oracleText: textA }));
+		const inv2 = compileFresh(synthetic({ name: 'Cobalt Spark', typeLine: 'Instant', oracleText: textA }));
+		assert.deepEqual(inv1.faces[0].abilities, inv2.faces[0].abilities);
+	});
+});
+
+describe('Cycling & Typecycling compilation', () => {
+	it('compiles Cycling mana, life, and composite costs without unsupported abilities', () => {
+		const manaCycler = compileFresh(
+			synthetic({
+				name: 'Sand Scout',
+				typeLine: 'Creature — Human Scout',
+				oracleText: 'Cycling {2} ({2}, Discard this card: Draw a card.)'
+			})
+		);
+		assert.equal(manaCycler.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const manaKw = manaCycler.faces[0].abilities.find((a) => a.kind === 'keyword');
+		assert.equal(manaKw?.kind, 'keyword');
+		if (manaKw?.kind === 'keyword') {
+			assert.equal(manaKw.keyword.name, 'cycling');
+			assert.equal(manaKw.keyword.cost, '{2}');
+			assert.deepEqual(manaKw.keyword.costDefs, [{ k: 'mana', cost: '{2}' }]);
+			assert.equal(manaKw.keyword.cyclingFilter, undefined);
+		}
+
+		const lifeCycler = compileFresh(
+			synthetic({
+				name: 'Street Pulse',
+				typeLine: 'Creature — Elemental',
+				oracleText: 'Cycling—Pay 2 life.'
+			})
+		);
+		assert.equal(lifeCycler.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const lifeKw = lifeCycler.faces[0].abilities.find((a) => a.kind === 'keyword');
+		assert.equal(lifeKw?.kind, 'keyword');
+		if (lifeKw?.kind === 'keyword') {
+			assert.equal(lifeKw.keyword.name, 'cycling');
+			assert.deepEqual(lifeKw.keyword.costDefs, [{ k: 'payLife', amount: { k: 'const', n: 2 } }]);
+		}
+
+		const compositeCycler = compileFresh(
+			synthetic({
+				name: 'Ash Ritualist',
+				typeLine: 'Creature — Warlock',
+				oracleText: 'Cycling—{1}, Sacrifice a creature.'
+			})
+		);
+		assert.equal(compositeCycler.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const compKw = compositeCycler.faces[0].abilities.find((a) => a.kind === 'keyword');
+		assert.equal(compKw?.kind, 'keyword');
+		if (compKw?.kind === 'keyword') {
+			assert.equal(compKw.keyword.name, 'cycling');
+			assert.equal(compKw.keyword.costDefs?.[0]?.k, 'mana');
+			assert.equal(compKw.keyword.costDefs?.[1]?.k, 'sacrifice');
+		}
+	});
+
+	it('compiles Basic landcycling, Landcycling, and [quality]cycling variants cleanly', () => {
+		const variants: Array<{
+			oracleText: string;
+			expectedName: string;
+			expectedMana: string;
+			expectedSupertypes?: string[];
+			expectedTypes?: string[];
+			expectedSubtypes?: string[];
+		}> = [
+			{
+				oracleText: 'Basic landcycling {2}',
+				expectedName: 'basic landcycling',
+				expectedMana: '{2}',
+				expectedSupertypes: ['Basic'],
+				expectedTypes: ['Land']
+			},
+			{
+				oracleText: 'Landcycling {2}',
+				expectedName: 'landcycling',
+				expectedMana: '{2}',
+				expectedTypes: ['Land']
+			},
+			{
+				oracleText: 'Plainscycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedSubtypes: ['Plains']
+			},
+			{
+				oracleText: 'Islandcycling {1}',
+				expectedName: 'typecycling',
+				expectedMana: '{1}',
+				expectedSubtypes: ['Island']
+			},
+			{
+				oracleText: 'Swampcycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedSubtypes: ['Swamp']
+			},
+			{
+				oracleText: 'Mountaincycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedSubtypes: ['Mountain']
+			},
+			{
+				oracleText: 'Forestcycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedSubtypes: ['Forest']
+			},
+			{
+				oracleText: 'Wizardcycling {3}',
+				expectedName: 'typecycling',
+				expectedMana: '{3}',
+				expectedSubtypes: ['Wizard']
+			},
+			{
+				oracleText: 'Slivercycling {3}',
+				expectedName: 'typecycling',
+				expectedMana: '{3}',
+				expectedSubtypes: ['Sliver']
+			},
+			{
+				oracleText: 'Artifactcycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedTypes: ['Artifact']
+			},
+			{
+				oracleText: 'Basic Swampcycling {2}',
+				expectedName: 'typecycling',
+				expectedMana: '{2}',
+				expectedSupertypes: ['Basic'],
+				expectedSubtypes: ['Swamp']
+			}
+		];
+
+		for (const v of variants) {
+			const def = compileFresh(
+				synthetic({
+					name: `Synthetic ${v.oracleText}`,
+					typeLine: 'Creature — Spirit',
+					oracleText: v.oracleText
+				})
+			);
+			assert.equal(
+				def.faces[0].abilities.some((a) => a.kind === 'unsupported'),
+				false,
+				`${v.oracleText} produced unsupported`
+			);
+			const kw = def.faces[0].abilities.find((a) => a.kind === 'keyword');
+			assert.equal(kw?.kind, 'keyword', `${v.oracleText} missing keyword ability`);
+			if (kw?.kind === 'keyword') {
+				assert.equal(kw.keyword.name, v.expectedName);
+				assert.equal(kw.keyword.cost, v.expectedMana);
+				assert.ok(kw.keyword.cyclingFilter, `${v.oracleText} missing cyclingFilter`);
+				if (v.expectedSupertypes) {
+					assert.deepEqual(kw.keyword.cyclingFilter.supertypes, v.expectedSupertypes);
+				}
+				if (v.expectedTypes) {
+					assert.deepEqual(kw.keyword.cyclingFilter.types, v.expectedTypes);
+				}
+				if (v.expectedSubtypes) {
+					assert.deepEqual(kw.keyword.cyclingFilter.subtypes, v.expectedSubtypes);
+				}
+			}
+		}
+	});
+
+	it('compiles cycling cost modifier statics and rejects invalid cycling syntax cleanly', () => {
+		const reducer = compileFresh(
+			synthetic({
+				name: 'Fluctuation Stone',
+				typeLine: 'Artifact',
+				oracleText: 'Cycling abilities you activate cost {2} less to activate.'
+			})
+		);
+		assert.equal(reducer.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const staticAb = reducer.faces[0].abilities.find((a) => a.kind === 'static');
+		assert.equal(staticAb?.kind, 'static');
+		if (staticAb?.kind === 'static') {
+			assert.equal(staticAb.static.k, 'costModifier');
+			if (staticAb.static.k === 'costModifier') {
+				assert.deepEqual(staticAb.static.affects, { k: 'ability', keyword: 'cycling' });
+				assert.equal(staticAb.static.delta.mode, 'reduce');
+				assert.equal(staticAb.static.delta.generic, 2);
+			}
+		}
+
+		for (const bad of ['Cycling', 'Cycling—Florb a glorb.', 'Typecycling {2}', 'thecycling {2}']) {
+			const def = compileFresh(
+				synthetic({
+					name: `Bad ${bad}`,
+					typeLine: 'Creature — Human',
+					oracleText: bad
+				})
+			);
+			assert.equal(
+				def.faces[0].abilities.some((a) => a.kind === 'unsupported'),
+				true,
+				`Expected unsupported for "${bad}"`
+			);
+		}
+	});
+
+	it('preserves rename invariance and builds hand-zone abilities + stack effects cleanly', () => {
+		const cardA = synthetic({
+			name: 'Dune Runner',
+			typeLine: 'Creature — Jackal',
+			oracleText: 'Cycling {2}\nPlainscycling {2}'
+		});
+		const cardB = synthetic({
+			name: 'Veld Scout',
+			typeLine: 'Creature — Jackal',
+			oracleText: 'Cycling {2}\nPlainscycling {2}'
+		});
+		const defA = compileFresh(cardA);
+		const defB = compileFresh(cardB);
+		assert.deepEqual(defA.faces[0].abilities, defB.faces[0].abilities);
+
+		const abs = getCardActivatedAbilities(cardA);
+		assert.equal(abs.length, 2);
+		for (const ab of abs) {
+			assert.deepEqual(ab.activationZones, ['hand']);
+			assert.equal(ab.costKeyword, 'cycling');
+			assert.equal(ab.manaCost, '{2}');
+			assert.deepEqual(ab.cost, [
+				{ k: 'mana', cost: '{2}' },
+				{ k: 'discard', count: { k: 'const', n: 1 }, filter: 'self' }
+			]);
+		}
+
+		const cyclingCompiled = compiledStackItemEffects({
+			id: 'stack_1',
+			controllerId: 'p1',
+			kind: 'activated',
+			sourceInstanceId: 'src_1',
+			title: `${cardA.name} Ability`,
+			targets: [],
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: 0,
+			abilityId: abs[0].id,
+			card: cardA,
+			oracleText: abs[0].effectText
+		});
+		assert.ok(cyclingCompiled);
+		assert.equal(cyclingCompiled.steps[0]?.verb, 'draw');
+		assert.deepEqual(cyclingCompiled.steps[0]?.amount, { k: 'const', n: 1 });
+
+		const searchCompiled = compiledStackItemEffects({
+			id: 'stack_2',
+			controllerId: 'p1',
+			kind: 'activated',
+			sourceInstanceId: 'src_1',
+			title: `${cardA.name} Ability`,
+			targets: [],
+			xValue: 0,
+			requiresGuidedResolution: false,
+			createdAt: 0,
+			abilityId: abs[1].id,
+			card: cardA,
+			oracleText: abs[1].effectText
+		});
+		assert.ok(searchCompiled);
+		const searchStep = searchCompiled.steps[0];
+		assert.equal(searchStep?.verb, 'search');
+		const searchParam = searchStep?.params?.search;
+		assert.ok(searchParam);
+		assert.equal(searchParam.reveal, true);
+		assert.deepEqual(searchParam.destinations, [{ zone: 'hand' }]);
+		assert.deepEqual(searchParam.filter.subtypes, ['Plains']);
+	});
+
+	it('compiles cycling and discard triggers (CR 702.29c–d)', () => {
+		// 1. "When you cycle ~, ..." -> event: 'cycle', object: 'self', fromZone: 'any'
+		const selfTrigger = compileFresh(
+			synthetic({
+				name: 'Deem Worthy',
+				typeLine: 'Instant',
+				manaCost: '{4}{R}',
+				oracleText: 'Cycling {3}{R}\nWhen you cycle Deem Worthy, ~ deals 7 damage to target creature.'
+			})
+		);
+		const cycleTrig = selfTrigger.faces[0].abilities.find((a) => a.kind === 'triggered');
+		assert.ok(cycleTrig && cycleTrig.kind === 'triggered');
+		assert.deepEqual(cycleTrig.trigger, {
+			event: 'cycle',
+			filter: { object: 'self', player: { relation: 'you' } },
+			fromZone: 'any'
+		});
+
+		// 2. "Whenever you cycle a card, ..." and "Whenever a player cycles a [quality] card, ..."
+		const youCycleCard = compileFresh(
+			synthetic({
+				name: 'Cycle Watcher',
+				typeLine: 'Enchantment',
+				oracleText: 'Whenever you cycle a card, you gain 2 life.'
+			})
+		);
+		const t2 = youCycleCard.faces[0].abilities[0];
+		assert.ok(t2 && t2.kind === 'triggered');
+		assert.deepEqual(t2.trigger, {
+			event: 'cycle',
+			filter: { player: { relation: 'you' }, object: {} }
+		});
+
+		const playerCycleCreature = compileFresh(
+			synthetic({
+				name: 'Beast Cycler Watcher',
+				typeLine: 'Enchantment',
+				oracleText: 'Whenever a player cycles a creature card, draw a card.'
+			})
+		);
+		const t3 = playerCycleCreature.faces[0].abilities[0];
+		assert.ok(t3 && t3.kind === 'triggered');
+		assert.deepEqual(t3.trigger, {
+			event: 'cycle',
+			filter: { player: { relation: 'any' }, object: { types: ['Creature'] } }
+		});
+
+		// 3. "Whenever you cycle or discard a card, ..." -> single 'discard' TriggerDef (CR 702.29d)
+		const cycleOrDiscard = compileFresh(
+			synthetic({
+				name: 'Drake Nest',
+				typeLine: 'Enchantment',
+				oracleText: 'Whenever you cycle or discard a card, you gain 1 life.'
+			})
+		);
+		const t4 = cycleOrDiscard.faces[0].abilities[0];
+		assert.ok(t4 && t4.kind === 'triggered');
+		assert.deepEqual(t4.trigger, {
+			event: 'discard',
+			filter: { player: { relation: 'you' }, object: {} }
+		});
+
+		const filteredCycleOrDiscard = compileFresh(
+			synthetic({
+				name: 'Creature Discard Watcher',
+				typeLine: 'Enchantment',
+				oracleText: 'Whenever a player cycles or discards a creature card, you gain 1 life.'
+			})
+		);
+		const t5 = filteredCycleOrDiscard.faces[0].abilities[0];
+		assert.ok(t5 && t5.kind === 'triggered');
+		assert.deepEqual(t5.trigger, {
+			event: 'discard',
+			filter: { player: { relation: 'any' }, object: { types: ['Creature'] } }
+		});
+
+		// 4. "Whenever an opponent discards a card, ..." -> event: 'discard'
+		const oppDiscard = compileFresh(
+			synthetic({
+				name: 'Liliana Watcher',
+				typeLine: 'Enchantment',
+				oracleText: 'Whenever an opponent discards a card, you gain 2 life.'
+			})
+		);
+		const t6 = oppDiscard.faces[0].abilities[0];
+		assert.ok(t6 && t6.kind === 'triggered');
+		assert.deepEqual(t6.trigger, {
+			event: 'discard',
+			filter: { player: { relation: 'opponent' }, object: {} }
+		});
+
+		// 5. "When you cycle ~, counter target spell" is now fully compiled; genuinely unparsed effects still preserve trigger metadata
+		const silenceDecree = compileFresh(
+			synthetic({
+				name: 'Silence Decree',
+				typeLine: 'Enchantment',
+				oracleText: 'Cycling {4}{U}{U}\nWhen you cycle Silence Decree, counter target spell.'
+			})
+		);
+		assert.equal(silenceDecree.fullySupported, true);
+
+		const manualCycle = compileFresh(
+			synthetic({
+				name: 'Restart Decree',
+				typeLine: 'Enchantment',
+				oracleText: 'Cycling {4}{U}{U}\nWhen you cycle Restart Decree, restart the game.'
+			})
+		);
+		const t7 = manualCycle.faces[0].abilities.find((a) => a.kind === 'unsupported');
+		assert.ok(t7 && t7.kind === 'unsupported');
+		assert.deepEqual(t7.trigger, {
+			event: 'cycle',
+			filter: { object: 'self', player: { relation: 'you' } },
+			fromZone: 'any'
+		});
+	});
+});
+
+describe('Track D Slice 3: modal triggered, activated, loyalty, and multi-target compilation', () => {
+	it('compiles modal ETB and Landfall triggered abilities onto IR and runtimeTriggers with modal metadata', () => {
+		const etbCard = synthetic({
+			name: 'Charmweaver Spirit',
+			manaCost: '{2}{W}',
+			cmc: 3,
+			typeLine: 'Creature — Spirit',
+			oracleText:
+				'When Charmweaver Spirit enters, choose one —\n• Put a +1/+1 counter on target creature.\n• Destroy target artifact.\n• Draw a card.'
+		});
+		const etbDef = compileFresh(etbCard);
+		assert.equal(etbDef.fullySupported, true);
+		const trig = etbDef.faces[0].abilities.find((a) => a.kind === 'triggered');
+		assert.ok(trig && trig.kind === 'triggered' && trig.modal);
+		assert.equal(trig.modal.min, 1);
+		assert.equal(trig.modal.max, 1);
+		assert.equal(trig.modal.modes.length, 3);
+		assert.equal(trig.modal.modes[0].targets.length, 1);
+
+		const rt = runtimeTriggers(etbDef);
+		assert.equal(rt.length, 1);
+		assert.ok(rt[0].effect?.modal);
+		assert.equal(rt[0].effect?.modal.modes.length, 3);
+
+		const landfallCard = synthetic({
+			name: 'Terracharm Elemental',
+			manaCost: '{3}{G}',
+			cmc: 4,
+			typeLine: 'Creature — Elemental',
+			oracleText:
+				'Landfall — Whenever a land enters under your control, choose up to two —\n• Draw a card.\n• Gain 2 life.\n• Scry 1.'
+		});
+		const landfallDef = compileFresh(landfallCard);
+		assert.equal(landfallDef.fullySupported, true);
+		const lTrig = landfallDef.faces[0].abilities.find((a) => a.kind === 'triggered');
+		assert.ok(lTrig && lTrig.kind === 'triggered' && lTrig.modal);
+		assert.deepEqual([lTrig.modal.min, lTrig.modal.max, lTrig.modal.upTo], [0, 2, true]);
+	});
+
+	it('compiles modal activated abilities (printed, loyalty, onceEachTurn, oncePerTurnUnique) and preserves rename invariance', () => {
+		const actCardA = synthetic({
+			name: 'Archivist Engine',
+			manaCost: '{3}',
+			cmc: 3,
+			typeLine: 'Artifact',
+			oracleText:
+				"{1}, {T}: Choose one that hasn't been chosen this turn —\n• Draw a card.\n• Add {C}{C}.\n• Gain 2 life."
+		});
+		const actCardB = synthetic({
+			name: 'Chronicle Apparatus',
+			manaCost: '{3}',
+			cmc: 3,
+			typeLine: 'Artifact',
+			oracleText:
+				"{1}, {T}: Choose one that hasn't been chosen this turn —\n• Draw a card.\n• Add {C}{C}.\n• Gain 2 life."
+		});
+		const defA = compileFresh(actCardA);
+		const defB = compileFresh(actCardB);
+		assert.equal(defA.fullySupported, true);
+		assert.deepEqual(defA.faces[0].abilities, defB.faces[0].abilities);
+
+		const ab = defA.faces[0].abilities.find((a) => a.kind === 'activated');
+		assert.ok(ab && ab.kind === 'activated' && ab.modal);
+		assert.equal(ab.isMana, false);
+		assert.equal(ab.modal.oncePerTurnUnique, true);
+		assert.equal(ab.modal.modes.length, 3);
+
+		const fetchedModal = getAbilityModal(actCardA, ab.id);
+		assert.ok(fetchedModal);
+		assert.equal(fetchedModal.oncePerTurnUnique, true);
+		assert.equal(describeModalModes(actCardA, fetchedModal).length, 3);
+
+		const expanded = expandModalEffects(fetchedModal, [0, 2]);
+		assert.ok(expanded);
+		assert.equal(expanded.steps.length, 2);
+		assert.deepEqual(
+			expanded.steps.map((s) => s.verb),
+			['draw', 'gainLife']
+		);
+
+		const walker = synthetic({
+			name: 'Nora, Modal Mind',
+			manaCost: '{2}{U}{R}',
+			cmc: 4,
+			typeLine: 'Legendary Planeswalker — Nora',
+			loyalty: '4',
+			oracleText:
+				'+1: Choose one —\n• Draw a card.\n• Nora, Modal Mind deals 1 damage to each opponent.\n−2: Draw two cards.'
+		});
+		const wDef = compileFresh(walker);
+		assert.equal(wDef.fullySupported, true);
+		const plus1 = wDef.faces[0].abilities[0];
+		assert.ok(plus1 && plus1.kind === 'activated' && plus1.modal);
+		assert.deepEqual(plus1.cost, [{ k: 'loyalty', delta: 1 }]);
+		assert.equal(plus1.timing, 'sorcery');
+		assert.equal(plus1.modal.modes.length, 2);
+	});
+
+	it('compiles multi-target modal spells as fullySupported and expands repeatable mode target indices properly', () => {
+		const multiCard = synthetic({
+			name: 'Twin Decrees',
+			manaCost: '{2}{W}{B}',
+			cmc: 4,
+			typeLine: 'Instant',
+			oracleText:
+				'Choose three. You may choose the same mode more than once. —\n• Target creature gets +1/+1 until end of turn. Destroy target artifact.\n• Draw a card.'
+		});
+		const def = compileFresh(multiCard);
+		assert.equal(def.fullySupported, true);
+		const spell = def.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(spell && spell.kind === 'spell' && spell.modal);
+		assert.equal(spell.modal.allowRepeat, true);
+		assert.equal(spell.modal.modes[0].targets.length, 2);
+
+		// Choosing mode 0 twice then mode 1 shifts targetIndex for the second mode 0 copy by 2
+		const expanded = expandModalEffects(spell.modal, [0, 0, 1]);
+		assert.ok(expanded);
+		assert.equal(expanded.steps.length, 5);
+		const firstDestroy = expanded.steps[1];
+		const secondDestroy = expanded.steps[3];
+		assert.equal(firstDestroy.verb, 'destroy');
+		assert.equal(secondDestroy.verb, 'destroy');
+		assert.equal((firstDestroy.subject as { k: 'target'; index: number }).index, 1);
+		assert.equal((secondDestroy.subject as { k: 'target'; index: number }).index, 3);
+	});
+
+	it('compiles Crew N, "becomes crewed" triggers, and "can\'t crew Vehicles" restrictions', () => {
+		const vehicle = synthetic({
+			name: 'Sky Skiff Replica',
+			manaCost: '{2}',
+			cmc: 2,
+			typeLine: 'Artifact — Vehicle',
+			power: '4',
+			toughness: '4',
+			oracleText: 'Flying\nWhenever Sky Skiff Replica becomes crewed, draw a card.\nCrew 3'
+		});
+		const def = compileFresh(vehicle);
+		assert.equal(def.fullySupported, true);
+		const trig = def.faces[0].abilities.find((a) => a.kind === 'triggered');
+		assert.ok(trig && trig.kind === 'triggered');
+		assert.equal(trig.trigger.event, 'becomesCrewed');
+		const crewKw = def.faces[0].abilities.find((a) => a.kind === 'keyword' && a.keyword.name === 'crew');
+		assert.ok(crewKw && crewKw.kind === 'keyword');
+		assert.equal(crewKw.keyword.n, 3);
+
+		const ox = synthetic({
+			name: 'Pacifist Ox',
+			manaCost: '{1}{W}',
+			cmc: 2,
+			typeLine: 'Creature — Ox',
+			power: '4',
+			toughness: '4',
+			oracleText: "Pacifist Ox can't crew Vehicles."
+		});
+		const oxDef = compileFresh(ox);
+		assert.equal(oxDef.fullySupported, true);
+		const rest = oxDef.faces[0].abilities.find((a) => a.kind === 'static');
+		assert.ok(rest && rest.kind === 'static' && rest.static.k === 'restriction');
+		assert.equal(rest.static.restriction, 'cantCrewVehicles');
+	});
+
+	it('compiles general delayed triggers (sacrifice, return, end of combat, multi-step) and resolves stepPath', () => {
+		const sacTokenSpell = synthetic({
+			name: 'Temporary Militia',
+			manaCost: '{1}{W}',
+			cmc: 2,
+			typeLine: 'Sorcery',
+			oracleText: 'Create two 1/1 white Soldier creature tokens. Sacrifice them at the beginning of the next end step.'
+		});
+		const sacDef = compileFresh(sacTokenSpell);
+		assert.equal(sacDef.fullySupported, true);
+		const sacSpell = sacDef.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(sacSpell && sacSpell.kind === 'spell' && sacSpell.effect);
+		assert.equal(sacSpell.effect[0]?.verb, 'createToken');
+		assert.equal(sacSpell.effect[1]?.verb, 'delayedTrigger');
+		assert.equal(sacSpell.effect[1]?.delayed?.trigger.filter.phase, 'end_step');
+		assert.equal(sacSpell.effect[1]?.delayed?.effect[0]?.verb, 'sacrifice');
+
+		const copyCombatSpell = synthetic({
+			name: 'Combat Mirage',
+			manaCost: '{2}{R}',
+			cmc: 3,
+			typeLine: 'Sorcery',
+			oracleText: "Create a token that's a copy of target creature you control. Sacrifice it at end of combat."
+		});
+		const copyDef = compileFresh(copyCombatSpell);
+		assert.equal(copyDef.fullySupported, true);
+		const copySpell = copyDef.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(copySpell && copySpell.kind === 'spell' && copySpell.effect);
+		assert.equal(copySpell.effect[0]?.verb, 'copyPermanent');
+		assert.ok(copySpell.effect[0]?.bindAs);
+		assert.equal(copySpell.effect[1]?.delayed?.trigger.filter.phase, 'end_combat');
+		assert.equal(copySpell.effect[1]?.delayed?.effect[0]?.verb, 'sacrifice');
+
+		const blinkSpell = synthetic({
+			name: 'Ephemeral Glimpse',
+			manaCost: '{W}',
+			cmc: 1,
+			typeLine: 'Instant',
+			oracleText:
+				"Exile target creature you control. Return that card to the battlefield under its owner's control at the beginning of the next end step."
+		});
+		const blinkDef = compileFresh(blinkSpell);
+		assert.equal(blinkDef.fullySupported, true);
+		const blinkEff = blinkDef.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(blinkEff && blinkEff.kind === 'spell' && blinkEff.effect);
+		assert.equal(blinkEff.effect[1]?.delayed?.effect[0]?.verb, 'move');
+		assert.equal(blinkEff.effect[1]?.delayed?.effect[0]?.params?.from, 'exile');
+		assert.equal(blinkEff.effect[1]?.delayed?.effect[0]?.params?.to, 'battlefield');
+
+		const multiStep = synthetic({
+			name: 'Pyre Pact',
+			manaCost: '{1}{B}',
+			cmc: 2,
+			typeLine: 'Sorcery',
+			oracleText:
+				'Create a 2/2 black Zombie creature token. At the beginning of the next end step, sacrifice it and lose 2 life.'
+		});
+		const multiDef = compileFresh(multiStep);
+		assert.equal(multiDef.fullySupported, true);
+		const multiSpell = multiDef.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(multiSpell && multiSpell.kind === 'spell' && multiSpell.effect);
+		assert.equal(multiSpell.effect[1]?.delayed?.effect.length, 2);
+		assert.equal(multiSpell.effect[1]?.delayed?.effect[0]?.verb, 'sacrifice');
+		assert.equal(multiSpell.effect[1]?.delayed?.effect[1]?.verb, 'loseLife');
+
+		const upkeepBounce = synthetic({
+			name: 'Delayed Recall',
+			manaCost: '{U}',
+			cmc: 1,
+			typeLine: 'Instant',
+			oracleText: "At the beginning of the next turn's upkeep, return ~ to your hand."
+		});
+		const upkeepDef = compileFresh(upkeepBounce);
+		assert.equal(upkeepDef.fullySupported, true);
+
+		// resolveCompiledDelayedSteps dynamically locates nested delayed EffectStep[] without serializing IR.
+		const resolved = resolveCompiledDelayedSteps({
+			kind: 'compiledDelayed',
+			sourceCard: multiStep,
+			abilityKind: 'spell',
+			stepPath: [1],
+			boundRefs: [],
+			targets: []
+		});
+		assert.ok(resolved);
+		assert.equal(resolved.steps.length, 2);
+		assert.equal(resolved.steps[0]?.verb, 'sacrifice');
+		assert.equal(resolved.steps[1]?.verb, 'loseLife');
+	});
+
+	it('compiles linked exile (until ~ leaves the battlefield, cards exiled with ~) with rename invariance', () => {
+		const oRingA = synthetic({
+			name: 'Banishing Sentinel',
+			manaCost: '{1}{W}{W}',
+			cmc: 3,
+			typeLine: 'Creature — Human Soldier',
+			power: '2',
+			toughness: '2',
+			oracleText:
+				'When Banishing Sentinel enters the battlefield, exile target creature an opponent controls until Banishing Sentinel leaves the battlefield.'
+		});
+		const oRingB = synthetic({
+			name: 'Crystalline Warden',
+			manaCost: '{1}{W}{W}',
+			cmc: 3,
+			typeLine: 'Creature — Human Soldier',
+			power: '2',
+			toughness: '2',
+			oracleText:
+				'When Crystalline Warden enters the battlefield, exile target creature an opponent controls until Crystalline Warden leaves the battlefield.'
+		});
+		const defA = compileFresh(oRingA);
+		const defB = compileFresh(oRingB);
+		assert.equal(defA.fullySupported, true);
+		assert.equal(defB.fullySupported, true);
+		const trigA = defA.faces[0].abilities.find((a) => a.kind === 'triggered');
+		const trigB = defB.faces[0].abilities.find((a) => a.kind === 'triggered');
+		assert.ok(trigA && trigA.kind === 'triggered' && trigA.effect);
+		assert.equal(trigA.effect[0]?.verb, 'exile');
+		assert.equal(trigA.effect[0]?.params?.untilSourceLeaves, true);
+		assert.deepEqual(
+			JSON.parse(JSON.stringify(defA.faces[0].abilities)),
+			JSON.parse(JSON.stringify(defB.faces[0].abilities))
+		);
+
+		const vault = synthetic({
+			name: 'Archive Vault',
+			manaCost: '{2}',
+			cmc: 2,
+			typeLine: 'Artifact',
+			oracleText:
+				"When Archive Vault enters the battlefield, exile target card from a graveyard.\n{T}: Return target card exiled with Archive Vault to its owner's hand."
+		});
+		const vaultDef = compileFresh(vault);
+		assert.equal(vaultDef.fullySupported, true);
+		const act = vaultDef.faces[0].abilities.find((a) => a.kind === 'activated');
+		assert.ok(act && act.kind === 'activated' && act.targets);
+		assert.equal(act.targets[0]?.kind, 'object');
+		assert.equal(act.targets[0]?.filter.zone, 'exile');
+		assert.equal(act.targets[0]?.filter.exiledWithSelf, true);
+
+		const devourer = synthetic({
+			name: 'Vault Golem',
+			manaCost: '{3}',
+			cmc: 3,
+			typeLine: 'Artifact Creature — Golem',
+			power: '1',
+			toughness: '1',
+			oracleText:
+				'When Vault Golem enters the battlefield, exile target card from a graveyard.\nVault Golem gets +1/+1 for each card exiled with Vault Golem.'
+		});
+		const devDef = compileFresh(devourer);
+		assert.equal(devDef.fullySupported, true);
+		const stat = devDef.faces[0].abilities.find((a) => a.kind === 'static');
+		assert.ok(stat && stat.kind === 'static' && stat.static.k === 'continuous' && stat.static.mod.k === 'pt');
+		assert.deepEqual(stat.static.mod.power, { k: 'count', of: { zone: 'exile', exiledWithSelf: true } });
+	});
+
+	it('compiles Layer 2 control changes (Control Magic / Act of Treason / untilSourceLeaves) with rename invariance', () => {
+		const auraA = synthetic({
+			name: 'Mind Tether',
+			manaCost: '{2}{U}{U}',
+			cmc: 4,
+			typeLine: 'Enchantment — Aura',
+			oracleText: 'Enchant creature\nYou control enchanted creature.'
+		});
+		const auraB = synthetic({
+			name: 'Psychic Leash',
+			manaCost: '{2}{U}{U}',
+			cmc: 4,
+			typeLine: 'Enchantment — Aura',
+			oracleText: 'Enchant creature\nYou control enchanted creature.'
+		});
+		const defA = compileFresh(auraA);
+		const defB = compileFresh(auraB);
+		assert.equal(defA.fullySupported, true);
+		assert.equal(defB.fullySupported, true);
+		assert.deepEqual(
+			JSON.parse(JSON.stringify(defA.faces[0].abilities)),
+			JSON.parse(JSON.stringify(defB.faces[0].abilities))
+		);
+
+		const treasonA = synthetic({
+			name: 'Spark of Mutiny',
+			manaCost: '{2}{R}',
+			cmc: 3,
+			typeLine: 'Sorcery',
+			oracleText: 'Gain control of target creature until end of turn. Untap that creature. It gains haste until end of turn.'
+		});
+		const treasonB = synthetic({
+			name: 'Furious Betrayal',
+			manaCost: '{2}{R}',
+			cmc: 3,
+			typeLine: 'Sorcery',
+			oracleText: 'Gain control of target creature until end of turn. Untap that creature. It gains haste until end of turn.'
+		});
+		const tDefA = compileFresh(treasonA);
+		const tDefB = compileFresh(treasonB);
+		assert.equal(tDefA.fullySupported, true);
+		assert.equal(tDefB.fullySupported, true);
+		assert.deepEqual(
+			JSON.parse(JSON.stringify(tDefA.faces[0].abilities)),
+			JSON.parse(JSON.stringify(tDefB.faces[0].abilities))
+		);
+
+		const sowerA = synthetic({
+			name: 'Lure Fae',
+			manaCost: '{2}{U}{U}',
+			cmc: 4,
+			typeLine: 'Creature — Faerie',
+			power: '2',
+			toughness: '2',
+			oracleText: 'When Lure Fae enters the battlefield, gain control of target creature for as long as you control Lure Fae.'
+		});
+		const sowerB = synthetic({
+			name: 'Beckon Nixie',
+			manaCost: '{2}{U}{U}',
+			cmc: 4,
+			typeLine: 'Creature — Faerie',
+			power: '2',
+			toughness: '2',
+			oracleText: 'When Beckon Nixie enters the battlefield, gain control of target creature for as long as you control Beckon Nixie.'
+		});
+		const sDefA = compileFresh(sowerA);
+		const sDefB = compileFresh(sowerB);
+		assert.equal(sDefA.fullySupported, true);
+		assert.equal(sDefB.fullySupported, true);
+		assert.deepEqual(
+			JSON.parse(JSON.stringify(sDefA.faces[0].abilities)),
+			JSON.parse(JSON.stringify(sDefB.faces[0].abilities))
+		);
+	});
+
+	it('compiles Convoke and Delve across creatures, spells with reminder text, duplicates, and multi-face cards', () => {
+		const convokeCreature = synthetic({
+			name: 'Siege Behemoth Alpha',
+			manaCost: '{5}{G}{G}',
+			cmc: 7,
+			typeLine: 'Creature — Wurm',
+			power: '6',
+			toughness: '6',
+			oracleText:
+				'Convoke (Your creatures can help cast this spell. Each creature you tap while casting this spell pays for {1} or one mana of that creature\'s color.)'
+		});
+		const cDef = compileFresh(convokeCreature);
+		assert.equal(cDef.fullySupported, true);
+		assert.ok(
+			cDef.faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'convoke')
+		);
+
+		const convokeSpell = synthetic({
+			name: 'Gathering Call',
+			manaCost: '{2}{W}',
+			cmc: 3,
+			typeLine: 'Instant',
+			oracleText: 'Convoke\nCreate two 1/1 white Soldier creature tokens.'
+		});
+		const csDef = compileFresh(convokeSpell);
+		assert.equal(csDef.fullySupported, true);
+		assert.ok(
+			csDef.faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'convoke')
+		);
+
+		const delveSpell = synthetic({
+			name: 'Abyssal Vision',
+			manaCost: '{6}{U}',
+			cmc: 7,
+			typeLine: 'Sorcery',
+			oracleText:
+				'Delve (Each card you exile from your graveyard while casting this spell pays for {1}.)\nDraw three cards.'
+		});
+		const dsDef = compileFresh(delveSpell);
+		assert.equal(dsDef.fullySupported, true);
+		assert.ok(
+			dsDef.faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'delve')
+		);
+
+		const splitCard = synthetic({
+			name: 'Aid // Ponder',
+			manaCost: '{2}{W}',
+			cmc: 3,
+			layout: 'split',
+			typeLine: 'Instant // Sorcery',
+			oracleText: '',
+			faces: [
+				{
+					name: 'Aid',
+					manaCost: '{2}{W}',
+					cmc: 3,
+					typeLine: 'Instant',
+					oracleText: 'Convoke\nGain 3 life.',
+					colors: ['W'],
+					keywords: ['Convoke'],
+					imageUrl: ''
+				},
+				{
+					name: 'Ponder',
+					manaCost: '{4}{U}',
+					cmc: 5,
+					typeLine: 'Sorcery',
+					oracleText: 'Delve\nDraw two cards.',
+					colors: ['U'],
+					keywords: ['Delve'],
+					imageUrl: ''
+				}
+			]
+		});
+		const spDef = compileFresh(splitCard);
+		assert.equal(spDef.fullySupported, true);
+		assert.ok(
+			spDef.faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'convoke')
+		);
+		assert.ok(
+			!spDef.faces[0].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'delve')
+		);
+		assert.ok(
+			spDef.faces[1].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'delve')
+		);
+	});
+});
+
+

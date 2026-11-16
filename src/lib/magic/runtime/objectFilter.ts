@@ -6,11 +6,146 @@
  * rules text or card names: an object's characteristics come from its type line (evaluated through
  * the layer system on the battlefield) and its counters/flags.
  */
-import { compileCard } from '../compiler/index.ts';
+import { effectiveCardForObject } from '../scryfall.ts';
 import type { Amount, Compare, Condition, ObjectFilter } from '../ir.ts';
 import { evaluatePermanent } from '../ruleTree.ts';
 import type { CardInstance, GameState, PlayerGameState, StackItem, ZoneType } from '../types.ts';
-import { splitSubtypes } from './layers.ts';
+import {
+	activeAbilityDefs,
+	effectiveManaValue,
+	instanceFaceOptions,
+	matchesColorFilter,
+	resolveObjectFaces
+} from './faces.ts';
+import {
+	evaluateKickedCountAmount,
+	evaluateKickerCondition,
+	getObjectKickerInfo,
+	isObjectBlitzed,
+	isObjectEscaped,
+	isObjectEvoked,
+	isObjectForetold
+} from './kicker.ts';
+import { splitSubtypes, hasAllOffBattlefieldAndSpellsColorless } from './layers.ts';
+// --- Track P7 ---
+import { evaluateP7Condition } from './copyPreventionAndEffects.ts';
+// --- Track P8 ---
+import {
+	countDistinctCardTypesInZone,
+	evaluateP8Condition
+} from './staticsLayersAndRestrictions.ts';
+// --- Track P9 ---
+import {
+	cameUnderControlSinceLastUpkeep,
+	isNinjutsuWindowOpen,
+	isUnblockedAttackerForPlayer
+} from './keywordsWave3.ts';
+// --- Track P10 ---
+import { evaluateP10Condition } from './reflexiveManaAndActions.ts';
+// --- End Track P10 ---
+// --- Track P12 ---
+import {
+	evaluateP12Amount,
+	evaluateP12Condition,
+	matchesP12ObjectFilter
+} from './keywordsWave4.ts';
+// --- End Track P12 ---
+// --- Track P11 ---
+import {
+	computeAttachmentsOnCount,
+	computeDomainCount,
+	computePartyCount
+} from './staticsDynamicAndCosts.ts';
+// --- End Track P11 ---
+// --- Track P13 ---
+import {
+	computeColorsAmongPermanents,
+	computeDevotionTo,
+	computeStatAggregateAmong,
+	computeUnlockedDoorsCount,
+	evaluateP13Condition,
+	matchesP13ObjectFilterFields
+} from './effectsWave5.ts';
+// --- End Track P13 ---
+// --- Track P14 ---
+import {
+	evaluateWave5Amount,
+	evaluateWave5Condition,
+	matchesWave5ObjectFilter
+} from './staticsAndCostsWave5.ts';
+// --- End Track P14 ---
+// --- Track P15 ---
+import {
+	evaluateP15Amount,
+	evaluateP15Condition,
+	matchesP15ObjectFilter
+} from './framesBattlesAndKeywordsWave5.ts';
+// --- End Track P15 ---
+// --- Track P16b ---
+import {
+	evaluateP16bCondition,
+	matchesP16bObjectFilter
+} from './triggersWave6.ts';
+// --- End Track P16b ---
+// --- Track P17b ---
+import {
+	evaluateP17bAmount,
+	evaluateP17bCondition,
+	matchesP17bObjectFilter
+} from './costsWave6.ts';
+// --- End Track P17b ---
+// --- Track P20b ---
+import { evaluateP20bAmount, evaluateP20bCondition } from './costsWave7.ts';
+// --- End Track P20b ---
+// --- Track P21 ---
+import { matchesP21ObjectFilter } from './framesWave7.ts';
+// --- End Track P21 ---
+// --- Track P19a ---
+import {
+	computeP19aMultiZoneStatAggregate,
+	evaluateP19aAmount,
+	evaluateP19aCondition
+} from './effectsWave7.ts';
+// --- End Track P19a ---
+// --- Track P17a ---
+import {
+	getOffBattlefieldGrantedCharacteristics,
+	sumNonStandardPtCounters
+} from './staticsWave6.ts';
+let inOffBattlefieldGrantLookup = false;
+// --- End Track P17a ---
+// --- Track P20a ---
+import {
+	countOpponentsWithLifeLessThanHalfStarting,
+	evaluateChosenPlayerZoneCount,
+	evaluateLifeCompareHalfStarting,
+	evaluateMostCommonColorOnBattlefield,
+	getSelfCdaAddedSubtypes,
+	matchesManaValueParity
+} from './staticsWave7.ts';
+// --- End Track P20a ---
+// --- Track P19b ---
+import { evaluateP19bCondition } from './triggersWave7.ts';
+// --- End Track P19b ---
+// --- Track P22a ---
+import {
+	evaluateCreaturesDiedThisTurnWave8,
+	evaluateDistinctNamesFilterCountWave8,
+	evaluatePlayerCountersAmountWave8,
+	evaluateSpellsCastThisTurnWave8,
+	evaluateWave8Condition,
+	matchesChosenCardType,
+	matchesSameNameAsNontokenPermanentWave8
+} from './staticsWave8.ts';
+// --- End Track P22a ---
+// --- Track P22b ---
+import {
+	evaluateP22bAmount,
+	evaluateP22bCondition,
+	hasP22bObjectFilterFields,
+	matchesP22bObjectFilter
+} from './triggersWave8.ts';
+// --- End Track P22b ---
 
 export interface FilterContext {
 	state: GameState;
@@ -18,7 +153,19 @@ export interface FilterContext {
 	controllerId: string;
 	/** The source object; `other` excludes it and `{k:'self'}` refers to it. */
 	source?: CardInstance;
+	stackItem?: StackItem;
 	xValue?: number;
+	// --- Track P8 ---
+	zone?: ZoneType | 'stack';
+	// --- Track P10 ---
+	lastRollResult?: number;
+	// --- End Track P10 ---
+	// --- Track P22b ---
+	eventPlayerId?: string;
+	lki?: {
+		damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
+	};
+	// --- End Track P22b ---
 }
 
 const ZONES = ['library', 'hand', 'battlefield', 'graveyard', 'exile', 'command'] as const;
@@ -48,6 +195,10 @@ const NON_CREATURE_SUBTYPES = new Set([
 	'Map',
 	'Junk',
 	'Gold',
+	'Lander',
+	'Mutagen',
+	'Heartwood',
+	'Vibranium',
 	'Fortification',
 	'Vehicle',
 	'Aura',
@@ -65,7 +216,11 @@ const NON_CREATURE_SUBTYPES = new Set([
 	'Arcane',
 	'Adventure',
 	'Lesson',
-	'Trap'
+	'Trap',
+	// --- Track P12 ---
+	'Spacecraft',
+	'Planet'
+	// --- End Track P12 ---
 ]);
 
 /** Card types are the words before the dash; subtypes after it (preserving multi-word subtypes like "Time Lord", CR 205.3m). */
@@ -90,29 +245,43 @@ export function objectPower(state: GameState, obj: CardInstance): number | null 
 		if (!ev.isCreature) return null;
 		return ev.breakdown.effectivePower;
 	}
-	const card = obj.copiableCard ?? obj.card;
-	const { types } = splitTypeLine(card.typeLine || '');
-	if (!types.some((t) => t.toLowerCase() === 'creature') && card.power === undefined) {
+	const card = effectiveCardForObject(obj);
+	const faceOpts = instanceFaceOptions(obj);
+	const view = resolveObjectFaces(card, faceOpts);
+	const { types } = splitTypeLine(view.typeLine || '');
+	if (!types.some((t) => t.toLowerCase() === 'creature') && view.power === undefined) {
 		return null;
 	}
-	const raw = parseInt(card.power || '0', 10);
-	let base = isNaN(raw) ? 0 : raw;
-	const face = compileCard(card).faces[0];
-	for (const ab of face.abilities) {
-		if (
-			ab.kind === 'static' &&
-			ab.static.k === 'continuous' &&
-			ab.static.layer === '7a' &&
-			ab.static.mod.k === 'setBasePT'
-		) {
-			base = evaluateAmount(ab.static.mod.power, {
-				state,
-				controllerId: obj.ownerId || obj.controllerId,
-				source: obj
-			});
+	const raw = view.power;
+	let base = raw ?? 0;
+	// --- Track P8 (CR 604.3, 208.2a, 707.9d) ---
+	if (obj.copiableState?.except?.power === undefined) {
+		for (const ab of activeAbilityDefs(card, faceOpts)) {
+			if (
+				ab.kind === 'static' &&
+				ab.static.k === 'continuous' &&
+				ab.static.layer === '7a' &&
+				ab.static.affected === 'self'
+			) {
+				if (ab.static.mod.k === 'setBasePT' || ab.static.mod.k === 'setBasePower') {
+					base = evaluateAmount(ab.static.mod.power, {
+						state,
+						controllerId: obj.ownerId || obj.controllerId,
+						source: obj
+					});
+				}
+			}
 		}
 	}
-	return base + (obj.counters['+1/+1'] || 0) - (obj.counters['-1/-1'] || 0) + (obj.tempPowerMod || 0);
+	return (
+		base +
+		(obj.counters['+1/+1'] || 0) -
+		(obj.counters['-1/-1'] || 0) +
+		// --- Track P17a & P16a (CR 122.1a): Non-standard ±M/±N counters ---
+		sumNonStandardPtCounters(obj.counters).power +
+		// --- End Track P17a & P16a ---
+		(obj.tempPowerMod || 0)
+	);
 }
 
 /** Toughness of an object (CR 107.1b, 208.2a, 208.3). */
@@ -122,29 +291,43 @@ export function objectToughness(state: GameState, obj: CardInstance): number | n
 		if (!ev.isCreature) return null;
 		return ev.unclampedToughness ?? ev.breakdown.effectiveToughness;
 	}
-	const card = obj.copiableCard ?? obj.card;
-	const { types } = splitTypeLine(card.typeLine || '');
-	if (!types.some((t) => t.toLowerCase() === 'creature') && card.toughness === undefined) {
+	const card = effectiveCardForObject(obj);
+	const faceOpts = instanceFaceOptions(obj);
+	const view = resolveObjectFaces(card, faceOpts);
+	const { types } = splitTypeLine(view.typeLine || '');
+	if (!types.some((t) => t.toLowerCase() === 'creature') && view.toughness === undefined) {
 		return null;
 	}
-	const raw = parseInt(card.toughness || '0', 10);
-	let base = isNaN(raw) ? 0 : raw;
-	const face = compileCard(card).faces[0];
-	for (const ab of face.abilities) {
-		if (
-			ab.kind === 'static' &&
-			ab.static.k === 'continuous' &&
-			ab.static.layer === '7a' &&
-			ab.static.mod.k === 'setBasePT'
-		) {
-			base = evaluateAmount(ab.static.mod.toughness, {
-				state,
-				controllerId: obj.ownerId || obj.controllerId,
-				source: obj
-			});
+	const raw = view.toughness;
+	let base = raw ?? 0;
+	// --- Track P8 (CR 604.3, 208.2a, 707.9d) ---
+	if (obj.copiableState?.except?.toughness === undefined) {
+		for (const ab of activeAbilityDefs(card, faceOpts)) {
+			if (
+				ab.kind === 'static' &&
+				ab.static.k === 'continuous' &&
+				ab.static.layer === '7a' &&
+				ab.static.affected === 'self'
+			) {
+				if (ab.static.mod.k === 'setBasePT' || ab.static.mod.k === 'setBaseToughness') {
+					base = evaluateAmount(ab.static.mod.toughness, {
+						state,
+						controllerId: obj.ownerId || obj.controllerId,
+						source: obj
+					});
+				}
+			}
 		}
 	}
-	return base + (obj.counters['+1/+1'] || 0) - (obj.counters['-1/-1'] || 0) + (obj.tempToughnessMod || 0);
+	return (
+		base +
+		(obj.counters['+1/+1'] || 0) -
+		(obj.counters['-1/-1'] || 0) +
+		// --- Track P17a & P16a (CR 122.1a): Non-standard ±M/±N counters ---
+		sumNonStandardPtCounters(obj.counters).toughness +
+		// --- End Track P17a & P16a ---
+		(obj.tempToughnessMod || 0)
+	);
 }
 
 /**
@@ -158,22 +341,36 @@ export function objectManaValue(
 	obj: CardInstance | StackItem
 ): number {
 	if ('isFaceDown' in obj && obj.isFaceDown) return 0;
-	const card = 'copiableCard' in obj && obj.copiableCard ? obj.copiableCard : obj.card;
-	const base = card.cmc ?? 0;
-	let onStack = false;
-	let itemX: number | undefined;
-	if ('kind' in obj) {
-		onStack = true;
-		itemX = obj.xValue;
-	} else {
-		const stk = state?.stack.find(
-			(s) => s.kind === 'spell' && (s.sourceInstanceId === obj.instanceId || s.id === obj.instanceId)
-		);
-		onStack = obj.zone === 'stack' || Boolean(stk);
-		itemX = stk?.xValue ?? (obj as { xValue?: number }).xValue;
-	}
+	const isStackItem = 'kind' in obj;
+	const card = !isStackItem ? effectiveCardForObject(obj) : obj.card;
+	const stk = isStackItem
+		? obj
+		: state?.stack.find(
+				(s) => s.kind === 'spell' && (s.sourceInstanceId === obj.instanceId || s.id === obj.instanceId)
+			);
+	const onStack = isStackItem || obj.zone === 'stack' || Boolean(stk);
+	const faceOpts = isStackItem
+		? {
+				zone: 'stack' as const,
+				faceIndex: obj.faceIndex,
+				fused: obj.fused,
+				isFaceDown: obj.isFaceDown,
+				...(obj.spellMods?.prototyped || obj.copiableState?.prototyped ? { prototyped: true } : {})
+			}
+		: stk
+			? {
+					zone: 'stack' as const,
+					faceIndex: stk.faceIndex,
+					fused: stk.fused,
+					isFaceDown: stk.isFaceDown,
+					...(stk.spellMods?.prototyped || stk.copiableState?.prototyped ? { prototyped: true } : {})
+				}
+			: instanceFaceOptions(obj);
+	const view = resolveObjectFaces(card, faceOpts);
+	const base = effectiveManaValue(card, faceOpts);
+	const itemX = isStackItem ? obj.xValue : (stk?.xValue ?? (obj as { xValue?: number }).xValue);
 	if (onStack && itemX !== undefined && itemX > 0) {
-		const xSymbols = (card.manaCost || '').match(/\{X\}/gi)?.length ?? 0;
+		const xSymbols = (view.manaCost || '').match(/\{X\}/gi)?.length ?? 0;
 		return base + itemX * xSymbols;
 	}
 	return base;
@@ -195,23 +392,149 @@ function compare(actual: number, cmp: Compare, ctx: FilterContext): boolean {
 	}
 }
 
+function sharesCreatureTypeWithCommander(
+	state: GameState,
+	controllerId: string,
+	obj: CardInstance,
+	evaluated: ReturnType<typeof evaluatePermanent> | null,
+	card: ReturnType<typeof effectiveCardForObject>,
+	faceOpts: ReturnType<typeof instanceFaceOptions>,
+	types: string[],
+	subtypes: string[],
+	hasSubType: (s: string) => boolean
+): boolean {
+	const player = state.players.find((p) => p.playerId === controllerId);
+	if (!player) return false;
+	const commanderCards: CardInstance[] = [
+		...player.command.filter((c) => c.isCommander),
+		...player.battlefield.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.graveyard.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.exile.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.hand.filter((c) => c.isCommander && c.ownerId === player.playerId),
+		...player.library.filter((c) => c.isCommander && c.ownerId === player.playerId)
+	];
+	if (commanderCards.length === 0) return false;
+
+	const objIsCreatureOrKindred = types.some((t) => {
+		const tl = t.toLowerCase();
+		return tl === 'creature' || tl === 'kindred' || tl === 'tribal';
+	});
+	const objHasChangeling =
+		objIsCreatureOrKindred &&
+		!obj.isFaceDown &&
+		activeAbilityDefs(card, faceOpts).some(
+			(ab) =>
+				(ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'changeling') ||
+				(ab.kind === 'static' && ab.static.k === 'continuous' && ab.static.mod.k === 'allCreatureTypes')
+		);
+
+	const objCreatureSubtypes = (evaluated ? splitTypeLine(evaluated.typeLine).subtypes : subtypes).filter(
+		(s: string) => !NON_CREATURE_SUBTYPES.has(s)
+	);
+
+	for (const cmd of commanderCards) {
+		const cmdEvaluated = cmd.zone === 'battlefield' ? evaluatePermanent(state, cmd) : null;
+		const cmdCard = effectiveCardForObject(cmd);
+		const cmdFaceOpts = instanceFaceOptions(cmd);
+		const cmdTypeLine = cmdEvaluated
+			? cmdEvaluated.typeLine
+			: resolveObjectFaces(cmdCard, cmdFaceOpts).typeLine;
+		const cmdParsed = splitTypeLine(cmdTypeLine);
+		const cmdIsCreatureOrKindred = cmdParsed.types.some((t) => {
+			const tl = t.toLowerCase();
+			return tl === 'creature' || tl === 'kindred' || tl === 'tribal';
+		});
+		const cmdHasChangeling =
+			cmdIsCreatureOrKindred &&
+			!cmd.isFaceDown &&
+			activeAbilityDefs(cmdCard, cmdFaceOpts).some(
+				(ab) =>
+					(ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'changeling') ||
+					(ab.kind === 'static' && ab.static.k === 'continuous' && ab.static.mod.k === 'allCreatureTypes')
+			);
+
+		const cmdCreatureSubtypes = cmdParsed.subtypes.filter(
+			(s: string) => !NON_CREATURE_SUBTYPES.has(s)
+		);
+
+		if (cmdHasChangeling && (objCreatureSubtypes.length > 0 || objHasChangeling)) return true;
+		if (objHasChangeling && (cmdCreatureSubtypes.length > 0 || cmdHasChangeling)) return true;
+
+		for (const sub of cmdCreatureSubtypes) {
+			if (hasSubType(sub)) return true;
+		}
+	}
+	return false;
+}
+
 /** Does `obj` match `filter`? Zone is checked only if the filter names one. */
 export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx: FilterContext): boolean {
 	const { state } = ctx;
+	const objZone = ctx.zone ?? obj.zone;
 	if (filter.zone) {
 		const zones = Array.isArray(filter.zone) ? filter.zone : [filter.zone];
-		if (!zones.includes(obj.zone as ZoneType)) return false;
+		if (!zones.includes(objZone as ZoneType)) return false;
 	}
-	if (obj.zone === 'battlefield' && obj.phasedOut) return false;
+	if (objZone === 'battlefield' && obj.phasedOut) return false;
 
-	const onBattlefield = obj.zone === 'battlefield';
+	const onBattlefield = objZone === 'battlefield';
 	const evaluated = onBattlefield ? evaluatePermanent(state, obj) : null;
-	const card = obj.copiableCard ?? obj.card;
-	const typeLine = evaluated ? evaluated.typeLine : card.typeLine;
+	const card = effectiveCardForObject(obj);
+	const faceOpts = instanceFaceOptions(obj, objZone === 'stack' ? 'stack' : objZone);
+	const typeLine = evaluated ? evaluated.typeLine : resolveObjectFaces(card, faceOpts).typeLine;
 	const { types, subtypes } = splitTypeLine(typeLine);
-	const isPermanentType = (t: string) => types.some((pt) => pt.toLowerCase() === t.toLowerCase());
+
+	// --- Track P17a ---
+	let cachedOffBfGrants: ReturnType<typeof getOffBattlefieldGrantedCharacteristics> | null | undefined;
+	const getOffBfGrants = () => {
+		if (cachedOffBfGrants !== undefined) return cachedOffBfGrants;
+		if (onBattlefield || obj.isFaceDown || inOffBattlefieldGrantLookup) {
+			cachedOffBfGrants = null;
+			return null;
+		}
+		inOffBattlefieldGrantLookup = true;
+		try {
+			cachedOffBfGrants = getOffBattlefieldGrantedCharacteristics(
+				state,
+				obj.zone === objZone ? obj : ({ ...obj, zone: objZone as ZoneType } as CardInstance)
+			);
+		} finally {
+			inOffBattlefieldGrantLookup = false;
+		}
+		return cachedOffBfGrants;
+	};
+	const resolveOffBattlefieldColors = (): import('../types.ts').ManaColor[] => {
+		if (obj.isFaceDown || hasAllOffBattlefieldAndSpellsColorless(state)) return [];
+		// --- Track P22a: Pre-game commander chosen color applies in all zones (CR 903.4) ---
+		const baseColors =
+			obj.preGameChosenColor && obj.preGameChosenColor !== 'C'
+				? [obj.preGameChosenColor]
+				: resolveObjectFaces(card, faceOpts).colors;
+		// --- End Track P22a ---
+		const grants = getOffBfGrants();
+		if (!grants || grants.addedColors.length === 0) return baseColors;
+		const merged = [...baseColors];
+		for (const c of grants.addedColors) {
+			if (!merged.includes(c)) merged.push(c);
+		}
+		return merged;
+	};
+	// --- End Track P17a ---
+
+	const isPermanentType = (t: string) => {
+		if (types.some((pt) => pt.toLowerCase() === t.toLowerCase())) return true;
+		if (!evaluated) {
+			const grants = getOffBfGrants();
+			if (grants && grants.addedTypes.some((gt) => gt.toLowerCase() === t.toLowerCase())) {
+				return true;
+			}
+		}
+		return false;
+	};
 
 	if (filter.types && !filter.types.some(isPermanentType)) return false;
+	// --- Track P8 + Track P9 ---
+	if (filter.allTypes && !filter.allTypes.every(isPermanentType)) return false;
 	if (filter.notTypes && filter.notTypes.some(isPermanentType)) return false;
 	if (filter.supertypes && !filter.supertypes.some(isPermanentType)) return false;
 	if (filter.notSupertypes && filter.notSupertypes.some(isPermanentType)) return false;
@@ -220,13 +543,15 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		if (evaluated) return evaluated.hasSubType(s);
 		if (subtypes.some((sub) => sub.toLowerCase() === s.toLowerCase())) return true;
 		// CR 702.73a: Changeling is a characteristic-defining ability that functions in all zones.
-		if (
-			types.some((t) => t.toLowerCase() === 'creature') &&
+		const canHaveCreatureSubtypes =
+			types.some((t) => {
+				const tl = t.toLowerCase();
+				return tl === 'creature' || tl === 'kindred' || tl === 'tribal';
+			}) &&
 			!NON_CREATURE_SUBTYPES.has(s) &&
-			!obj.isFaceDown
-		) {
-			const face = compileCard(card).faces[0];
-			const hasChangeling = face.abilities.some(
+			!obj.isFaceDown;
+		if (canHaveCreatureSubtypes) {
+			const hasChangeling = activeAbilityDefs(card, faceOpts).some(
 				(ab) =>
 					(ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === 'changeling') ||
 					(ab.kind === 'static' &&
@@ -235,26 +560,302 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 			);
 			if (hasChangeling) return true;
 		}
+		// --- Track P17a ---
+		if (!obj.isFaceDown) {
+			const grants = getOffBfGrants();
+			if (grants) {
+				if (canHaveCreatureSubtypes && grants.allCreatureTypes) return true;
+				if (grants.addedSubtypes.some((sub) => sub.toLowerCase() === s.toLowerCase())) {
+					return true;
+				}
+			}
+		}
+		// --- End Track P17a ---
+		// --- Track P20a (CR 604.3a): Self multi-subtype CDA in off-battlefield zones ---
+		if (!obj.isFaceDown) {
+			const cdaSubs = getSelfCdaAddedSubtypes(card, faceOpts);
+			if (cdaSubs.some((sub) => sub.toLowerCase() === s.toLowerCase())) return true;
+		}
+		// --- End Track P20a ---
 		return false;
 	};
 
 	if (filter.subtypes && !filter.subtypes.some(hasSubType)) return false;
 	if (filter.notSubtypes && filter.notSubtypes.some(hasSubType)) return false;
+	if (filter.ofChosenType) {
+		// --- Track P22a: Support both chosenSubType and chosenCardType (CR 614.12 / 300.1) ---
+		const chosenSub = ctx.source?.chosenSubType ?? ctx.stackItem?.sourceChosenSubType;
+		const chosenCardType = ctx.source?.chosenCardType ?? ctx.stackItem?.sourceChosenCardType;
+		if (chosenSub) {
+			if (!hasSubType(chosenSub)) return false;
+		} else if (chosenCardType) {
+			if (!matchesChosenCardType(types, chosenCardType)) return false;
+		} else {
+			return false;
+		}
+		// --- End Track P22a ---
+	}
+	if (filter.ofChosenColor) {
+		const chosenColor = ctx.source?.chosenColor ?? ctx.stackItem?.sourceChosenColor;
+		if (!chosenColor) return false;
+		const colors = onBattlefield
+			? (obj.isFaceDown ? [] : evaluated!.colors)
+			: resolveOffBattlefieldColors();
+		if (!colors.includes(chosenColor)) return false;
+	}
+	// --- Track P11 ---
+	if (filter.ofChosenName) {
+		const chosenName = ctx.source?.chosenCardName ?? ctx.stackItem?.sourceChosenCardName;
+		if (!chosenName || obj.isFaceDown) return false;
+		const effName = evaluated ? evaluated.effectiveName : resolveObjectFaces(card, faceOpts).name;
+		if (effName.toLowerCase() !== chosenName.toLowerCase()) return false;
+	}
+	if (filter.attachedToRef !== undefined) {
+		// --- Track P21 ---
+		if (filter.attachedToRef === 'hostOfSelf') {
+			const hostId = ctx.source?.attachedToId;
+			if (!hostId || obj.instanceId !== hostId) return false;
+		} else if (filter.attachedToRef === 'reanimatedBySelf') {
+			const src = ctx.source;
+			const link = obj.reanimatedByAura;
+			if (!src || !link || link.sourceInstanceId !== src.instanceId) return false;
+			const wantVer =
+				ctx.stackItem?.sourceInstanceId === src.instanceId &&
+				ctx.stackItem.sourceObjectVersion !== undefined
+					? ctx.stackItem.sourceObjectVersion
+					: src.zone === 'battlefield'
+						? (src.objectVersion ?? 1)
+						: src.lastBattlefieldVersion;
+			if (wantVer !== undefined && link.sourceObjectVersion !== wantVer) return false;
+		} else {
+			// --- End Track P21 ---
+			const wantHostId =
+				filter.attachedToRef === 'self' ? ctx.source?.instanceId : ctx.source?.attachedToId;
+			if (!wantHostId || obj.attachedToId !== wantHostId) return false;
+			// --- Track P21 ---
+		}
+		// --- End Track P21 ---
+	}
+	if (filter.historic !== undefined) {
+		const isHist =
+			!obj.isFaceDown &&
+			(isPermanentType('Legendary') || isPermanentType('Artifact') || hasSubType('Saga'));
+		if (isHist !== filter.historic) return false;
+	}
+	// --- End Track P11 ---
 
 	const controllerId = onBattlefield ? obj.controllerId : obj.ownerId;
 	if (filter.controller === 'you' && controllerId !== ctx.controllerId) return false;
 	if (filter.controller === 'opponent' && controllerId === ctx.controllerId) return false;
+	// --- Track P13 ---
+	if (filter.controllerRef) {
+		let wantPid: string | undefined = ctx.controllerId;
+		if (filter.controllerRef.k === 'activePlayer') {
+			wantPid = state.players[state.activePlayerIndex]?.playerId ?? ctx.controllerId;
+		} else if (filter.controllerRef.k === 'ownerOf') {
+			wantPid = ctx.source?.ownerId ?? ctx.controllerId;
+		} else if (filter.controllerRef.k === 'controllerOf') {
+			wantPid = ctx.source?.controllerId ?? ctx.controllerId;
+		} else if (filter.controllerRef.k === 'target') {
+			const tRef = ctx.stackItem?.targets?.[filter.controllerRef.index];
+			wantPid = tRef?.kind === 'player' ? tRef.id : undefined;
+		} else if (filter.controllerRef.k === 'eventPlayer') {
+			wantPid = ctx.stackItem?.eventPlayerId;
+		} else if (filter.controllerRef.k === 'defendingPlayer') {
+			wantPid =
+				ctx.stackItem?.defendingPlayerId ??
+				(ctx.source
+					? state.combat?.attackers.find((a) => a.attackerInstanceId === ctx.source!.instanceId)
+							?.defenderPlayerId
+					: undefined);
+			if (!wantPid) return false;
+		}
+		if (wantPid !== undefined && controllerId !== wantPid) return false;
+	}
+	// --- End Track P13 ---
 	if (filter.owner === 'you' && obj.ownerId !== ctx.controllerId) return false;
 	if (filter.owner === 'opponent' && obj.ownerId === ctx.controllerId) return false;
+	// --- Track P18a ---
+	if (filter.sameOwnerAsSource) {
+		const srcOwnerId = ctx.source?.ownerId ?? ctx.stackItem?.ownerId ?? ctx.controllerId;
+		if (obj.ownerId !== srcOwnerId) return false;
+	}
+	// --- End Track P18a ---
 
 	if (filter.tapped !== undefined && obj.tapped !== filter.tapped) return false;
+	if (filter.saddled !== undefined && Boolean(obj.saddledThisTurn) !== filter.saddled) return false;
+	if (filter.monstrous !== undefined && Boolean(obj.isMonstrous) !== filter.monstrous) return false;
+	// --- Track P10 ---
+	if (filter.suspected !== undefined && Boolean(obj.isSuspected) !== filter.suspected) return false;
+	// --- End Track P10 ---
 	if (filter.token !== undefined && obj.isToken !== filter.token) return false;
 	if (filter.isCommander !== undefined && Boolean(obj.isCommander) !== filter.isCommander) return false;
-	if (filter.other && ctx.source && obj.instanceId === ctx.source.instanceId) return false;
-	if (filter.colors) {
-		const colors = onBattlefield ? (obj.isFaceDown ? [] : evaluated!.colors) : (card.colors ?? []);
-		if (!filter.colors.some((c) => colors.includes(c))) return false;
+	if (filter.exiledWithSelf) {
+		if (obj.zone !== 'exile' || !ctx.source || !obj.exiledBy) return false;
+		const srcVer = ctx.source.objectVersion ?? 1;
+		if (
+			obj.exiledBy.sourceInstanceId !== ctx.source.instanceId ||
+			obj.exiledBy.sourceObjectVersion !== srcVer
+		) {
+			return false;
+		}
 	}
+	if (filter.other && ctx.source && obj.instanceId === ctx.source.instanceId) return false;
+	if (filter.named !== undefined) {
+		// --- Track P19b: resolve active face name off-battlefield as well as evaluated name on-battlefield ---
+		const name = obj.isFaceDown
+			? ''
+			: evaluated
+				? evaluated.effectiveName
+				: resolveObjectFaces(card, faceOpts).name;
+		if (name.toLowerCase() !== filter.named.toLowerCase()) return false;
+		// --- End Track P19b ---
+	}
+	// --- Track P19b ---
+	if (filter.allColors?.length) {
+		const colors = onBattlefield
+			? (obj.isFaceDown ? [] : evaluated!.colors)
+			: resolveOffBattlefieldColors();
+		if (!filter.allColors.every((c) => colors.includes(c))) return false;
+	}
+	if (filter.sameNameAsLinkedExile) {
+		if (!ctx.source || obj.isFaceDown) return false;
+		const candName = (
+			evaluated ? evaluated.effectiveName : resolveObjectFaces(card, faceOpts).name
+		).toLowerCase();
+		if (!candName) return false;
+		const srcId = ctx.source.instanceId;
+		const srcVer = ctx.source.objectVersion ?? 1;
+		let matchedExile = false;
+		for (const pl of ctx.state.players) {
+			for (const ex of pl.exile) {
+				if (
+					ex.exiledBy &&
+					ex.exiledBy.sourceInstanceId === srcId &&
+					ex.exiledBy.sourceObjectVersion === srcVer &&
+					!ex.isFaceDown
+				) {
+					const exName = resolveObjectFaces(
+						effectiveCardForObject(ex),
+						instanceFaceOptions(ex)
+					).name.toLowerCase();
+					if (exName === candName) {
+						matchedExile = true;
+						break;
+					}
+				}
+			}
+			if (matchedExile) break;
+		}
+		if (!matchedExile) return false;
+	}
+	// --- End Track P19b ---
+	if (filter.colors) {
+		const colors = onBattlefield
+			? (obj.isFaceDown ? [] : evaluated!.colors)
+			: resolveOffBattlefieldColors();
+		if (!matchesColorFilter(colors, filter.colors)) return false;
+	}
+	// --- Track P8 ---
+	if (filter.notColors?.length || filter.multicolored !== undefined || filter.monocolored !== undefined) {
+		const colors = onBattlefield
+			? (obj.isFaceDown ? [] : evaluated!.colors)
+			: resolveOffBattlefieldColors();
+		if (filter.notColors?.length && matchesColorFilter(colors, filter.notColors)) return false;
+		if (filter.multicolored !== undefined && (colors.length >= 2) !== filter.multicolored) return false;
+		if (filter.monocolored !== undefined && (colors.length === 1) !== filter.monocolored) return false;
+	}
+	if (filter.hasKeywords?.length || filter.lacksKeywords?.length) {
+		const hasKw = (wanted: string): boolean => {
+			const wLow = wanted.toLowerCase();
+			if (evaluated) {
+				return evaluated.activeKeywords.some((k) => k.toLowerCase() === wLow);
+			}
+			if (obj.isFaceDown) return false;
+			const view = resolveObjectFaces(card, faceOpts);
+			if (view.keywords.some((k) => k.toLowerCase() === wLow)) return true;
+			if (obj.grantedKeywords?.some((k) => k.toLowerCase() === wLow)) return true;
+			return activeAbilityDefs(card, faceOpts).some(
+				(ab) => ab.kind === 'keyword' && ab.keyword.name.toLowerCase() === wLow
+			);
+		};
+		if (filter.hasKeywords?.length && !filter.hasKeywords.some(hasKw)) return false;
+		if (filter.lacksKeywords?.length && filter.lacksKeywords.some(hasKw)) return false;
+	}
+	if (filter.hasCounters !== undefined) {
+		if (filter.hasCounters === 'any') {
+			if (!Object.values(obj.counters).some((n) => n > 0)) return false;
+		} else {
+			if (((obj.counters as Record<string, number>)[filter.hasCounters] ?? 0) <= 0) return false;
+		}
+	}
+	if (
+		filter.sharesTypeWithCommander &&
+		!sharesCreatureTypeWithCommander(
+			state,
+			ctx.controllerId,
+			obj,
+			evaluated,
+			card,
+			faceOpts,
+			types,
+			subtypes,
+			hasSubType
+		)
+	) {
+		return false;
+	}
+	if (filter.targetsSelf) {
+		if (!ctx.source) return false;
+		const targets = (obj as { targets?: Array<{ kind: string; id: string }> }).targets ?? [];
+		if (!targets.some((t) => (t.kind === 'permanent' || t.kind === 'card') && t.id === ctx.source?.instanceId)) return false;
+	}
+	// --- Track P11 ---
+	if (filter.targetsFilter) {
+		const targets = (obj as { targets?: Array<{ kind: string; id: string }> }).targets ?? [];
+		let matchedTarget = false;
+		for (const t of targets) {
+			if (
+				t.kind !== 'permanent' &&
+				t.kind !== 'card' &&
+				t.kind !== 'graveyard_card' &&
+				t.kind !== 'exile_card'
+			) {
+				continue;
+			}
+			for (const p of state.players) {
+				if (p.lost) continue;
+				if (t.kind === 'permanent' || !filter.targetsFilter.zone || filter.targetsFilter.zone === 'battlefield') {
+					const targetPerm = p.battlefield.find(
+						(perm) => !perm.phasedOut && perm.instanceId === t.id
+					);
+					if (targetPerm && matchesObjectFilter(targetPerm, filter.targetsFilter, ctx)) {
+						matchedTarget = true;
+						break;
+					}
+				}
+				if (
+					(t.kind === 'card' || t.kind === 'graveyard_card' || t.kind === 'exile_card') &&
+					(t.kind !== 'card' || (filter.targetsFilter.zone && filter.targetsFilter.zone !== 'battlefield'))
+				) {
+					const zName: PlayerZoneName =
+						t.kind === 'graveyard_card'
+							? 'graveyard'
+							: t.kind === 'exile_card'
+								? 'exile'
+								: (filter.targetsFilter.zone as PlayerZoneName);
+					const targetCard = p[zName]?.find((c) => c.instanceId === t.id);
+					if (targetCard && matchesObjectFilter(targetCard, filter.targetsFilter, ctx)) {
+						matchedTarget = true;
+						break;
+					}
+				}
+			}
+			if (matchedTarget) break;
+		}
+		if (!matchedTarget) return false;
+	}
+	// --- End Track P11 ---
 	if (
 		filter.manaValue &&
 		!compare(
@@ -281,6 +882,103 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		const blocking = state.combat.attackers.some((a) => a.blockerInstanceIds.includes(obj.instanceId));
 		if (blocking !== filter.blocking) return false;
 	}
+	// --- Track P9 ---
+	if (filter.unblockedAttacker !== undefined) {
+		const isUnblocked = isUnblockedAttackerForPlayer(state, obj, ctx.controllerId);
+		if (isUnblocked !== filter.unblockedAttacker) return false;
+	}
+	// --- Track P12 ---
+	if (!matchesP12ObjectFilter(obj, filter, ctx, matchesObjectFilter)) return false;
+	// --- End Track P12 ---
+	// --- Track P13 ---
+	if (
+		!matchesP13ObjectFilterFields(obj, filter, {
+			state,
+			zone: objZone,
+			stackItem: ctx.stackItem
+		})
+	) {
+		return false;
+	}
+	// --- End Track P13 ---
+	// --- Track P14 ---
+	if (!matchesWave5ObjectFilter(obj, filter, ctx)) return false;
+	// --- End Track P14 ---
+	// --- Track P15 ---
+	if (!matchesP15ObjectFilter(filter, obj, ctx)) return false;
+	// --- End Track P15 ---
+	// --- Track P16b ---
+	if (
+		!matchesP16bObjectFilter(obj, filter, {
+			state,
+			controllerId: ctx.controllerId,
+			source: ctx.source,
+			zone: objZone,
+			stackItem: ctx.stackItem
+		})
+	) {
+		return false;
+	}
+	// --- End Track P16b ---
+	// --- Track P17b ---
+	if (!matchesP17bObjectFilter(filter, obj, ctx, matchesObjectFilter)) return false;
+	// --- End Track P17b ---
+	// --- Track P16a (CR 701.72, CR 607.2a) ---
+	if (filter.assimilatedWithSelf) {
+		if (!ctx.source || !obj.assimilatedBy) return false;
+		const srcVer = ctx.source.objectVersion ?? 1;
+		if (
+			obj.assimilatedBy.sourceInstanceId !== ctx.source.instanceId ||
+			obj.assimilatedBy.sourceObjectVersion !== srcVer
+		) {
+			return false;
+		}
+	}
+	// --- End Track P16a ---
+	// --- Track P20a ---
+	if (filter.pairedWithSource) {
+		const pairedId = ctx.source?.pairedWithId;
+		if (!ctx.source || !pairedId) return false;
+		if (obj.instanceId !== ctx.source.instanceId && obj.instanceId !== pairedId) return false;
+	}
+	if (filter.controlledByChosenPlayer) {
+		const chosenPid = ctx.source?.chosenPlayerId;
+		if (!chosenPid || controllerId !== chosenPid) return false;
+	}
+	if (filter.toughnessGreaterThanPower) {
+		const p = objectPower(state, obj);
+		const t = objectToughness(state, obj);
+		if (p === null || t === null || t <= p) return false;
+	}
+	if (filter.manaValueParity !== undefined) {
+		if (!matchesManaValueParity(objectManaValue(state, obj), filter.manaValueParity, ctx.source)) {
+			return false;
+		}
+	}
+	// --- End Track P20a ---
+	// --- Track P21 ---
+	if (!matchesP21ObjectFilter(obj, filter, ctx)) return false;
+	// --- End Track P21 ---
+	// --- Track P22a ---
+	if (filter.manaValueEqualsChosenNumber) {
+		const chosenNum = ctx.source?.chosenNumber ?? ctx.stackItem?.sourceChosenNumber;
+		if (chosenNum === undefined || objectManaValue(state, obj) !== chosenNum) return false;
+	}
+	if (filter.chosenObject) {
+		const chosenObjId = ctx.source?.chosenObjectId;
+		if (!chosenObjId || obj.instanceId !== chosenObjId) return false;
+	}
+	if (filter.sameNameAsNontokenPermanent) {
+		if (obj.isFaceDown) return false;
+		const effName = evaluated ? evaluated.effectiveName : resolveObjectFaces(card, faceOpts).name;
+		if (!matchesSameNameAsNontokenPermanentWave8(state, effName)) return false;
+	}
+	// --- End Track P22a ---
+	// --- Track P22b ---
+	if (hasP22bObjectFilterFields(filter) && !matchesP22bObjectFilter(obj, filter, ctx)) {
+		return false;
+	}
+	// --- End Track P22b ---
 	return true;
 }
 
@@ -325,6 +1023,29 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			return findObjects(amount.of, ctx).length;
 		case 'commanderCastCount':
 			return playerCommanderCastCount(ctx.state, ctx.controllerId);
+		case 'stormCount':
+			return 0;
+		case 'colorsOfManaSpentToCast':
+			return ctx.source?.manaColorsSpent?.length ?? 0;
+		case 'tappedCostPower':
+			return 0;
+		case 'countersOn': {
+			if (amount.of.k !== 'self' || !ctx.source) return 0;
+			// --- Track P8 ---
+			if (amount.counter === 'any') {
+				return Object.values(ctx.source.counters).reduce((acc, n) => acc + (n > 0 ? n : 0), 0);
+			}
+			return ctx.source.counters[amount.counter] ?? 0;
+		}
+		// --- Track P9 ---
+		case 'lkiCounterCount':
+			return ctx.stackItem?.eventLki?.counters?.[amount.counter] ?? ctx.source?.lastKnownCounters?.[amount.counter] ?? 0;
+		case 'kickedCount': {
+			const info = ctx.source
+				? getObjectKickerInfo(ctx.state, ctx.source.card, ctx.source.instanceId, undefined, ctx.source)
+				: { count: 0, tags: [] };
+			return evaluateKickedCountAmount(amount, info);
+		}
 		case 'stat': {
 			if (amount.of.k !== 'self' || !ctx.source) return 0;
 			if (amount.stat === 'power') return objectPower(ctx.state, ctx.source) ?? 0;
@@ -343,6 +1064,15 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			if (amount.of.k !== 'you') return 0;
 			return ctx.state.players.find((p) => p.playerId === ctx.controllerId)?.life ?? 0;
 		}
+		case 'energyCount': {
+			if (amount.player.k === 'you') {
+				return ctx.state.players.find((p) => p.playerId === ctx.controllerId)?.energyCounters ?? 0;
+			}
+			if (amount.player.k === 'activePlayer') {
+				return ctx.state.players[ctx.state.activePlayerIndex]?.energyCounters ?? 0;
+			}
+			return 0;
+		}
 		case 'negate':
 			return -evaluateAmount(amount.of, ctx);
 		case 'sum':
@@ -351,6 +1081,234 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			return Math.min(...amount.args.map((a) => evaluateAmount(a, ctx)));
 		case 'max':
 			return Math.max(...amount.args.map((a) => evaluateAmount(a, ctx)));
+		// --- Track P8 ---
+		case 'distinctCardTypesInZone':
+			return countDistinctCardTypesInZone(ctx.state, ctx.controllerId, amount.zone, amount.whose);
+		// --- Track P10 ---
+		case 'lastRollResult':
+			return ctx.lastRollResult ?? ctx.stackItem?.lastRollResult ?? 0;
+		// --- End Track P10 ---
+		// --- Track P12 ---
+		case 'devouredCount':
+		case 'opponentCount':
+			return evaluateP12Amount(amount, ctx) ?? 0;
+		// --- End Track P12 ---
+		// --- Track P11 ---
+		case 'mul':
+			return amount.factor * evaluateAmount(amount.of, ctx);
+		case 'domain': {
+			const pid =
+				amount.player.k === 'you'
+					? ctx.controllerId
+					: (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId);
+			return computeDomainCount(ctx.state, pid);
+		}
+		case 'partyCount': {
+			const pid =
+				amount.player.k === 'you'
+					? ctx.controllerId
+					: (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId);
+			return computePartyCount(ctx.state, pid);
+		}
+		case 'attachmentsOn': {
+			const hostId =
+				amount.target === 'self'
+					? ctx.source?.instanceId
+					: (ctx.source?.attachedToId ?? undefined);
+			if (!hostId) return 0;
+			return computeAttachmentsOnCount(
+				ctx.state,
+				hostId,
+				amount.filter,
+				ctx.controllerId,
+				ctx.source
+			);
+		}
+		// --- End Track P11 ---
+		// --- Track P13 + Track P14 ---
+		case 'devotion':
+			return amount.player
+				? (evaluateWave5Amount(amount, ctx) ?? 0)
+				: computeDevotionTo(ctx.state, ctx.controllerId, amount.colors);
+		case 'unlockedDoorsCount': {
+			const pid =
+				amount.player.k === 'activePlayer'
+					? (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId)
+					: ctx.controllerId;
+			return computeUnlockedDoorsCount(ctx.state, pid);
+		}
+		case 'excessDamage':
+			return ctx.stackItem?.lastExcessDamage ?? 0;
+		case 'lastEffectAmount':
+			return ctx.stackItem?.lastEffectAmount ?? 0;
+		case 'colorsAmongPermanents': {
+			const pid =
+				amount.player.k === 'activePlayer'
+					? (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId)
+					: ctx.controllerId;
+			return computeColorsAmongPermanents(
+				ctx.state,
+				pid,
+				amount.filter,
+				(perm, f) => matchesObjectFilter(perm, f, ctx)
+			);
+		}
+		case 'half': {
+			const inner = evaluateAmount(amount.of, ctx);
+			return amount.round === 'up' ? Math.ceil(inner / 2) : Math.floor(inner / 2);
+		}
+		case 'dungeonsCompleted': {
+			const pid =
+				amount.player.k === 'activePlayer'
+					? (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId)
+					: ctx.controllerId;
+			const pl = ctx.state.players.find((p) => p.playerId === pid);
+			return pl?.dungeonsCompletedCount ?? 0;
+		}
+		case 'greatestStatAmong': {
+			// --- Track P19a ---
+			if (Array.isArray(amount.filter.zone)) {
+				return computeP19aMultiZoneStatAggregate(
+					ctx.state,
+					amount.filter,
+					amount.stat,
+					'greatest',
+					ctx
+				);
+			}
+			// --- End Track P19a ---
+			if (amount.filter.zone && amount.filter.zone !== 'battlefield') {
+				return evaluateWave5Amount(amount, ctx) ?? 0;
+			}
+			return computeStatAggregateAmong(
+				ctx.state,
+				amount.filter,
+				amount.stat,
+				'greatest',
+				(perm, f) => matchesObjectFilter(perm, f, ctx)
+			);
+		}
+		case 'totalStatAmong':
+			// --- Track P19a ---
+			if (Array.isArray(amount.filter.zone) || (amount.filter.zone && amount.filter.zone !== 'battlefield')) {
+				return computeP19aMultiZoneStatAggregate(
+					ctx.state,
+					amount.filter,
+					amount.stat,
+					'total',
+					ctx
+				);
+			}
+			// --- End Track P19a ---
+			return computeStatAggregateAmong(
+				ctx.state,
+				amount.filter,
+				amount.stat,
+				'total',
+				(perm, f) => matchesObjectFilter(perm, f, ctx)
+			);
+		case 'targetsBeyondFirst':
+		case 'colorsOfObject':
+		case 'totalStatOf':
+		case 'anyNumber':
+			return evaluateWave5Amount(amount, ctx) ?? 0;
+		// --- End Track P13 + Track P14 ---
+		// --- Track P15 ---
+		case 'playerSpeed':
+		case 'gravestormCount':
+			return evaluateP15Amount(amount, ctx.state, ctx.controllerId) ?? 0;
+		// --- End Track P15 ---
+		// --- Track P17b ---
+		case 'p17bMetric':
+			return evaluateP17bAmount(amount, ctx, matchesObjectFilter);
+		// --- End Track P17b ---
+		// --- Track P16a ---
+		case 'countersRemovedThisWay':
+			return ctx.stackItem?.lastCountersRemoved ?? 0;
+		case 'playerCounters': {
+			// --- Track P22a ---
+			if (amount.players) {
+				return evaluatePlayerCountersAmountWave8(
+					ctx.state,
+					ctx.controllerId,
+					amount.counter,
+					amount.player.k,
+					amount.players,
+					ctx.source,
+					ctx.stackItem?.defendingPlayerId
+				);
+			}
+			// --- End Track P22a ---
+			const pid =
+				amount.player.k === 'activePlayer'
+					? (ctx.state.players[ctx.state.activePlayerIndex]?.playerId ?? ctx.controllerId)
+					: ctx.controllerId;
+			const pl = ctx.state.players.find((p) => p.playerId === pid);
+			if (!pl) return 0;
+			if (amount.counter === 'poison') return pl.poison ?? 0;
+			if (amount.counter === 'experience') return pl.experienceCounters ?? 0;
+			if (amount.counter === 'energy') return pl.energyCounters ?? 0;
+			if (amount.counter === 'rad') return pl.radCounters ?? 0;
+			if (amount.counter === 'ticket') return pl.ticketCounters ?? 0;
+			return 0;
+		}
+		// --- End Track P16a ---
+		// --- Track P20a ---
+		case 'manaSpentToCast':
+			return ctx.source?.manaSpentCount ?? ctx.stackItem?.manaSpentCount ?? 0;
+		case 'chosenPlayerZoneCount':
+			return evaluateChosenPlayerZoneCount(
+				ctx.state,
+				ctx.source,
+				ctx.controllerId,
+				amount.zone,
+				amount.filter
+			);
+		case 'opponentsWithLifeLessThanHalfStarting':
+			return countOpponentsWithLifeLessThanHalfStarting(ctx.state, ctx.controllerId);
+		// --- End Track P20a ---
+		// --- Track P20b ---
+		case 'p20bCostPaidCount':
+			return evaluateP20bAmount(amount, ctx);
+		// --- End Track P20b ---
+		// --- Track P19a ---
+		case 'sacrificedCostStat':
+		case 'leastStatAmong':
+		case 'countedThisWay':
+		case 'difference':
+			return evaluateP19aAmount(amount, ctx, (sub) => evaluateAmount(sub, ctx)) ?? 0;
+		// --- End Track P19a ---
+		// --- Track P22a ---
+		case 'distinctNamesCount':
+			return evaluateDistinctNamesFilterCountWave8(
+				ctx.state,
+				ctx.controllerId,
+				amount.of,
+				ctx.source
+			);
+		case 'creaturesDiedThisTurn':
+			return evaluateCreaturesDiedThisTurnWave8(
+				ctx.state,
+				ctx.controllerId,
+				amount.controller
+			);
+		case 'spellsCastThisTurnCount':
+			return evaluateSpellsCastThisTurnWave8(
+				ctx.state,
+				ctx.controllerId,
+				amount.filter,
+				amount.who
+			);
+		// --- End Track P22a ---
+		// --- Track P22b ---
+		case 'opponentsLifeLostThisTurn':
+		case 'targetsTotalManaValue':
+			return evaluateP22bAmount(amount, ctx.state, ctx.controllerId, ctx.stackItem) ?? 0;
+		// --- End Track P22b ---
+		// --- Track P22c ---
+		case 'conditional':
+			return evaluateAmount(evaluateCondition(amount.condition, ctx) ? amount.then : amount.else, ctx);
+		// --- End Track P22c ---
 		default:
 			return 0;
 	}
@@ -373,7 +1331,302 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 			const p = ctx.state.players.find((pl) => pl.playerId === ctx.controllerId);
 			return Boolean(p?.battlefield.some((perm) => !perm.phasedOut && perm.isCommander));
 		}
-		default:
-			return false;
+		case 'kicked': {
+			const info = ctx.source
+				? getObjectKickerInfo(ctx.state, ctx.source.card, ctx.source.instanceId, undefined, ctx.source)
+				: { count: 0, tags: [] };
+			return evaluateKickerCondition(cond, info);
+		}
+		case 'evoked':
+			return ctx.source
+				? isObjectEvoked(ctx.state, ctx.source.instanceId, undefined, ctx.source)
+				: false;
+		case 'escaped':
+			return ctx.source
+				? isObjectEscaped(ctx.state, ctx.source.instanceId, undefined, ctx.source)
+				: false;
+		case 'isMonarch': {
+			const monarchId = ctx.state.monarchPlayerId ?? null;
+			if (!monarchId) return false;
+			if (cond.player) {
+				if (cond.player.k === 'you') return monarchId === ctx.controllerId;
+				if (cond.player.k === 'activePlayer') {
+					return monarchId === ctx.state.players[ctx.state.activePlayerIndex]?.playerId;
+				}
+				return false;
+			}
+			const rel = cond.relation ?? 'you';
+			if (rel === 'you') return monarchId === ctx.controllerId;
+			if (rel === 'opponent') return monarchId !== ctx.controllerId;
+			return true;
+		}
+		case 'foretold':
+			return ctx.source
+				? isObjectForetold(ctx.state, ctx.source.instanceId, undefined, ctx.source)
+				: false;
+		case 'blitzed':
+			return ctx.source
+				? isObjectBlitzed(ctx.state, ctx.source.instanceId, undefined, ctx.source)
+				: false;
+		case 'saddled':
+			return Boolean(ctx.source?.saddledThisTurn);
+		case 'exertedThisTurn':
+			return Boolean(ctx.source?.exertedThisTurn || ctx.stackItem?.sourceExertedThisTurn);
+		case 'monstrous':
+			return Boolean(ctx.source?.isMonstrous);
+		case 'matchesFilter':
+			return ctx.source ? matchesObjectFilter(ctx.source, cond.filter, ctx) : false;
+		// --- Track P7 ---
+		case 'creatureDiedThisTurn':
+		case 'attackedThisTurn':
+		case 'permanentLeftBattlefieldThisTurn':
+		case 'gainedLifeThisTurn':
+		case 'wasCast': {
+			const minLife =
+				cond.k === 'gainedLifeThisTurn' && cond.min ? evaluateAmount(cond.min, ctx) : undefined;
+			return evaluateP7Condition(ctx.state, cond, ctx.controllerId, {
+				sourceObj: ctx.source,
+				stackItem: ctx.stackItem,
+				minLife
+			});
+		}
+		// --- Track P8 ---
+		case 'objectState':
+		case 'opponentCount':
+		case 'anyPlayerLife':
+		case 'distinctControlledCreaturePowers':
+			return evaluateP8Condition(cond, ctx);
+		// --- Track P9 ---
+		case 'cameUnderControlSinceLastUpkeep':
+			return ctx.source
+				? cameUnderControlSinceLastUpkeep(ctx.state, ctx.controllerId, ctx.source)
+				: false;
+		case 'ninjutsuWindow':
+			return isNinjutsuWindowOpen(ctx.state);
+		case 'lkiHasNoCounter': {
+			const c =
+				ctx.stackItem?.eventLki?.counters?.[cond.counter] ??
+				ctx.source?.lastKnownCounters?.[cond.counter] ??
+				ctx.source?.counters[cond.counter] ??
+				0;
+			return c <= 0;
+		}
+		// --- Track P10 ---
+		case 'opponentLostLifeThisTurn':
+		case 'descendedThisTurn':
+		case 'hadCounterOnIt':
+		case 'manaColorSpentToCast':
+		case 'opponentComparison':
+			return evaluateP10Condition(cond, ctx);
+		// --- End Track P10 ---
+		// --- Track P12 ---
+		case 'classLevelIs':
+		case 'classLevelAtLeast':
+		case 'caseSolved':
+		case 'caseUnsolved':
+		case 'isRenowned':
+		case 'boastAttackedThisTurn':
+		case 'exhaustUnused':
+		case 'dethroneMostLife':
+		case 'trainingGreaterAttacker':
+		case 'creaturesAttackedCountThisTurn':
+		case 'totalPowerControlled':
+		case 'colorsAmongControlledPermanents':
+		case 'sourcesDealtDamageThisTurn':
+		case 'cardsPutIntoGraveyardFromAnywhereThisTurn':
+		case 'spellsCastThisTurnCount':
+			return evaluateP12Condition(cond, ctx, matchesObjectFilter) ?? false;
+		// --- End Track P12 ---
+		// --- Track P13 ---
+		case 'selfInZone':
+		case 'spellsCastLastTurn':
+		case 'hasCompletedDungeon':
+		case 'hasInitiative':
+		case 'hasCitysBlessing':
+		case 'hasMaxSpeed':
+		case 'opponentPoisonAtLeast':
+		case 'nonlandEnteredThisTurn':
+		case 'voidThisTurn':
+		case 'sameColorManaSpentAtLeast':
+			return (
+				evaluateP13Condition(cond, {
+					state: ctx.state,
+					controllerId: ctx.controllerId,
+					source: ctx.source,
+					stackItem: ctx.stackItem,
+					zone: ctx.zone
+				}) ?? false
+			);
+		// --- End Track P13 ---
+		// --- Track P14 ---
+		case 'anyOpponentMetric':
+		case 'cardsDrawnThisTurnAtLeast':
+		case 'nthMatchingSpellThisTurn':
+			return evaluateWave5Condition(cond, ctx) ?? false;
+		// --- End Track P14 ---
+		// --- Track P15 ---
+		case 'maxSpeed':
+		case 'citysBlessing':
+		case 'giftPromised':
+		case 'isDay':
+		case 'isNight':
+		case 'isYourTurn':
+		case 'selfPrepared':
+		case 'isImpending':
+		case 'enteredWithXAtLeast':
+			return (
+				evaluateP15Condition(cond, ctx.state, ctx.controllerId, {
+					source: ctx.source,
+					giftPromised: Boolean(
+						ctx.source?.giftPromised ||
+							ctx.stackItem?.giftKind ||
+							ctx.stackItem?.sourceGiftPromised
+					)
+				}) ?? false
+			);
+		// --- End Track P15 ---
+		// --- Wave 6 Shared ---
+		case 'isPaired':
+			return Boolean(ctx.source?.pairedWithId);
+		case 'tributePaid':
+			// --- Track P18a ---
+			return Boolean(ctx.source?.tributePaid || ctx.stackItem?.sourceTributePaid);
+		// --- End Track P18a ---
+		case 'hasEnduringStory':
+			// --- Track P18a ---
+			return Boolean(
+				ctx.source?.hasEnduringStory ||
+					ctx.state.players.find((pl) => pl.playerId === ctx.controllerId)?.hasEnduringStory
+			);
+		// --- End Track P18a ---
+		case 'isHarnessed':
+			return Boolean(ctx.source?.isHarnessed);
+		// --- End Wave 6 Shared ---
+		// --- Track P16b ---
+		case 'attackingTotalPowerAtLeast':
+		case 'firstCombatPhaseOfTurn':
+		case 'eventPlayerHandCount':
+		case 'notEventPlayerTurn':
+		case 'cardLeftYourGraveyardThisTurn':
+		case 'committedCrimeThisTurn':
+		case 'controlledByOtherThanOwner':
+		case 'youLostLifeThisTurn':
+		case 'playerLostLifeAtLeastThisTurn':
+		case 'moreCardsInHandThanEachOpponent':
+		case 'eventObjectMatchedLki':
+			return (
+				evaluateP16bCondition(
+					cond,
+					{
+						state: ctx.state,
+						controllerId: ctx.controllerId,
+						source: ctx.source,
+						stackItem: ctx.stackItem
+					},
+					matchesObjectFilter
+				) ?? false
+			);
+		// --- End Track P16b ---
+		// --- Track P17b ---
+		case 'p17bCondition':
+			return evaluateP17bCondition(cond, ctx, matchesObjectFilter);
+		// --- End Track P17b ---
+		// --- Track P18b ---
+		case 'anchorWordChosen':
+			return (ctx.source?.chosenAnchorWord ?? '').trim().toLowerCase() === cond.word.trim().toLowerCase();
+		case 'youWereAttackedThisCombat':
+			return Boolean(
+				ctx.state.combat.active &&
+					ctx.state.combat.attackers.some(
+						(a) =>
+							a.defenderPlayerId === ctx.controllerId &&
+							!a.defenderPlaneswalkerId &&
+							!a.defenderBattleId
+					)
+			);
+		// --- End Track P18b ---
+		// --- Track P20a ---
+		case 'lifeCompareHalfStarting':
+			return evaluateLifeCompareHalfStarting(ctx.state, ctx.controllerId, cond.who, cond.op);
+		case 'mostCommonColorAmongPermanents':
+			return evaluateMostCommonColorOnBattlefield(ctx.state, cond.color, cond.allowTie);
+		// --- End Track P20a ---
+		// --- Track P19b ---
+		case 'creatureDiedUnderYourControlThisTurn':
+		case 'treasureManaSpentToCast':
+		case 'noSpellCastFromHandThisTurn':
+		case 'isSuspended':
+		case 'choseOtherRingBearer':
+		case 'enteredUnderYourControlThisTurn':
+		case 'paidAltCost':
+		case 'notBeingDeclaredAsAttacker':
+		case 'selfDealtDamageToOpponentThisTurn':
+		case 'damageDealtToSelfThisTurnAtLeast':
+		case 'eventObjectEnteredThisTurn':
+		case 'selfEnteredThisTurn':
+		case 'distinctManaValuesInGraveyardAtLeast':
+			return (
+				evaluateP19bCondition(
+					cond,
+					{
+						state: ctx.state,
+						controllerId: ctx.controllerId,
+						sourceInstanceId: ctx.source?.instanceId ?? ctx.stackItem?.sourceInstanceId ?? '',
+						source: ctx.source,
+						stackItem: ctx.stackItem,
+						triggerEventStackItem: ctx.stackItem?.triggerEventStackItem,
+						zone: ctx.zone
+					},
+					matchesObjectFilter
+				) ?? false
+			);
+		// --- End Track P19b ---
+		// --- Track P20b ---
+		case 'p20bCondition':
+			return evaluateP20bCondition(cond, ctx, matchesObjectFilter);
+		// --- End Track P20b ---
+		// --- Track P19a ---
+		case 'anyGraveyardAtLeast':
+		case 'controlledTargetAtResolution':
+		case 'abilityActivatedCountThisTurn':
+			return evaluateP19aCondition(cond, ctx) ?? false;
+		// --- End Track P19a ---
+		// --- Track P22a ---
+		case 'lifeAtLeastAboveStarting':
+		case 'isAttackingAlone':
+		case 'hasntDealtDamageYet':
+		case 'yourTurnsTakenAtLeast':
+		case 'enteredBattlefieldUnderYourControlThisTurn':
+			return evaluateWave8Condition(cond, ctx.state, ctx.controllerId, ctx.source) ?? false;
+		// --- End Track P22a ---
+		// --- Track P22c ---
+		case 'youDiscardedThisTurn': {
+			const turnKey = ctx.state.turnSerial ?? ctx.state.turnNumber;
+			return ctx.state.players.some((p) =>
+				p.graveyard.some(
+					(c) =>
+						c.discardedByPlayerIdThisTurn === ctx.controllerId &&
+						c.discardedTurnSerial === turnKey
+				)
+			);
+		}
+		// --- End Track P22c ---
+		// --- Track P22b ---
+		default: {
+			const p22b = evaluateP22bCondition(
+				cond,
+				{
+					state: ctx.state,
+					controllerId: ctx.controllerId,
+					sourceInstanceId: ctx.source?.instanceId ?? '',
+					source: ctx.source,
+					stackItem: ctx.stackItem,
+					eventPlayerId: ctx.eventPlayerId
+				},
+				matchesObjectFilter
+			);
+			return p22b ?? false;
+		}
+		// --- End Track P22b ---
 	}
 }

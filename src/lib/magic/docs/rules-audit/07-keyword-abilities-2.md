@@ -1,4 +1,8 @@
 # Rules audit: 702.85–702.196 Keyword Abilities (Cascade onward) (rules.txt lines 4655–5487)
+
+> [!WARNING]
+> **Stale (checked 2026-11-12).** This report was written at `917180b` and hasn't been reconciled with the ~136 commits since. Many rows it lists as missing or partial have since been fixed, it still cites the deleted `compiler/adapter.ts` and old line numbers, and its counts don't add up. Rows marked **Updated 2026-11-12** were re-checked; treat every other row as a lead to verify against the code, not as current status. Details: [`../audits/`](../audits/README.md).
+
 Audited at engine-rewrite 917180b on 2026-11-09.
 
 ## Summary
@@ -9,7 +13,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
   2. **CR 702.108a–b (Prowess)** — `'prowess'` is included in `compiler/statics.ts:118` (`KEYWORDS`) and `runtime/layers.ts:185` (`KEYWORD_LABELS`), so cards granting Prowess (e.g. `"Creatures you control have prowess"`) compile as `fullySupported: true` and display a `"Prowess"` badge on creatures, while printed `Prowess` also displays a `"Prowess"` badge via `runtime/layers.ts:326-328`, yet no runtime spell-cast trigger exists to grant `+1/+1 until end of turn` — **S**.
   3. **CR 702.85a / 702.88a / 702.99a / 702.113a / 702.131a / 702.144a / 702.153a / 702.174a (Instant/sorcery keywords: Cascade, Rebound, Cipher, Awaken, Ascend, Demonstrate, Casualty, Gift, etc.)** — `parseSpellText` (`compiler/effects.ts:1187-1191,1218`) skips all non-period keyword lines on instants/sorceries, and `noteUnautomatedOnEnter` (`engine.ts:3299,3308-3320`) only logs unsupported keywords when a permanent enters the battlefield; casting an instant/sorcery with an unimplemented keyword resolves only its non-keyword text automatically with **zero log notice** and no manual-resolution prompt — **S**.
   4. **CR 702.124f, 702.124h, 702.124i, 702.124j, 702.124k (Partner variants & Backgrounds)** — (a) `hasGenericPartner` (`scryfall.ts:431-437`) uses `/\bpartner\b/i.test(card.oracleText)`, conflating `Partner—Survivors`, `Partner—Character select`, and `Partner—Father & son` (and any legendary creature whose rules text contains the word `"partner"`) with generic `Partner`; (b) `"Partner with [name]"` when `[name]` has no comma (e.g. *Blaring Recruiter*) compiles in `compiler/adapter.ts:198-244` as `fullySupported: true` while silently dropping the CR 702.124j ETB library-search trigger; (c) `"Commander creatures you own have ..."` on all Background enchantments is uncompiled (`static_not_compiled`) — **M**.
-  5. **CR 702.122a–e / 702.161a / 702.171a–c / 702.184a–c (Crew, Living Metal, Saddle, Station)** — `Vehicle` is recognized as a card subtype (`scryfall.ts:182`, `runtime/layers.ts:142`), allowing Legendary Vehicles/Spacecraft as commanders, but `Crew N`, `Living metal`, `Saddle N`, and `Station` are completely unimplemented, leaving Vehicles unable to animate into creatures — **M**.
+  5. **CR 702.161a / 702.171a–c / 702.184a–c (Living Metal, Saddle, Station)** — `Living metal`, `Saddle N`, and `Station` remain unimplemented — **M**. *(**Crew N** `CR 702.122a–e` updated to implemented on 2026-11-13.)*
   6. **CR 702.85a–c (Cascade)** — Commander staple keyword (`Cascade`) is unimplemented (`keyword_not_implemented`), yet `runtime/layers.ts:179,326-328` still renders `"Cascade"` as an active keyword badge on permanents (`KEYWORD_LABELS`) and `noteUnautomatedOnEnter` only logs after the spell resolves onto the battlefield rather than when cast — **M**.
   7. **CR 702.93a / 702.135a / 702.136a / 702.147a / 702.181a (Undying, Afterlife, Riot, Decayed, Mobilize)** — Extremely common Commander creature keywords with straightforward triggered/replacement semantics are all `keyword_not_implemented` — **M**.
   8. **CR 702.116a–b / 702.141a / 702.157a–b / 702.175a–b (Myriad, Encore, Squad, Offspring)** — Token-copy multiplayer/Commander mechanics are unimplemented — **M**.
@@ -30,7 +34,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.86 Annihilator
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.86a–b | Annihilator N attack trigger (defending player sacrifices N permanents); multiple instances trigger separately | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:130`) → `keyword_not_implemented`. Static grants like `"Creatures you control have annihilator 1"` also fail `parseKeywordList` (`compiler/statics.ts:101-125`) → `static_not_compiled`. |
+| 702.86a–b | Annihilator N attack trigger (defending player sacrifices N permanents); multiple instances trigger separately | partial | **Updated 2026-11-13:** Innate `Annihilator N` is implemented in `KEYWORD_REGISTRY` (`keywords.ts`) using `PlayerRef` `{ k: 'defendingPlayer' }` (`ir.ts`, `defendingPlayerId` propagated from `state.combat.attackers` through `runtime/triggers.ts` → `StackItem` → `runtime/effects.ts`), with multiple instances triggering separately (`CR 702.86b`). Parameterized static grants like `"Creatures you control have annihilator 1"` still do not compile (`static_not_compiled`). |
 
 ### 702.87 Level Up
 | CR | Rule (short) | Status | Evidence / notes |
@@ -61,12 +65,12 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.91 Battle Cry
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.91a–b | Battle cry attack trigger (`+1/+0` to each other attacking creature); multiple instances trigger separately | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:131`) → `keyword_not_implemented`. |
+| 702.91a–b | Battle cry attack trigger (`+1/+0` to each other attacking creature); multiple instances trigger separately | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`, `grantable: true`) expanding to an `attacks` trigger pumping `{ types: ['Creature'], attacking: true, other: true }` by `+1/+0` until EOT, including Layer 6 grants and separate stacking (`CR 702.91b`). |
 
 ### 702.92 Living Weapon
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.92a | Living weapon ETB trigger (create 0/0 black Phyrexian Germ token and attach) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:141`) → `keyword_not_implemented`. |
+| 702.92a | Living weapon ETB trigger (create 0/0 black Phyrexian Germ token and attach) | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`) expanding to an ETB `createToken` (0/0 black `Phyrexian Germ`) + `attach` trigger (`CR 704.3` SBAs wait until trigger resolution). |
 
 ### 702.93 Undying
 | CR | Rule (short) | Status | Evidence / notes |
@@ -86,9 +90,9 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.96 Overload
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.96a | Overload `[cost]` alternative cost + replace all instances of `'target'` with `'each'` | partial | Recognised in `IMPLEMENTED_KEYWORDS` (`compiler/adapter.ts:116`) and `ALTERNATIVE_COST_KEYWORDS` (`runtime/costs.ts:80-95,115-120`); `castMode: 'overload'` is supported in `engine.ts:530-585,1523-1540` and `runtime/effects.ts:302-313,622-641,1246-1256`. Three gaps: (1) `interpretableNow` (`runtime/effects.ts:302-313`) rejects Overload whenever a target spec has `spec.kind === 'player'`, so player-targeted Overload spells cannot auto-resolve; (2) `isOverloadCastMode` (`engine.ts:530-542`) falls back to `xValue >= 1 && !/\{X\}/i.test(card.manaCost)` when `castMode` is omitted; (3) legacy `bounce_target` (`engine.ts:4827-4845`) hardcodes bouncing opponents' nonland permanents (*Cyclonic Rift*). |
-| 702.96b | Overloaded spell requires no targets and may affect objects that couldn't be chosen as legal targets | implemented | `engine.ts:7620-7624,7759-7768` and `ruleTree.ts:291-318` set `requiresTarget: false` / `minTargets: 0, maxTargets: 0`, and `runtime/effects.ts:622-641` iterates `allPermanents` via `matchesFilter` without target legality/hexproof/shroud checks. |
-| 702.96c | Overload's second ability creates a text-changing effect (CR 612) | partial | Approximated via an `overload: boolean` execution flag in `runtime/effects.ts:622-641,1246-1256` rather than a CR 612 text-changing effect. |
+| 702.96a | Overload `[cost]` alternative cost + replace all instances of `'target'` with `'each'` | partial | **Updated 2026-11-12:** Migrated onto `CastOption` / `getCastOptions` (`id: 'alt:overload'`, `optionId` on `cast_spell`, `castOptionId` + `spellMods.targetsBecomeEach` on `StackItem`, generic `castOptionsModal` in `ArenaTable.svelte` with zero `'overload'`/`castMode` strings). `{X}` in overload cost is charged while keeping printed mana value (`CR 118.9c`), tested in `runtime/keywords-casting.test.ts` and verified in running `ArenaTable.svelte`. Still partial: player-targeted Overload spells don't auto-resolve (`interpretableNow`), and "target" → "each" uses `spellMods.targetsBecomeEach` rather than a CR 612 text change (702.96c). |
+| 702.96b | Overloaded spell requires no targets and may affect objects that couldn't be chosen as legal targets | implemented | **Updated 2026-11-12:** `CastOption.requiresTarget = false` when `spellMods.targetsBecomeEach` is set, and `runtime/effects.ts` iterates `allPermanents` via `matchesFilter` without target legality/hexproof/shroud checks. |
+| 702.96c | Overload's second ability creates a text-changing effect (CR 612) | partial | **Updated 2026-11-12:** Approximated via `spellMods.targetsBecomeEach` on `CastOption` / `StackItem` in `runtime/effects.ts` rather than a CR 612 text-changing effect. |
 
 ### 702.97 Scavenge
 | CR | Rule (short) | Status | Evidence / notes |
@@ -118,7 +122,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.102 Fuse
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.102a–d | Fuse static ability on split cards (cast both halves from hand, combined characteristics/cost, left-then-right resolution) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:138`), and split cards (`card.oracleText.includes('\n//\n')`) are rejected early as `unsupported('multiface')` in `compiler/adapter.ts:99-109`. |
+| 702.102a–d | Fuse static ability on split cards (cast both halves from hand, combined characteristics/cost, left-then-right resolution) | exact | Updated 2026-11-13: Promoted `'fuse'` (`castOption`) in `keywords.ts`; `compiler/card.ts` compiles split halves per face; `engine.ts` (`enumerateCandidateCastOptions`) offers `'fused'` from `hand` only, `compileSpellEffects(..., fused = true)` merges left-then-right steps/targets with offset shifting, and `resolveObjectFaces` evaluates combined characteristics on the stack (`CR 709.4d`). Covered in `runtime/keywords-casting.test.ts`. |
 
 ### 702.103 Bestow
 | CR | Rule (short) | Status | Evidence / notes |
@@ -158,7 +162,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.110 Exploit
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.110a–b | Exploit ETB optional creature-sacrifice trigger; "exploits a creature" event | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:137`) → `keyword_not_implemented`. |
+| 702.110a–b | Exploit ETB optional creature-sacrifice trigger; "exploits a creature" event | partial | **Updated 2026-11-13:** `702.110a` ETB optional creature-sacrifice trigger is implemented in `KEYWORD_REGISTRY` (`keywords.ts`); `702.110b` companion `"When ~ exploits a creature"` triggers remain uncompiled. |
 
 ### 702.111 Menace
 | CR | Rule (short) | Status | Evidence / notes |
@@ -180,7 +184,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.114 Devoid
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.114a | Devoid characteristic-defining ability (object is colorless in all zones) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:134`) → `keyword_not_implemented`. (Scryfall already sets `colors: []` on printed Devoid cards, but effects that grant/remove abilities or inspect Devoid as a CDA do not evaluate it in `runtime/layers.ts`.) |
+| 702.114a | Devoid characteristic-defining ability (object is colorless in all zones) | implemented | Promoted in `keywords.ts` (`cr: '702.114'`, static Layer 5 colorless CDA in `runtime/layers.ts` & off-battlefield `runtime/objectFilter.ts`, tested in `runtime/keywords-devoid-and-dig.test.ts`). |
 
 ### 702.115 Ingest
 | CR | Rule (short) | Status | Evidence / notes |
@@ -220,7 +224,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.122 Crew
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.122a–e | Crew N activated ability on Vehicles, "crews a Vehicle" / "crewed by" designations, "can't crew", "becomes crewed" triggers | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:133`) → `keyword_not_implemented`. Although `Vehicle` is recognised as a subtype (`runtime/layers.ts:142`, `runtime/objectFilter.ts:52`, `scryfall.ts:182`), Vehicles cannot be crewed. |
+| 702.122a–e | Crew N activated ability on Vehicles, "crews a Vehicle" / "crewed by" designations, "can't crew", "becomes crewed" triggers | implemented | **Updated 2026-11-13:** Promoted `'crew'` in `KEYWORD_REGISTRY` (`keywords.ts` via `buildCrewAbility`), subset-sum cost `{ k: 'tapSubsetSum', metric: 'power' }` (`runtime/costs.ts`, `ArenaTable.svelte`, `ai.ts`), `TimedContinuousEffect` Layer 4/6/7b animation (`runtime/layers.ts`, `CR 302.6` summoning sickness, `clearEndOfTurnAndDamage`), `cantCrewVehicles`, and `BecomesCrewed` event/triggers (`runtime/crew-and-vehicles.test.ts`). |
 
 ### 702.123 Fabricate
 | CR | Rule (short) | Status | Evidence / notes |
@@ -235,11 +239,11 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 | 702.124c | Combined color identity of two commanders | implemented | `validateCommanderDeck` (`scryfall.ts:400-411`), `getPlayerCommanderIdentity` (`engine.ts:514-528`), and `commanderColors` (`runtime/effects.ts:1683-1703`) union the color identities of both commanders. |
 | 702.124d | Commanders function independently for commander tax and 21 combat damage | implemented | `commanderCastCounts[inst.instanceId]` (`engine.ts:363,1516-1520`, `runtime/costs.ts:211-214`) and `commanderDamageTaken[attacker.instanceId]` (`engine.ts:368,6161-6168,6266-6269,6967`) are keyed by each commander's `instanceId` independently. |
 | 702.124e | Effects referring to "your commander" refer to either one (or player chooses if action affects one) | missing | No general `"your commander"` or `"commander creatures you own"` selector exists in `compiler/statics.ts`, `compiler/effects.ts`, or `runtime/objectFilter.ts` (only legacy multi-word type filter in `engine.ts:7187` checks `perm.isCommander`). |
-| 702.124f | Different partner abilities are distinct and cannot be combined | partial | `areValidCommanderPartners` (`scryfall.ts:452-489`) checks each pairing family separately, **except** `hasGenericPartner` (`scryfall.ts:431-437`) only excludes `partnerWithTarget`, `hasFriendsForever`, and `hasDoctorsCompanion`, so `Partner—Survivors`, `Partner—Character select`, and `Partner—Father & son` match `/\bpartner\b/i` and can illegally pair with generic `Partner` or with each other. |
+| 702.124f | Different partner abilities are distinct and cannot be combined | implemented | **Updated 2026-11-12:** `hasGenericPartner` (`scryfall.ts`) now reads the compiled `partner` keyword instead of `/\bpartner\b/i`, so "Partner—[text]" variants no longer pair with generic Partner or with a different partner—[text]. Tests: `runtime/keywords-casting.test.ts` ("Partner—[text] pairs only with the same..."). *Earlier audit (may be stale):* `areValidCommanderPartners` (`scryfall.ts:452-489`) checks each pairing family separately, **except** `hasGenericPartner` (`scryfall.ts:431-437`) only excludes `partnerWithTarget`, `hasFriendsForever`, and `hasDoctorsCompanion`, so `Partner—Survivors`, `Partner—Character select`, and `Partner—Father & son` match `/\bpartner\b/i` and can illegally pair with generic `Partner` or with each other. |
 | 702.124g | A card with multiple partner abilities can only use one; max two commanders | implemented | `validateCommanderDeck` (`scryfall.ts:504-505,513-517`) enforces `commanders.length <= 2` and requires `areValidCommanderPartners(c1, c2)`. |
-| 702.124h | "Partner" allows two legendary cards that both have generic partner | partial | `scryfall.ts:431-437,454-456` enforces generic Partner pairing, but `/\bpartner\b/i.test(card.oracleText)` in `hasGenericPartner` false-positives on any legendary creature whose oracle text contains the English word `"partner"` or a `Partner—[text]` variant. |
-| 702.124i | "Partner—[text]" requires both commanders to have the exact same `Partner—[text]` ability | partial | `"Friends forever"` is checked in `scryfall.ts:409-414,470-473`, but `"Partner—Character select"`, `"Partner—Father & son"`, and `"Partner—Survivors"` are not parsed as distinct `[text]` groups and fall into `hasGenericPartner`. |
-| 702.124j | "Partner with [name]" allows pairing the two named cards AND gives an ETB library-search triggered ability | partial | Deck pairing is validated in `scryfall.ts:404-407,457-469` (though `partnerWithTarget`'s regex `/\bPartner with ([^\n(.]+)/i` can truncate names containing a period such as initials). The in-game ETB search trigger is completely missing. Moreover, when `[name]` has no comma (e.g. *Blaring Recruiter*'s `"Partner with Blaring Captain"`), `compiler/adapter.ts:198-244` parses it as `{ name: 'partner', param: 'with Blaring Captain' }` and marks it `fullySupported: true` (`IMPLEMENTED_KEYWORDS.has('partner')`), suppressing any unsupported-ability warning. |
+| 702.124h | "Partner" allows two legendary cards that both have generic partner | implemented | **Updated 2026-11-12:** `hasGenericPartner` reads the compiled `partner` keyword (no parameter), so the English word "partner" in rules text and partner—[text] variants no longer count. Tests: `runtime/keywords-casting.test.ts`. *Earlier audit (may be stale):* `scryfall.ts:431-437,454-456` enforces generic Partner pairing, but `/\bpartner\b/i.test(card.oracleText)` in `hasGenericPartner` false-positives on any legendary creature whose oracle text contains the English word `"partner"` or a `Partner—[text]` variant. |
+| 702.124i | "Partner—[text]" requires both commanders to have the exact same `Partner—[text]` ability | implemented | **Updated 2026-11-12:** `areValidCommanderPartners` (`scryfall.ts`) pairs two cards with the same partner—[text] ability (`partnerTextVariant`, from the compiled keyword's parameter) and rejects different ones. Tests: `runtime/keywords-casting.test.ts`. *Earlier audit (may be stale):* `"Friends forever"` is checked in `scryfall.ts:409-414,470-473`, but `"Partner—Character select"`, `"Partner—Father & son"`, and `"Partner—Survivors"` are not parsed as distinct `[text]` groups and fall into `hasGenericPartner`. |
+| 702.124j | "Partner with [name]" allows pairing the two named cards AND gives an ETB library-search triggered ability | implemented | **Updated 2026-11-12:** `"Partner with [name]"` compiles as `fullySupported: true` in `compiler/card.ts` with both its deck-pairing `partner` keyword (`scryfall.ts`) and its automated ETB library-search triggered ability (`ObjectFilter.named`, `LibrarySearchSpec.named`), tested in `runtime/keywords-casting.test.ts` (accepting + shuffling, declining without shuffling, targeting opponent, synthetic pair). |
 | 702.124k | "Choose a Background" pairs with a legendary Background enchantment; Background can't be a solo commander | partial | Deck validation (`scryfall.ts:440-450,474-480,508-512`) enforces `hasChooseABackground` + `isLegendaryBackground` and rejects a single Background commander (`canBeCommander` is `false` for Enchantments at `scryfall.ts:185-187`). However, in-game, every Background's `"Commander creatures you own have ..."` static ability fails to compile (`static_not_compiled` in `compiler/statics.ts`). |
 | 702.124m | "Doctor's companion" pairs with a legendary Time Lord Doctor creature with no other creature types | implemented | `scryfall.ts:416-429,481-487` validates `hasDoctorsCompanion` + `isTimeLordDoctor`, using `splitSubtypes` (`runtime/layers.ts:83-89`) to preserve `'Time Lord'` as a single subtype and verify `subs.length === 2`. |
 | 702.124n | Effects referring to a partner ability by name or to "partner" generally | missing | No runtime filter or effect queries partner abilities on cards/permanents. |
@@ -297,7 +301,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.135 Afterlife
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.135a–b | Afterlife N dies trigger (create N 1/1 white and black Spirit tokens with flying); multiple instances trigger separately | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:130`) → `keyword_not_implemented`. |
+| 702.135a–b | Afterlife N dies trigger (create N 1/1 white and black Spirit tokens with flying); multiple instances trigger separately | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`) expanding to a `zoneChange` (`battlefield` → `graveyard`) `createToken` trigger creating `N` 1/1 `W/B` Spirit tokens with `Flying`; multiple instances trigger separately (`CR 702.135b`). |
 
 ### 702.136 Riot
 | CR | Rule (short) | Status | Evidence / notes |
@@ -438,7 +442,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.163 For Mirrodin!
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.163a | For Mirrodin! Equipment ETB trigger (create 2/2 red Rebel token and attach) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:138`) via `'for mirrodin!'`, **but** `adaptKeywordLine` (`compiler/adapter.ts:220`) only rejects lines ending in `.`, while `isNonEffectLine` (`compiler/effects.ts:1189`) treats `!` like `.` — on an Equipment, `'For Mirrodin!'` compiles to `keyword_not_implemented`. |
+| 702.163a | For Mirrodin! Equipment ETB trigger (create 2/2 red Rebel token and attach) | implemented | **Updated 2026-11-13:** Implemented in `KEYWORD_REGISTRY` (`keywords.ts`) compiling `'for mirrodin!'` to an ETB `createToken` (2/2 red `Rebel`) + `attach` trigger. |
 
 ### 702.164 Toxic
 | CR | Rule (short) | Status | Evidence / notes |
@@ -463,7 +467,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 ### 702.168 Disguise
 | CR | Rule (short) | Status | Evidence / notes |
 |---|---|---|---|
-| 702.168a–f | Disguise `[cost]` (cast face down for `{3}` as 2/2 with ward `{2}`; special action to turn face up by paying disguise cost) | missing | Listed in `KNOWN_KEYWORDS` (`compiler/adapter.ts:135`) → `keyword_not_implemented`. Although `CardInstance.isFaceDown` exists (`types.ts:288`), there is no face-down casting or turn-face-up special action in `engine.ts`. |
+| 702.168a–f | Disguise `[cost]` (cast face down for `{3}` as 2/2 with ward `{2}`; special action to turn face up by paying disguise cost) | implemented | **Updated 2026-11-13:** Implemented via `KEYWORD_REGISTRY` (`keywords.ts`), `{3}` face-down cast (`FaceDownSpec` with `wardCost: '{2}'`), `resolveObjectFaces` (`runtime/faces.ts`), `matchBecameTarget` Ward trigger (`runtime/triggers.ts`), and `turn_face_up` special action (`engine.ts`, `runtime/transform-flip-facedown.test.ts`). |
 
 ### 702.169 Solved
 | CR | Rule (short) | Status | Evidence / notes |
@@ -618,7 +622,7 @@ Audited at engine-rewrite 917180b on 2026-11-09.
 - **`hasGenericPartner` conflates `Partner—[text]` variants and any oracle text containing the word `"partner"` with generic Partner** (`scryfall.ts:431-437`): `hasGenericPartner` returns `true` whenever `/\bpartner\b/i.test(card.oracleText)` matches and the card isn't `Partner with`, `Friends forever`, or `Doctor's companion`. This allows pairing `Partner—Survivors`, `Partner—Character select`, and `Partner—Father & son` with generic `Partner` commanders or with each other (`CR 702.124f, 702.124i`), as well as any legendary creature whose rules text mentions the word `"partner"`.
 - **Menace attackers are unconditionally ignored by `"blocks each combat if able"` (`CR 509.1c`) and by bot blockers** (`engine.ts:2021`, `ai.ts:243`): `engine.ts:2021` returns `false` (`!hasKeyword(atk, 'Menace', state)`) when checking whether a creature with `blocksEachCombat` can block an attacker, even when the defending player controls a second available blocker or has already assigned another creature to block that Menace attacker. Bots (`ai.ts:243`) also skip blocking Menace creatures altogether.
 - **Infect combat damage bypasses counter replacement/multiplier effects, and noncombat Infect+Deathtouch skips `deathtouchDamageMarked`** (`engine.ts:6204-6205,6321-6322`, `runtime/effects.ts:1049-1081,1160-1167`): Combat Infect directly increments `counters['-1/-1']` instead of calling `addCounters` (`CR 702.90c`), skipping Doubling Season / Corpsejack Menace multipliers (`runtime/replace.ts:828`). Noncombat Infect damage (`runtime/effects.ts:1161-1167`) skips setting `target.deathtouchDamageMarked = true` when the source also has Deathtouch, and `sourceDamageInfo` (`runtime/effects.ts:1049-1081`) loses granted Infect if the source left the battlefield before damage resolves (`CR 702.90d`).
-- **Overload approximations** (`engine.ts:530-542,4827-4845`, `runtime/effects.ts:302-313`): `isOverloadCastMode` (`engine.ts:541`) treats `xValue >= 1` on a non-`{X}` spell with Overload as overloaded when `castMode` is omitted; `interpretableNow` (`runtime/effects.ts:302-313`) bails out on player-targeted Overload spells; and legacy `bounce_target` (`engine.ts:4827-4845`) hardcodes *Cyclonic Rift*'s opponent-nonland filter.
+- *(Updated 2026-11-12: migrated to `CastOption` / `optionId` / `spellMods.targetsBecomeEach`; only the player-target gap remains, see 702.96a.)* **Overload player-target approximation** (`runtime/effects.ts`): `interpretableNow` still rejects Overload whenever a target spec has `spec.kind === 'player'`; `castMode` and `xValue >= 1` heuristics have been removed in Track B2.
 
 ---
 

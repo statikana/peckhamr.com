@@ -25,7 +25,40 @@
  * on any difference (see `layerCacheCheckEnabled`). Inside scopes it also re-validates every
  * trusted hit.
  */
-import type { CardInstance, GameState, PlayerGameState, ScryfallCard } from '../types.ts';
+import { effectiveCardForObject } from '../scryfall.ts';
+import type {
+	CardInstance,
+	// --- Track P7 ---
+	CopiableState,
+	// --- End Track P7 ---
+	GameState,
+	PlayerGameState,
+	ScryfallCard
+} from '../types.ts';
+
+// --- Track P7 ---
+export function activeTimedLayer1aForPermanent(
+	state: GameState,
+	perm: CardInstance
+): CopiableState | undefined {
+	const effects = state.timedContinuousEffects;
+	if (!effects || effects.length === 0) return undefined;
+	const ver = perm.objectVersion ?? 1;
+	let best: CopiableState | undefined;
+	let bestTs = -Infinity;
+	for (const eff of effects) {
+		if (!eff.layer1a) continue;
+		if (!eff.affected.some((a) => a.instanceId === perm.instanceId && (a.objectVersion ?? 1) === ver)) {
+			continue;
+		}
+		if (eff.timestamp >= bestTs) {
+			bestTs = eff.timestamp;
+			best = eff.layer1a;
+		}
+	}
+	return best;
+}
+// --- End Track P7 ---
 
 export interface BoardEntry {
 	perm: CardInstance;
@@ -61,52 +94,314 @@ export interface BoardSnapshot {
 const SNAPSHOTS = new WeakMap<GameState, BoardSnapshot>();
 
 function pushFingerprint(state: GameState, fp: unknown[]): void {
-	fp.push(state.players, state.players.length);
+	fp.push(
+		state.players,
+		state.players.length,
+		state.monarchPlayerId ?? null,
+		// --- Track P15 ---
+		state.dayNight ?? null,
+		state.activePlayerIndex
+		// --- End Track P15 ---
+	);
 	for (const p of state.players) {
-		fp.push(p, p.lost, p.playerId, p.battlefield, p.battlefield.length);
+		fp.push(
+			p,
+			p.lost,
+			p.playerId,
+			p.battlefield,
+			p.battlefield.length,
+			// --- Track P15 ---
+			p.speed ?? 0,
+			Boolean(p.hasCitysBlessing),
+			// --- End Track P15 ---
+			// --- Track P18a ---
+			Boolean(p.hasEnduringStory)
+			// --- End Track P18a ---
+		);
+		// --- Track P13 ---
+		fp.push(p.ringBearerId ?? null, p.ringLevel ?? 0, p.command.length);
+		for (const cmd of p.command) {
+			fp.push(
+				Boolean(cmd.isEmblem),
+				Boolean(cmd.isRingEmblem),
+				cmd.instanceId,
+				cmd.enteredTimestamp,
+				cmd.card,
+				// --- Track P22a ---
+				cmd.chosenColor ?? cmd.preGameChosenColor ?? ''
+				// --- End Track P22a ---
+			);
+		}
+		// --- End Track P13 ---
 		for (const perm of p.battlefield) {
 			fp.push(
 				perm,
 				perm.instanceId,
+				perm.objectVersion,
 				perm.phasedOut,
 				perm.attachedToId,
 				perm.enteredTimestamp,
 				perm.card,
 				perm.copiableCard,
+				perm.copiableState,
+				perm.copiableState?.card,
+				perm.copiableState?.faceIndex,
+				perm.copiableState?.isSingleFaceCopy,
+				perm.copiableState?.fused,
+				perm.copiableState?.prototyped,
+				perm.copiableState?.except,
+				perm.copiableState?.except?.power,
+				perm.copiableState?.except?.toughness,
+				// --- Track P8 ---
+				perm.copiableState?.except?.names?.[0],
+				perm.copiableState?.except?.types?.length,
+				perm.copiableState?.except?.subtypes?.length,
+				perm.copiableState?.except?.colors?.length,
+				perm.copiableState?.except?.addColors?.length,
+				perm.copiableState?.except?.addTypes?.length,
+				perm.copiableState?.except?.addSubtypes?.length,
+				perm.copiableState?.except?.addKeywords?.length,
+				perm.copiableState?.except?.removeSupertypes?.length,
+				perm.copiableState?.except?.noManaCost,
+				perm.prototyped,
+				perm.transformed,
+				perm.activeFaceIndex,
+				perm.unlockedFaces,
+				perm.unlockedFaces?.length,
+				perm.unlockedFaces?.[0],
+				perm.unlockedFaces?.[1],
 				perm.isFaceDown,
-				perm.controllerId
+				perm.faceDownSpec,
+				perm.faceDownSpec?.kind,
+				perm.faceDownSpec?.wardCost,
+				perm.faceDownSpec?.power,
+				perm.faceDownSpec?.toughness,
+				perm.faceDownLabel,
+				perm.controllerId,
+				perm.defaultControllerId,
+				perm.chosenSubType ?? '',
+				perm.chosenColor ?? '',
+				// --- Track P11 ---
+				perm.chosenCardName ?? '',
+				// --- End Track P11 ---
+				Boolean(perm.exertedThisTurn),
+				// --- Track P7 ---
+				perm.copiableState?.except?.addKeywords,
+				Boolean(perm.copiableState?.except?.noManaCost),
+				activeTimedLayer1aForPermanent(state, perm),
+				// --- End Track P7 ---
+				// --- Track P10 ---
+				Boolean(perm.isSuspected),
+				// --- End Track P10 ---
+				// --- Track P12 ---
+				perm.classLevel ?? 1,
+				Boolean(perm.isSolved),
+				Boolean(perm.isRenowned),
+				Boolean(perm.isBestowed),
+				// --- End Track P12 ---
+				// --- Track P15 ---
+				Boolean(perm.isPrepared),
+				Boolean(perm.castWithImpending),
+				(perm.counters.time || 0) > 0,
+				perm.enteredWithX ?? 0,
+				// --- End Track P15 ---
+				// --- Wave 6 Shared ---
+				perm.pairedWithId ?? null,
+				Boolean(perm.tributePaid),
+				Boolean(perm.hasEnduringStory),
+				Boolean(perm.isHarnessed),
+				Boolean(perm.isFlipped),
+				perm.mergedComponents?.length ?? 0,
+				// --- End Wave 6 Shared ---
+				// --- Track P18b ---
+				perm.chosenAnchorWord ?? '',
+				perm.meldedComponents?.length ?? 0,
+				// --- End Track P18b ---
+				// --- Track P20a ---
+				perm.chosenPlayerId ?? '',
+				perm.chosenParity ?? '',
+				perm.copiableState?.except?.supertypes?.length ?? 0,
+				perm.copiableState?.mergedComponents?.length ?? 0,
+				// --- End Track P20a ---
+				// --- Track P22a ---
+				perm.chosenCardType ?? '',
+				perm.chosenNumber ?? -1,
+				perm.chosenObjectId ?? '',
+				perm.preGameChosenColor ?? '',
+				Boolean(perm.dealtDamageEver)
+				// --- End Track P22a ---
 			);
+			// --- Track P18a ---
+			if (perm.mergedComponents?.length) {
+				for (const mc of perm.mergedComponents) {
+					fp.push(mc);
+				}
+			}
+			// --- End Track P18a ---
 		}
 	}
 }
 
 function fingerprintMatches(state: GameState, fp: unknown[]): boolean {
 	let i = 0;
-	if (fp[i++] !== state.players || fp[i++] !== state.players.length) return false;
+	if (
+		fp[i++] !== state.players ||
+		fp[i++] !== state.players.length ||
+		fp[i++] !== (state.monarchPlayerId ?? null) ||
+		// --- Track P15 ---
+		fp[i++] !== (state.dayNight ?? null) ||
+		fp[i++] !== state.activePlayerIndex
+		// --- End Track P15 ---
+	) {
+		return false;
+	}
 	for (const p of state.players) {
 		if (
 			fp[i++] !== p ||
 			fp[i++] !== p.lost ||
 			fp[i++] !== p.playerId ||
 			fp[i++] !== p.battlefield ||
-			fp[i++] !== p.battlefield.length
+			fp[i++] !== p.battlefield.length ||
+			// --- Track P15 ---
+			fp[i++] !== (p.speed ?? 0) ||
+			fp[i++] !== Boolean(p.hasCitysBlessing) ||
+			// --- End Track P15 ---
+			// --- Track P18a ---
+			fp[i++] !== Boolean(p.hasEnduringStory)
+			// --- End Track P18a ---
 		) {
 			return false;
 		}
+		// --- Track P13 ---
+		if (
+			fp[i++] !== (p.ringBearerId ?? null) ||
+			fp[i++] !== (p.ringLevel ?? 0) ||
+			fp[i++] !== p.command.length
+		) {
+			return false;
+		}
+		for (const cmd of p.command) {
+			if (
+				fp[i++] !== Boolean(cmd.isEmblem) ||
+				fp[i++] !== Boolean(cmd.isRingEmblem) ||
+				fp[i++] !== cmd.instanceId ||
+				fp[i++] !== cmd.enteredTimestamp ||
+				fp[i++] !== cmd.card ||
+				// --- Track P22a ---
+				fp[i++] !== (cmd.chosenColor ?? cmd.preGameChosenColor ?? '')
+				// --- End Track P22a ---
+			) {
+				return false;
+			}
+		}
+		// --- End Track P13 ---
 		for (const perm of p.battlefield) {
 			if (
 				fp[i++] !== perm ||
 				fp[i++] !== perm.instanceId ||
+				fp[i++] !== perm.objectVersion ||
 				fp[i++] !== perm.phasedOut ||
 				fp[i++] !== perm.attachedToId ||
 				fp[i++] !== perm.enteredTimestamp ||
 				fp[i++] !== perm.card ||
 				fp[i++] !== perm.copiableCard ||
+				fp[i++] !== perm.copiableState ||
+				fp[i++] !== perm.copiableState?.card ||
+				fp[i++] !== perm.copiableState?.faceIndex ||
+				fp[i++] !== perm.copiableState?.isSingleFaceCopy ||
+				fp[i++] !== perm.copiableState?.fused ||
+				fp[i++] !== perm.copiableState?.prototyped ||
+				fp[i++] !== perm.copiableState?.except ||
+				fp[i++] !== perm.copiableState?.except?.power ||
+				fp[i++] !== perm.copiableState?.except?.toughness ||
+				// --- Track P8 ---
+				fp[i++] !== perm.copiableState?.except?.names?.[0] ||
+				fp[i++] !== perm.copiableState?.except?.types?.length ||
+				fp[i++] !== perm.copiableState?.except?.subtypes?.length ||
+				fp[i++] !== perm.copiableState?.except?.colors?.length ||
+				fp[i++] !== perm.copiableState?.except?.addColors?.length ||
+				fp[i++] !== perm.copiableState?.except?.addTypes?.length ||
+				fp[i++] !== perm.copiableState?.except?.addSubtypes?.length ||
+				fp[i++] !== perm.copiableState?.except?.addKeywords?.length ||
+				fp[i++] !== perm.copiableState?.except?.removeSupertypes?.length ||
+				fp[i++] !== perm.copiableState?.except?.noManaCost ||
+				fp[i++] !== perm.prototyped ||
+				fp[i++] !== perm.transformed ||
+				fp[i++] !== perm.activeFaceIndex ||
+				fp[i++] !== perm.unlockedFaces ||
+				fp[i++] !== perm.unlockedFaces?.length ||
+				fp[i++] !== perm.unlockedFaces?.[0] ||
+				fp[i++] !== perm.unlockedFaces?.[1] ||
 				fp[i++] !== perm.isFaceDown ||
-				fp[i++] !== perm.controllerId
+				fp[i++] !== perm.faceDownSpec ||
+				fp[i++] !== perm.faceDownSpec?.kind ||
+				fp[i++] !== perm.faceDownSpec?.wardCost ||
+				fp[i++] !== perm.faceDownSpec?.power ||
+				fp[i++] !== perm.faceDownSpec?.toughness ||
+				fp[i++] !== perm.faceDownLabel ||
+				fp[i++] !== perm.controllerId ||
+				fp[i++] !== perm.defaultControllerId ||
+				fp[i++] !== (perm.chosenSubType ?? '') ||
+				fp[i++] !== (perm.chosenColor ?? '') ||
+				// --- Track P11 ---
+				fp[i++] !== (perm.chosenCardName ?? '') ||
+				// --- End Track P11 ---
+				fp[i++] !== Boolean(perm.exertedThisTurn) ||
+				// --- Track P7 ---
+				fp[i++] !== perm.copiableState?.except?.addKeywords ||
+				fp[i++] !== Boolean(perm.copiableState?.except?.noManaCost) ||
+				fp[i++] !== activeTimedLayer1aForPermanent(state, perm) ||
+				// --- End Track P7 ---
+				// --- Track P10 ---
+				fp[i++] !== Boolean(perm.isSuspected) ||
+				// --- End Track P10 ---
+				// --- Track P12 ---
+				fp[i++] !== (perm.classLevel ?? 1) ||
+				fp[i++] !== Boolean(perm.isSolved) ||
+				fp[i++] !== Boolean(perm.isRenowned) ||
+				fp[i++] !== Boolean(perm.isBestowed) ||
+				// --- End Track P12 ---
+				// --- Track P15 ---
+				fp[i++] !== Boolean(perm.isPrepared) ||
+				fp[i++] !== Boolean(perm.castWithImpending) ||
+				fp[i++] !== ((perm.counters.time || 0) > 0) ||
+				fp[i++] !== (perm.enteredWithX ?? 0) ||
+				// --- End Track P15 ---
+				// --- Wave 6 Shared ---
+				fp[i++] !== (perm.pairedWithId ?? null) ||
+				fp[i++] !== Boolean(perm.tributePaid) ||
+				fp[i++] !== Boolean(perm.hasEnduringStory) ||
+				fp[i++] !== Boolean(perm.isHarnessed) ||
+				fp[i++] !== Boolean(perm.isFlipped) ||
+				fp[i++] !== (perm.mergedComponents?.length ?? 0) ||
+				// --- End Wave 6 Shared ---
+				// --- Track P18b ---
+				fp[i++] !== (perm.chosenAnchorWord ?? '') ||
+				fp[i++] !== (perm.meldedComponents?.length ?? 0) ||
+				// --- End Track P18b ---
+				// --- Track P20a ---
+				fp[i++] !== (perm.chosenPlayerId ?? '') ||
+				fp[i++] !== (perm.chosenParity ?? '') ||
+				fp[i++] !== (perm.copiableState?.except?.supertypes?.length ?? 0) ||
+				fp[i++] !== (perm.copiableState?.mergedComponents?.length ?? 0) ||
+				// --- End Track P20a ---
+				// --- Track P22a ---
+				fp[i++] !== (perm.chosenCardType ?? '') ||
+				fp[i++] !== (perm.chosenNumber ?? -1) ||
+				fp[i++] !== (perm.chosenObjectId ?? '') ||
+				fp[i++] !== (perm.preGameChosenColor ?? '') ||
+				fp[i++] !== Boolean(perm.dealtDamageEver)
+				// --- End Track P22a ---
 			) {
 				return false;
 			}
+			// --- Track P18a ---
+			if (perm.mergedComponents?.length) {
+				for (const mc of perm.mergedComponents) {
+					if (fp[i++] !== mc) return false;
+				}
+			}
+			// --- End Track P18a ---
 		}
 	}
 	return i === fp.length;
@@ -130,13 +425,16 @@ export function buildBoardSnapshot(state: GameState): BoardSnapshot {
 		for (const perm of p.battlefield) {
 			if (perm.phasedOut) continue;
 			order += 1;
+			// --- Track P7 ---
+			const timedLayer1a = activeTimedLayer1aForPermanent(state, perm);
+			// --- End Track P7 ---
 			const entry: BoardEntry = {
 				perm,
 				playerId: p.playerId,
 				player: p,
 				order,
 				timestamp: perm.enteredTimestamp ?? order,
-				card: perm.copiableCard ?? perm.card
+				card: timedLayer1a?.card ?? effectiveCardForObject(perm)
 			};
 			active.push(entry);
 			if (perm.attachedToId) {

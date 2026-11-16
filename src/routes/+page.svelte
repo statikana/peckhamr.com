@@ -4,9 +4,9 @@
     import { appUrl } from "../lib/apps";
     import Terminal from "../Terminal.svelte";
 
-    let activeSection = $state("experience");
+    let activeSection = $state("experience"); // see sections[id]
     let terminalOpen = $state(false);
-    let theme = $state("light");
+    let theme = $state("light"); //  light or dark
 
     const sections = [
         { id: "experience", num: "01", label: "Experience" },

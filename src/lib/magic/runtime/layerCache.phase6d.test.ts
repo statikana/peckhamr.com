@@ -269,7 +269,7 @@ describe('Phase 6d: read-only entry points share one validation', () => {
 					zone: 'battlefield',
 					controllerFilter: 'any'
 				} as never),
-				cost: effectiveSpellManaCost(s, s.players[0], bolt, 0, false),
+				cost: effectiveSpellManaCost(s, s.players[0], bolt, 0),
 				untap: targets.map((t) => hasRestriction(s, t, 'doesntUntap')),
 				flying: targets.map((t) => hasKeyword(t, 'Flying', s)),
 				lost: targets.map((t) => permanentHasLostAllAbilities(t, s).lost),

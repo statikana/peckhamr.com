@@ -210,7 +210,7 @@ describe('Phase 1 (§2.1 + §2.2): Secret stripping and opponent prompt redactio
 					effectResume: {
 						stepIndex: 0,
 						bindings: [],
-						answers: { p1: [libIds[1], libIds[2]] }
+						answers: { p1: { kind: 'chooseObjects', objectIds: [libIds[1], libIds[2]] } }
 					}
 				},
 				dummyCard
@@ -471,15 +471,20 @@ describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)
 
 		const dir = dirname(new URL(import.meta.url).pathname);
 		const arenaTableSrc = readFileSync(join(dir, '..', 'ArenaTable.svelte'), 'utf8');
+		const choiceModalSrc = readFileSync(join(dir, '..', 'ui', 'ChoicePromptModal.svelte'), 'utf8');
+		assert.ok(
+			arenaTableSrc.includes('<ChoicePromptModal'),
+			'ArenaTable.svelte must delegate choice prompts to ChoicePromptModal.svelte'
+		);
 		for (const kind of allKinds!) {
 			assert.ok(
-				arenaTableSrc.includes(`myChoice.kind === '${kind}'`),
-				`ArenaTable.svelte must have a choice branch for myChoice.kind === '${kind}'`
+				choiceModalSrc.includes(`choice.kind === '${kind}'`),
+				`ChoicePromptModal.svelte must have a choice branch for choice.kind === '${kind}'`
 			);
 		}
 		assert.ok(
-			arenaTableSrc.includes('_exhaustiveChoice: never = myChoice'),
-			'ArenaTable.svelte must include a compile-time never exhaustiveness check on myChoice'
+			choiceModalSrc.includes('_exhaustiveChoice: never = choice'),
+			'ChoicePromptModal.svelte must include a compile-time never exhaustiveness check on choice'
 		);
 	});
 
@@ -498,7 +503,26 @@ describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)
 			join(dir, '..', 'engine.ts'),
 			join(dir, 'triggers.ts'),
 			join(dir, 'effects.ts'),
-			join(dir, 'choices.ts')
+			join(dir, 'choices.ts'),
+			join(dir, 'orthogonalKeywords.ts'),
+			join(dir, 'tuckFreezeChosen.ts'),
+			join(dir, 'keywordActions.ts'),
+			join(dir, 'striatedFrames.ts'),
+			join(dir, 'copyPreventionAndEffects.ts'),
+			join(dir, 'staticsLayersAndRestrictions.ts'),
+			join(dir, 'keywordsWave3.ts'),
+			// --- Track P10 ---
+			join(dir, 'reflexiveManaAndActions.ts'),
+			// --- End Track P10 ---
+			// --- Track P11 ---
+			join(dir, 'staticsDynamicAndCosts.ts'),
+			// --- End Track P11 ---
+			// --- Track P12 ---
+			join(dir, 'keywordsWave4.ts'),
+			// --- End Track P12 ---
+			// --- Track P21 ---
+			join(dir, 'framesWave7.ts')
+			// --- End Track P21 ---
 		];
 		const emittedPurposes = new Set<string>();
 		const purposeRegex = /\bpurpose\s*:\s*'([a-z_]+)'/g;
@@ -524,9 +548,11 @@ describe('Phase 5 (§6): ChoiceSpec and PromptPurpose exhaustiveness guards (#2)
 					? 'yesNo'
 					: purpose === 'trigger_targets'
 						? 'chooseObjects'
-						: purpose === 'trigger_order'
-							? 'orderObjects'
-							: purpose;
+						: purpose === 'trigger_modes' || purpose === 'etb_choice'
+							? 'chooseMode'
+							: purpose === 'trigger_order'
+								? 'orderObjects'
+								: purpose;
 			const dummyPrompt: PendingPrompt = {
 				id: `prm_${purpose}`,
 				playerId: 'p1',

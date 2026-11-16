@@ -42,12 +42,12 @@ const SUPPORTED = synthetic({
 });
 const UNSUPPORTED_STATIC = synthetic({
 	name: 'Hushwater Sentinel',
-	oracleText: "Players can't gain life during your turn."
+	oracleText: 'Players skip their combat phases.'
 });
 const SADDLED_TRIGGER = synthetic({
 	name: 'Dunetrot Charger',
 	typeLine: 'Creature — Horse Mount',
-	oracleText: 'Whenever Dunetrot Charger attacks while saddled, draw a card.'
+	oracleText: 'Whenever Dunetrot Charger attacks while enchanted, draw a card.'
 });
 const PARTLY_PARSED_SPELL = synthetic({
 	name: 'Quillbright Surge',
@@ -92,24 +92,47 @@ describe('cardSupportReport', () => {
 		assert.equal(report.unsupported.length, 1);
 		const [u] = report.unsupported;
 		assert.equal(u.reason, 'static_not_compiled');
-		assert.equal(u.text, "Players can't gain life during your turn.");
+		assert.equal(u.text, 'Players skip their combat phases.');
 		assert.equal(u.face, 'Hushwater Sentinel');
 		assert.deepEqual(u.unparsed, [], 'the whole ability is the gap, so no narrower fragment');
 	});
 
-	it('reports a trigger with an unrepresentable qualifier ("while saddled")', () => {
+	it('reports a trigger with an unrepresentable qualifier ("while enchanted")', () => {
 		const report = cardSupportReport(SADDLED_TRIGGER);
 		assert.equal(report.fullySupported, false);
 		assert.equal(report.unsupported.length, 1);
 		const [u] = report.unsupported;
 		assert.notEqual(u.reason, 'static_not_compiled');
-		assert.match(u.text, /^Whenever ~ attacks while saddled, draw a card\.$/);
+		assert.match(u.text, /^Whenever ~ attacks while enchanted, draw a card\.$/);
 		assert.ok(u.unparsed.length >= 1, 'the trigger head is the unparsed part');
 		assert.ok(u.unparsed.every((t) => u.text.includes(t)));
 		assert.equal(
 			displayAbilityText(u.text, u.face),
-			'Whenever Dunetrot Charger attacks while saddled, draw a card.'
+			'Whenever Dunetrot Charger attacks while enchanted, draw a card.'
 		);
+	});
+
+	it('shows a self-reference as the card prints it, not as the card name (CR 201.5)', () => {
+		// "this artifact" in a granted ability is the object that has the ability, not the granting card.
+		const granter = synthetic({
+			name: 'Auric Vaultwyrm',
+			typeLine: 'Creature — Dragon',
+			oracleText:
+				'Whenever this creature attacks, create a Treasure token. (It has a reminder.)\nTreasures you control have "{T}, Sacrifice this artifact: Add two mana of any one color."\nWhen Auric Vaultwyrm dies, draw a card.'
+		});
+		const face = granter.name;
+		assert.equal(
+			displayAbilityText('Treasures you control have "{T}, Sacrifice ~: Add two mana of any one color."', face, granter),
+			'Treasures you control have "{T}, Sacrifice this artifact: Add two mana of any one color."'
+		);
+		assert.equal(
+			displayAbilityText('Whenever ~ attacks, create a Treasure token.', face, granter),
+			'Whenever this creature attacks, create a Treasure token.'
+		);
+		assert.equal(displayAbilityText('When ~ dies, draw a card.', face, granter), 'When Auric Vaultwyrm dies, draw a card.');
+		// Text that isn't on the card, or no card at all: the name.
+		assert.equal(displayAbilityText('Sacrifice ~: Draw a card.', face, granter), 'Sacrifice Auric Vaultwyrm: Draw a card.');
+		assert.equal(displayAbilityText('When ~ dies, draw a card.', face), 'When Auric Vaultwyrm dies, draw a card.');
 	});
 
 	it('reports a partly parsed spell, with only the part the compiler missed as unparsed', () => {

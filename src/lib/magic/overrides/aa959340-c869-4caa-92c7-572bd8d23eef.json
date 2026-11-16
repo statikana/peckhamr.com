@@ -1,0 +1,100 @@
+{
+  "oracleId": "aa959340-c869-4caa-92c7-572bd8d23eef",
+  "cardName": "Field of the Dead",
+  "expectedTextHash": "821261c8",
+  "compiledVersion": 39,
+  "notes": "Wave 8 P22c override: Enters tapped, {T}: Add {C}, and Landfall (intervening-if >= 7 distinct land names) creates a 2/2 black Zombie.",
+  "faces": [
+    {
+      "name": "Field of the Dead",
+      "characteristics": {
+        "manaCost": "",
+        "types": ["Land"],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": []
+      },
+      "abilities": [
+        {
+          "kind": "replacement",
+          "replacement": {
+            "replaces": {
+              "event": "zoneChange",
+              "filter": { "object": "self", "to": "battlefield" }
+            },
+            "with": { "k": "modify", "tapped": true }
+          },
+          "span": { "start": 0, "end": 23 }
+        },
+        {
+          "kind": "activated",
+          "id": "mana_tap",
+          "cost": [{ "k": "tapSelf" }],
+          "targets": [],
+          "effect": [
+            {
+              "verb": "addMana",
+              "subject": { "k": "none" },
+              "amount": { "k": "const", "n": 1 },
+              "params": { "mana": ["C"] },
+              "span": { "start": 28, "end": 36 }
+            }
+          ],
+          "timing": "mana",
+          "isMana": true,
+          "text": "{T}: Add {C}.",
+          "span": { "start": 24, "end": 37 }
+        },
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "zoneChange",
+            "filter": {
+              "orSelf": true,
+              "to": "battlefield",
+              "object": {
+                "types": ["Land"],
+                "controller": "you",
+                "notSelf": true
+              }
+            }
+          },
+          "condition": {
+            "k": "compare",
+            "left": {
+              "k": "distinctNamesCount",
+              "of": {
+                "zone": "battlefield",
+                "controller": "you",
+                "types": ["Land"]
+              }
+            },
+            "op": ">=",
+            "right": { "k": "const", "n": 7 }
+          },
+          "targets": [],
+          "effect": [
+            {
+              "verb": "createToken",
+              "subject": { "k": "player", "filter": { "relation": "you" } },
+              "amount": { "k": "const", "n": 1 },
+              "params": {
+                "token": {
+                  "name": "Zombie Token",
+                  "power": 2,
+                  "toughness": 2,
+                  "colors": ["B"],
+                  "typeLine": "Token Creature — Zombie",
+                  "keywords": []
+                }
+              },
+              "span": { "start": 144, "end": 192 }
+            }
+          ],
+          "text": "Whenever ~ or another land you control enters, if you control seven or more lands with different names, create a 2/2 black Zombie creature token.",
+          "span": { "start": 38, "end": 192 }
+        }
+      ]
+    }
+  ]
+}

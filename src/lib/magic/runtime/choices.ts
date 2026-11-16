@@ -55,9 +55,11 @@ export const ALL_PROMPT_PURPOSES: readonly PromptPurpose[] = [
 	'guided_resolution',
 	'legend_rule',
 	'cost_choice',
+	'trigger_modes',
 	'trigger_targets',
 	'trigger_order',
 	'trigger_may',
+	'etb_choice',
 	'generic'
 ] as const;
 
@@ -143,18 +145,39 @@ export function buildCostChoiceRequest(
 			max: 1
 		};
 	}
+	if (question.minTotal !== undefined) {
+		return {
+			kind: 'chooseObjects',
+			candidates: question.candidateIds,
+			min: question.minTotal > 0 ? 1 : 0,
+			max: question.candidateIds.length,
+			zone,
+			reason: question.label,
+			minWeightSum: question.minTotal,
+			weightsById: question.candidateWeights,
+			weightLabel: question.metric === 'power' ? 'Power' : 'Total'
+		};
+	}
 	return {
 		kind: 'chooseObjects',
 		candidates: question.candidateIds,
 		min: question.count,
-		max: question.count,
+		// --- Track P14 ---
+		max: question.maxCount ?? question.count,
+		// --- End Track P14 ---
 		zone,
 		reason: question.label
 	};
 }
 
 /** Infers the zone of candidate objects for a cost question across a player's zones. */
-export function inferObjectsZone(player: PlayerGameState, candidateIds: string[]): ZoneType {
+export function inferObjectsZone(
+	player: PlayerGameState,
+	candidateIds: string[],
+	// --- Track P17b ---
+	state?: GameState
+	// --- End Track P17b ---
+): ZoneType {
 	const first = candidateIds[0];
 	if (!first) return 'battlefield';
 	if (player.hand.some((c) => c.instanceId === first)) return 'hand';
@@ -162,6 +185,16 @@ export function inferObjectsZone(player: PlayerGameState, candidateIds: string[]
 	if (player.exile.some((c) => c.instanceId === first)) return 'exile';
 	if (player.library.some((c) => c.instanceId === first)) return 'library';
 	if (player.command.some((c) => c.instanceId === first)) return 'command';
+	// --- Track P17b ---
+	if (state) {
+		if (state.stack.some((s) => s.id === first || s.sourceInstanceId === first)) return 'stack';
+		for (const p of state.players) {
+			if (p.playerId === player.playerId) continue;
+			if (p.graveyard.some((c) => c.instanceId === first)) return 'graveyard';
+			if (p.exile.some((c) => c.instanceId === first)) return 'exile';
+		}
+	}
+	// --- End Track P17b ---
 	return 'battlefield';
 }
 
@@ -256,6 +289,7 @@ export function effectivePromptChoice(prompt: PendingPrompt, state?: GameState):
 				kind: 'orderObjects',
 				objectIds,
 				allowSplitBottom: prompt.allowBottom !== false,
+				...(prompt.splitMode ? { splitLabel: prompt.splitMode } : {}),
 				allowShuffle: Boolean(prompt.allowShuffle),
 				reason: prompt.description || prompt.title
 			};
@@ -384,6 +418,16 @@ export function validateChoiceAnswer(
 					};
 				}
 			}
+			if (choice.minWeightSum !== undefined && choice.weightsById) {
+				const total = a.objectIds.reduce((sum, id) => sum + (choice.weightsById![id] ?? 0), 0);
+				if (total < choice.minWeightSum) {
+					const label = choice.weightLabel?.toLowerCase() ?? 'total';
+					return {
+						ok: false,
+						error: `Selected ${label} is ${total}; need at least ${choice.minWeightSum}.`
+					};
+				}
+			}
 			return { ok: true };
 		}
 
@@ -392,15 +436,19 @@ export function validateChoiceAnswer(
 			if (!Array.isArray(a.indices)) {
 				return { ok: false, error: 'Mode choice must provide an `indices` array.' };
 			}
-			if (new Set(a.indices).size !== a.indices.length) {
+			if (!choice.allowRepeat && new Set(a.indices).size !== a.indices.length) {
 				return { ok: false, error: 'Cannot choose the same mode multiple times.' };
 			}
 			if (a.indices.length < choice.min || a.indices.length > choice.max) {
 				return { ok: false, error: 'Choose the required number of modes.' };
 			}
+			const disabled = choice.disabledIndices?.length ? new Set(choice.disabledIndices) : null;
 			for (const idx of a.indices) {
 				if (!Number.isInteger(idx) || idx < 0 || idx >= choice.modes.length) {
 					return { ok: false, error: `Mode index ${idx} is out of range.` };
+				}
+				if (disabled?.has(idx)) {
+					return { ok: false, error: `Mode ${idx + 1} cannot be chosen.` };
 				}
 			}
 			return { ok: true };
@@ -442,9 +490,12 @@ export function validateChoiceAnswer(
 					return { ok: false, error: 'Duplicate object ID in ordered list.' };
 				}
 				seen.add(id);
-				if (allowed.size > 0 && !allowed.has(id)) {
+				if (!allowed.has(id)) {
 					return { ok: false, error: `Object ${id} is not part of this ordering choice.` };
 				}
+			}
+			if (seen.size !== choice.objectIds.length) {
+				return { ok: false, error: 'Order choice must include every object.' };
 			}
 			return { ok: true };
 		}
@@ -611,6 +662,27 @@ export function normalizePromptAction(
 	}
 }
 
+/** Picks which top-of-library cards to keep vs move (bottom for scry, graveyard for surveil). */
+export function pickScryOrSurveilSplit(
+	player: PlayerGameState,
+	cards: CardInstance[]
+): { topIds: string[]; bottomIds: string[] } {
+	const landCount =
+		player.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
+		player.hand.filter((h) => h.card.typeLine.includes('Land')).length;
+	const topIds: string[] = [];
+	const bottomIds: string[] = [];
+	for (const c of cards) {
+		const isLand = c.card.typeLine.includes('Land');
+		if ((landCount >= 4 && isLand) || (landCount < 3 && !isLand && c.card.cmc > 4)) {
+			bottomIds.push(c.instanceId);
+		} else {
+			topIds.push(c.instanceId);
+		}
+	}
+	return { topIds, bottomIds };
+}
+
 /**
  * Computes a deterministic bot answer for any of the 6 generic choice shapes.
  */
@@ -633,18 +705,48 @@ export function chooseBotAnswer(
 		case 'chooseObjects': {
 			const count = choice.min > 0 ? choice.min : Math.min(1, choice.candidates.length);
 			const byId = new Map<string, CardInstance>();
+			const handHolderById = new Map<string, string>();
 			for (const p of state.players) {
+				for (const c of p.hand) handHolderById.set(c.instanceId, p.playerId);
 				for (const z of [p.battlefield, p.hand, p.graveyard, p.exile, p.library, p.command]) {
 					for (const c of z) byId.set(c.instanceId, c);
 				}
 			}
+			const isOpponentHandChoice =
+				choice.zone === 'hand' &&
+				choice.candidates.length > 0 &&
+				choice.candidates.every((id) => {
+					const holderId = handHolderById.get(id);
+					return holderId !== undefined && holderId !== player.playerId;
+				});
 			const sorted = [...choice.candidates].sort((idA, idB) => {
 				const a = byId.get(idA);
 				const b = byId.get(idB);
 				if (!a || !b) return 0;
+				if (isOpponentHandChoice) {
+					const aLand = /\bLand\b/.test((a.copiableCard ?? a.card).typeLine.split('//')[0]);
+					const bLand = /\bLand\b/.test((b.copiableCard ?? b.card).typeLine.split('//')[0]);
+					if (aLand !== bLand) return aLand ? 1 : -1;
+					return b.card.cmc - a.card.cmc;
+				}
+				if (choice.minWeightSum !== undefined && a.summoningSick !== b.summoningSick) {
+					return a.summoningSick ? -1 : 1;
+				}
 				if (a.isToken !== b.isToken) return a.isToken ? -1 : 1;
 				return a.card.cmc - b.card.cmc;
 			});
+			if (choice.minWeightSum !== undefined && choice.weightsById) {
+				const picked: string[] = [];
+				let total = 0;
+				for (const id of sorted) {
+					if (total >= choice.minWeightSum) break;
+					const w = choice.weightsById[id] ?? 0;
+					if (w <= 0) continue;
+					picked.push(id);
+					total += w;
+				}
+				return { kind: 'chooseObjects', objectIds: picked };
+			}
 			return {
 				kind: 'chooseObjects',
 				objectIds: sorted.slice(0, count)
@@ -652,9 +754,25 @@ export function chooseBotAnswer(
 		}
 
 		case 'chooseMode': {
+			const disabled = new Set(choice.disabledIndices ?? []);
+			const allowed: number[] = [];
+			for (let i = 0; i < choice.modes.length; i++) {
+				if (!disabled.has(i)) allowed.push(i);
+			}
 			const indices: number[] = [];
-			const count = Math.min(Math.max(1, choice.min), choice.modes.length);
-			for (let i = 0; i < count; i++) indices.push(i);
+			const targetCount = Math.min(choice.max, Math.max(choice.min, 1));
+			if (choice.allowRepeat) {
+				if (allowed.length > 0) {
+					for (let k = 0; k < targetCount; k++) {
+						indices.push(allowed[k % allowed.length]);
+					}
+				}
+			} else {
+				for (const i of allowed) {
+					if (indices.length >= targetCount) break;
+					indices.push(i);
+				}
+			}
 			return { kind: 'chooseMode', indices };
 		}
 
@@ -666,24 +784,22 @@ export function chooseBotAnswer(
 			const cards = choice.objectIds
 				.map((id) => libMap.get(id))
 				.filter((c): c is CardInstance => Boolean(c));
-			const landCount =
-				player.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
-				player.hand.filter((h) => h.card.typeLine.includes('Land')).length;
-
+			if (cards.length !== choice.objectIds.length) {
+				return {
+					kind: 'orderObjects',
+					topIds: [...choice.objectIds],
+					bottomIds: [],
+					shuffle: false
+				};
+			}
 			if (choice.allowSplitBottom !== false) {
-				const topIds: string[] = [];
-				const bottomIds: string[] = [];
-				for (const c of cards) {
-					const isLand = c.card.typeLine.includes('Land');
-					if ((landCount >= 4 && isLand) || (landCount < 3 && !isLand && c.card.cmc > 4)) {
-						bottomIds.push(c.instanceId);
-					} else {
-						topIds.push(c.instanceId);
-					}
-				}
+				const { topIds, bottomIds } = pickScryOrSurveilSplit(player, cards);
 				return { kind: 'orderObjects', topIds, bottomIds, shuffle: false };
 			}
 
+			const landCount =
+				player.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
+				player.hand.filter((h) => h.card.typeLine.includes('Land')).length;
 			const ordered = [...cards].sort((a, b) => {
 				const aLand = a.card.typeLine.includes('Land') ? 1 : 0;
 				const bLand = b.card.typeLine.includes('Land') ? 1 : 0;
