@@ -1,6 +1,6 @@
 # peckhamr.com
 
-Personal portfolio site made by me. Built with [SvelteKit](https://kit.svelte.dev/) and statically generated to plain HTML/CSS/JS via `@sveltejs/adapter-static`.
+Personal portfolio site made by me. Built with [SvelteKit](https://kit.svelte.dev/) and generated to plain HTML/CSS/JS via `@sveltejs/adapter-static`.
 
 ## Tech Stack
 
