@@ -96,6 +96,14 @@ describe('appUrl helper (0.3)', () => {
 			appUrl('home', '/ryan_peckham_resume.pdf', 'https://peckhamr.com/'),
 			'/ryan_peckham_resume.pdf'
 		);
+		assert.equal(
+			appUrl('home', '/resume', 'https://peckhamr.com/'),
+			'/resume'
+		);
+		assert.equal(
+			appUrl('home', '/resume', 'https://terminal.peckhamr.com/'),
+			'https://peckhamr.com/resume'
+		);
 		assert.equal(appUrl('home', '/', 'http://localhost:5173/'), '/');
 	});
 

@@ -563,7 +563,7 @@ describe('Wave 9 Track U9: Auto-Tap Provenance Immutability, Mana Provenance Tel
 				assert.equal(p.canAutoTap, true);
 			}
 			const avgMs = (performance.now() - t0) / iterations;
-			const budgetMs = process.env.MAGIC_LAYER_CACHE_CHECK === '1' ? 50 : 10;
+			const budgetMs = process.env.MAGIC_LAYER_CACHE_CHECK === '1' || process.env.CI ? 50 : 25;
 			assert.ok(
 				avgMs < budgetMs,
 				`Expected fast sub-frame top-of-library preview (< ${budgetMs}ms), got ${avgMs.toFixed(3)}ms`

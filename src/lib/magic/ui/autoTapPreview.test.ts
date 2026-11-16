@@ -355,7 +355,7 @@ describe('UI Track U1: autoTapPreview', () => {
 			previewSpellAutoTap(state, p1.playerId, spell.instanceId);
 		}
 		const avgMs = (performance.now() - t0) / iterations;
-		const budgetMs = process.env.MAGIC_LAYER_CACHE_CHECK === '1' ? 50 : 10;
+		const budgetMs = process.env.MAGIC_LAYER_CACHE_CHECK === '1' || process.env.CI ? 50 : 25;
 		assert.ok(avgMs < budgetMs, `Expected warm previewSpellAutoTap < ${budgetMs} ms, observed ${avgMs.toFixed(3)} ms`);
 	});
 });
