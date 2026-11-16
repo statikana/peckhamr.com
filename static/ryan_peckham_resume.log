@@ -1,15 +1,18 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.27 (TeX Live 2025/nixos.org) (preloaded format=pdflatex 1980.1.1)  15 NOV 2026 20:04
+This is pdfTeX, Version 3.141592653-2.6-1.40.27 (TeX Live 2025/nixos.org) (preloaded format=pdflatex 1980.1.1)  15 NOV 2026 20:14
 entering extended mode
  restricted \write18 enabled.
- file:line:error style messages enabled.
  %&-line parsing enabled.
-**/home/ryan/Documents/github/statikana/peckhamr.com/static/ryan_peckham_resume.tex
-(/home/ryan/Documents/github/statikana/peckhamr.com/static/ryan_peckham_resume.tex
+**ryan_peckham_resume.tex
+(./ryan_peckham_resume.tex
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-01-19>
-(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/base/article.cls
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/base/article.cls
 Document Class: article 2025/01/22 v1.4n Standard LaTeX document class
-(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/base/size11.clo
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/base/size11.clo
 File: size11.clo 2025/01/22 v1.4n Standard LaTeX file (size option)
 )
 \c@part=\count275
@@ -23,15 +26,21 @@ File: size11.clo 2025/01/22 v1.4n Standard LaTeX file (size option)
 \abovecaptionskip=\skip49
 \belowcaptionskip=\skip50
 \bibindent=\dimen148
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/base/latexsym.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/base/latexsym.sty
 Package: latexsym 1998/08/17 v2.2e Standard LaTeX package (lasy symbols)
 \symlasy=\mathgroup4
 LaTeX Font Info:    Overwriting symbol font `lasy' in version `bold'
 (Font)                  U/lasy/m/n --> U/lasy/b/n on input line 52.
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/preprint/fullpage.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/preprint/fullpage.sty
 Package: fullpage 1999/02/23 1.1 (PWD)
 \FP@margin=\skip51
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/titlesec/titlesec.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/titlesec/titlesec.sty
 Package: titlesec 2025/01/04 v2.17 Sectioning titles
 \ttl@box=\box53
 \beforetitleunit=\skip52
@@ -42,24 +51,40 @@ Package: titlesec 2025/01/04 v2.17 Sectioning titles
 \titlewidth=\dimen151
 \titlewidthlast=\dimen152
 \titlewidthfirst=\dimen153
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/marvosym/marvosym.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/marvosym/marvosym.sty
 Package: marvosym 2011/07/20 v2.2 Martin Vogel's Symbols font definitions
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/graphics/color.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/graphics/color.sty
 Package: color 2025/01/14 v1.3e Standard LaTeX Color (DPC)
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/graphics-cfg/color.cfg
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/graphics-cfg/color.cfg
 File: color.cfg 2016/01/02 v1.6 sample color configuration
 )
 Package color Info: Driver file: pdftex.def on input line 149.
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/graphics-def/pdftex.def
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/graphics-def/pdftex.def
 File: pdftex.def 2025/09/29 v1.2d Graphics/color driver for pdftex
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/graphics/dvipsnam.def
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/graphics/dvipsnam.def
 File: dvipsnam.def 2016/06/17 v3.0m Driver-dependent file (DPC,SPQR)
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/graphics/mathcolor.ltx)) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/tools/verbatim.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/graphics/mathcolor.ltx))
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/tools/verbatim.sty
 Package: verbatim 2024-01-22 v1.5x LaTeX2e package for verbatim enhancements
 \every@verbatim=\toks18
 \verbatim@line=\toks19
 \verbatim@in@stream=\read2
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/enumitem/enumitem.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/enumitem/enumitem.sty
 Package: enumitem 2025/02/06 v3.11 Customized lists
 \enitkv@toks@=\toks20
 \labelindent=\skip54
@@ -68,59 +93,99 @@ Package: enumitem 2025/02/06 v3.11 Customized lists
 \enit@inbox=\box54
 \enit@count@id=\count283
 \enitdp@description=\count284
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/hyperref/hyperref.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/hyperref/hyperref.sty
 Package: hyperref 2026-01-29 v7.01p Hypertext links for LaTeX
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/iftex/iftex.sty
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/iftex/iftex.sty
 Package: iftex 2024/12/12 v1.0g TeX engine tests
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/graphics/keyval.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/graphics/keyval.sty
 Package: keyval 2022/05/29 v1.15 key=value parser (DPC)
 \KV@toks@=\toks22
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/kvsetkeys/kvsetkeys.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/kvsetkeys/kvsetkeys.sty
 Package: kvsetkeys 2022-10-05 v1.19 Key value parser (HO)
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/kvdefinekeys/kvdefinekeys.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/kvdefinekeys/kvdefinekeys.sty
 Package: kvdefinekeys 2019-12-19 v1.6 Define keys (HO)
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/pdfescape/pdfescape.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/pdfescape/pdfescape.sty
 Package: pdfescape 2019/12/09 v1.15 Implements pdfTeX's escape features (HO)
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/ltxcmds/ltxcmds.sty
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/ltxcmds/ltxcmds.sty
 Package: ltxcmds 2023-12-04 v1.26 LaTeX kernel commands for general use (HO)
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/pdftexcmds/pdftexcmds.sty
-Package: pdftexcmds 2020-06-27 v0.33 Utility functions of pdfTeX for LuaTeX (HO)
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/infwarerr/infwarerr.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/pdftexcmds/pdftexcmds.sty
+Package: pdftexcmds 2020-06-27 v0.33 Utility functions of pdfTeX for LuaTeX (HO
+)
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/infwarerr/infwarerr.sty
 Package: infwarerr 2019/12/03 v1.5 Providing info/warning/error messages (HO)
 )
 Package pdftexcmds Info: \pdf@primitive is available.
 Package pdftexcmds Info: \pdf@ifprimitive is available.
 Package pdftexcmds Info: \pdfdraftmode found.
-)) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/hycolor/hycolor.sty
+))
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/hycolor/hycolor.sty
 Package: hycolor 2020-01-27 v1.10 Color options for hyperref/bookmark (HO)
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/hyperref/nameref.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/hyperref/nameref.sty
 Package: nameref 2026-01-29 v2.58 Cross-referencing by name of section
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/refcount/refcount.sty
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/refcount/refcount.sty
 Package: refcount 2019/12/15 v3.6 Data extraction from label references (HO)
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/gettitlestring/gettitlestring.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/gettitlestring/gettitlestring.sty
 Package: gettitlestring 2019/12/15 v1.6 Cleanup title references (HO)
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/kvoptions/kvoptions.sty
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/kvoptions/kvoptions.sty
 Package: kvoptions 2022-06-15 v3.15 Key value format for package options (HO)
 ))
 \c@section@level=\count285
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/etoolbox/etoolbox.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/etoolbox/etoolbox.sty
 Package: etoolbox 2025/10/02 v2.5m e-TeX tools for LaTeX (JAW)
 \etb@tempcnta=\count286
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/stringenc/stringenc.sty
-Package: stringenc 2019/11/29 v1.12 Convert strings between diff. encodings (HO)
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/stringenc/stringenc.sty
+Package: stringenc 2019/11/29 v1.12 Convert strings between diff. encodings (HO
+)
 )
 \@linkdim=\dimen155
 \Hy@linkcounter=\count287
 \Hy@pagecounter=\count288
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/hyperref/pd1enc.def
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/hyperref/pd1enc.def
 File: pd1enc.def 2026-01-29 v7.01p Hyperref: PDFDocEncoding definition (HO)
 Now handling font encoding PD1 ...
 ... no UTF-8 mapping file for font encoding PD1
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/intcalc/intcalc.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/intcalc/intcalc.sty
 Package: intcalc 2019/12/15 v1.3 Expandable calculations with integers (HO)
 )
 \Hy@SavedSpaceFactor=\count289
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/hyperref/puenc.def
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/hyperref/puenc.def
 File: puenc.def 2026-01-29 v7.01p Hyperref: PDF Unicode definition (HO)
 Now handling font encoding PU ...
 ... no UTF-8 mapping file for font encoding PU
@@ -133,16 +198,23 @@ Package hyperref Info: Backreferencing OFF on input line 4221.
 Package hyperref Info: Implicit mode ON; LaTeX internals redefined.
 Package hyperref Info: Bookmarks ON on input line 4468.
 \c@Hy@tempcnt=\count290
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/url/url.sty
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/url/url.sty
 \Urlmuskip=\muskip17
 Package: url 2013/09/16  ver 3.4  Verb mode for urls, etc.
 )
 LaTeX Info: Redefining \url on input line 4807.
 \XeTeXLinkMargin=\dimen156
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/bitset/bitset.sty
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/bitset/bitset.sty
 Package: bitset 2019/12/09 v1.3 Handle bit-vector datatype (HO)
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/bigintcalc/bigintcalc.sty
-Package: bigintcalc 2019/12/15 v1.5 Expandable calculations on big integers (HO)
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/bigintcalc/bigintcalc.sty
+Package: bigintcalc 2019/12/15 v1.5 Expandable calculations on big integers (HO
+)
 ))
 \Fld@menulength=\count291
 \Field@Width=\dimen157
@@ -159,20 +231,30 @@ Package hyperref Info: PDF/A mode OFF on input line 6114.
 \c@Hfootnote=\count294
 )
 Package hyperref Info: Driver (autodetected): hpdftex.
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/hyperref/hpdftex.def
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/hyperref/hpdftex.def
 File: hpdftex.def 2026-01-29 v7.01p Hyperref driver for pdfTeX
 \Fld@listcount=\count295
 \c@bookmark@seq@number=\count296
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/rerunfilecheck/rerunfilecheck.sty
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/rerunfilecheck/rerunfilecheck.sty
 Package: rerunfilecheck 2025-06-21 v1.11 Rerun checks for auxiliary files (HO)
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/uniquecounter/uniquecounter.sty
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/uniquecounter/uniquecounter.sty
 Package: uniquecounter 2019/12/15 v1.4 Provide unlimited unique counter (HO)
 )
-Package uniquecounter Info: New unique counter `rerunfilecheck' on input line 284.
+Package uniquecounter Info: New unique counter `rerunfilecheck' on input line 2
+84.
 )
 \Hy@SectionHShift=\skip55
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/fancyhdr/fancyhdr.sty
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/fancyhdr/fancyhdr.sty
 Package: fancyhdr 2025/02/07 v5.2 Extensive control of page headers and footers
+
 \f@nch@headwidth=\skip56
 \f@nch@offset@elh=\skip57
 \f@nch@offset@erh=\skip58
@@ -188,25 +270,41 @@ Package: fancyhdr 2025/02/07 v5.2 Extensive control of page headers and footers
 \f@nch@widthC=\skip68
 \f@nch@widthR=\skip69
 \@temptokenb=\toks23
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/babel/babel.sty
-Package: babel 2026/02/14 v26.3 The multilingual framework for LuaLaTeX, pdfLaTeX and XeLaTeX
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/babel/babel.sty
+Package: babel 2026/02/14 v26.3 The multilingual framework for LuaLaTeX, pdfLaT
+eX and XeLaTeX
 \babel@savecnt=\count297
-LaTeX Encoding Info:    Redeclaring text command \ij (encoding OT1) on input line 2078.
-LaTeX Encoding Info:    Redeclaring text command \IJ (encoding OT1) on input line 2080.
-LaTeX Encoding Info:    Redeclaring text command \ij (encoding T1) on input line 2082.
-LaTeX Encoding Info:    Redeclaring text command \IJ (encoding T1) on input line 2083.
-LaTeX Encoding Info:    Ignoring declaration for text command \ij (encoding ?) on input line 2084.
-LaTeX Encoding Info:    Ignoring declaration for text command \IJ (encoding ?) on input line 2086.
-LaTeX Encoding Info:    Ignoring declaration for text command \SS (encoding ?) on input line 2111.
+LaTeX Encoding Info:    Redeclaring text command \ij (encoding OT1) on input li
+ne 2078.
+LaTeX Encoding Info:    Redeclaring text command \IJ (encoding OT1) on input li
+ne 2080.
+LaTeX Encoding Info:    Redeclaring text command \ij (encoding T1) on input lin
+e 2082.
+LaTeX Encoding Info:    Redeclaring text command \IJ (encoding T1) on input lin
+e 2083.
+LaTeX Encoding Info:    Ignoring declaration for text command \ij (encoding ?) 
+on input line 2084.
+LaTeX Encoding Info:    Ignoring declaration for text command \IJ (encoding ?) 
+on input line 2086.
+LaTeX Encoding Info:    Ignoring declaration for text command \SS (encoding ?) 
+on input line 2111.
 \U@D=\dimen159
 \l@unhyphenated=\language90
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/babel/txtbabel.def)
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/babel/txtbabel.def)
 \bbl@readstream=\read3
 \bbl@dirlevel=\count298
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/babel/locale/en/babel-english.tex)
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/babel/locale/en/babel-english.tex)
 Package babel Info: Importing font and identification data for english
 (babel)             from babel-en.ini. Reported on input line 4330.
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/babel-english/english.ldf
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/babel-english/english.ldf
 Language: english 2017/06/06 v3.3r English support from the babel system
 Package babel Info: Hyphen rules for 'canadian' set to \l@english
 (babel)             (\language0). Reported on input line 102.
@@ -214,9 +312,13 @@ Package babel Info: Hyphen rules for 'australian' set to \l@ukenglish
 (babel)             (\language22). Reported on input line 105.
 Package babel Info: Hyphen rules for 'newzealand' set to \l@ukenglish
 (babel)             (\language22). Reported on input line 108.
-)) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/tools/tabularx.sty
+))
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/tools/tabularx.sty
 Package: tabularx 2023/12/11 v2.12a `tabularx' package (DPC)
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/tools/array.sty
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/tools/array.sty
 Package: array 2025/09/25 v2.6n Tabular extension package (FMi)
 \col@sep=\dimen160
 \ar@mcellbox=\box55
@@ -233,31 +335,37 @@ Package: array 2025/09/25 v2.6n Tabular extension package (FMi)
 \TX@delta=\dimen166
 \TX@cols=\count299
 \TX@ftn=\toks25
-) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/generic/pdftex/glyphtounicode.tex) (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/l3backend/l3backend-pdftex.def
+)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/generic/pdftex/glyphtounicode.tex)
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/l3backend/l3backend-pdftex.def
 File: l3backend-pdftex.def 2025-10-09 L3 backend support: PDF output (pdfTeX)
 \l__color_backend_stack_int=\count300
 ) (./ryan_peckham_resume.aux)
 \openout1 = `ryan_peckham_resume.aux'.
 
-LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 93.
-LaTeX Font Info:    ... okay on input line 93.
-LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 93.
-LaTeX Font Info:    ... okay on input line 93.
-LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 93.
-LaTeX Font Info:    ... okay on input line 93.
-LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 93.
-LaTeX Font Info:    ... okay on input line 93.
-LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 93.
-LaTeX Font Info:    ... okay on input line 93.
-LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 93.
-LaTeX Font Info:    ... okay on input line 93.
-LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 93.
-LaTeX Font Info:    ... okay on input line 93.
-LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 93.
-LaTeX Font Info:    ... okay on input line 93.
-LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 93.
-LaTeX Font Info:    ... okay on input line 93.
- (/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/context/base/mkii/supp-pdf.mkii
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 71.
+LaTeX Font Info:    ... okay on input line 71.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 71.
+LaTeX Font Info:    ... okay on input line 71.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 71.
+LaTeX Font Info:    ... okay on input line 71.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 71.
+LaTeX Font Info:    ... okay on input line 71.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 71.
+LaTeX Font Info:    ... okay on input line 71.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 71.
+LaTeX Font Info:    ... okay on input line 71.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 71.
+LaTeX Font Info:    ... okay on input line 71.
+LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 71.
+LaTeX Font Info:    ... okay on input line 71.
+LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 71.
+LaTeX Font Info:    ... okay on input line 71.
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/context/base/mkii/supp-pdf.mkii
 [Loading MPS to PDF converter (version 2006.09.02).]
 \scratchcounter=\count301
 \scratchdimen=\dimen167
@@ -271,7 +379,7 @@ LaTeX Font Info:    ... okay on input line 93.
 \makeMPintoPDFobject=\count306
 \everyMPtoPDFconversion=\toks27
 )
-Package hyperref Info: Link coloring OFF on input line 93.
+Package hyperref Info: Link coloring OFF on input line 71.
  (./ryan_peckham_resume.out) (./ryan_peckham_resume.out)
 \@outlinefile=\write3
 \openout3 = `ryan_peckham_resume.out'.
@@ -279,65 +387,29 @@ Package hyperref Info: Link coloring OFF on input line 93.
 
 
 LaTeX Font Warning: Font shape `OT1/cmr/bx/sc' undefined
-(Font)              using `OT1/cmr/bx/n' instead on input line 95.
+(Font)              using `OT1/cmr/bx/n' instead on input line 73.
 
 LaTeX Font Info:    External font `cmex10' loaded for size
-(Font)              <7> on input line 96.
+(Font)              <7> on input line 74.
 LaTeX Font Info:    External font `cmex10' loaded for size
-(Font)              <5> on input line 96.
-LaTeX Font Info:    Trying to load font information for U+lasy on input line 96.
-(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/tex/latex/base/ulasy.fd
+(Font)              <5> on input line 74.
+LaTeX Font Info:    Trying to load font information for U+lasy on input line 74
+.
+
+(/nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texm
+fdist/tex/latex/base/ulasy.fd
 File: ulasy.fd 1998/08/17 v2.2e LaTeX symbol font definitions
 )
 LaTeX Font Info:    External font `cmex10' loaded for size
-(Font)              <10.95> on input line 106.
+(Font)              <10.95> on input line 85.
 LaTeX Font Info:    External font `cmex10' loaded for size
-(Font)              <8> on input line 106.
+(Font)              <8> on input line 85.
 LaTeX Font Info:    External font `cmex10' loaded for size
-(Font)              <6> on input line 106.
+(Font)              <6> on input line 85.
+ [1
 
-Overfull \hbox (10.84006pt too wide) in paragraph at lines 106--107
-[]  
- []
-
-
-Overfull \hbox (10.84006pt too wide) in paragraph at lines 126--127
-[]  
- []
-
-
-Overfull \hbox (10.84006pt too wide) in paragraph at lines 152--153
-[]  
- []
-
-
-Overfull \hbox (10.84006pt too wide) in paragraph at lines 160--161
-[]  
- []
-
-
-Overfull \hbox (10.84006pt too wide) in paragraph at lines 181--182
-[] 
- []
-
-
-Overfull \hbox (10.84006pt too wide) in paragraph at lines 189--190
-[] 
- []
-
-
-Overfull \hbox (10.84006pt too wide) in paragraph at lines 196--203
-[] 
- []
-
-
-Package fancyhdr Warning: \footskip is too small (0.0pt): 
-(fancyhdr)                Make it at least 4.08003pt, for example:
-(fancyhdr)                \setlength{\footskip}{4.08003pt}.
-
-[1
-
-{/nix/store/l2m0dwqq7ycz8sh3i4g0mrwb400wyrb0-texlive-2025-r78234-final-env/share/texmf-var/fonts/map/pdftex/updmap/pdftex.map}] (./ryan_peckham_resume.aux)
+{/nix/store/l2m0dwqq7ycz8sh3i4g0mrwb400wyrb0-texlive-2025-r78234-final-env/shar
+e/texmf-var/fonts/map/pdftex/updmap/pdftex.map}] (./ryan_peckham_resume.aux)
  ***********
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-01-19>
@@ -347,21 +419,30 @@ L3 programming layer <2026-01-19>
 LaTeX Font Warning: Some font shapes were not available, defaults substituted.
 
 Package rerunfilecheck Info: File `ryan_peckham_resume.out' has not changed.
-(rerunfilecheck)             Checksum: 5C1F3EAF01EDDBDEE8092B16AD8D9657;506.
+(rerunfilecheck)             Checksum: E097F63695975A9121E8A177DB242A29;627.
  ) 
 Here is how much of TeX's memory you used:
- 10873 strings out of 467535
- 178362 string characters out of 5388798
- 629701 words of memory out of 5000000
- 39662 multiletter control sequences out of 15000+600000
+ 10869 strings out of 467535
+ 178127 string characters out of 5388798
+ 625492 words of memory out of 5000000
+ 39659 multiletter control sequences out of 15000+600000
  632621 words of font info for 60 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 75i,11n,79p,355b,464s stack positions out of 10000i,1000n,20000p,200000b,200000s
-</nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/fonts/type1/public/amsfonts/cm/cmbx10.pfb></nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/fonts/type1/public/amsfonts/cm/cmbx12.pfb></nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/fonts/type1/public/amsfonts/cm/cmcsc10.pfb></nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/fonts/type1/public/amsfonts/cm/cmr10.pfb></nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/fonts/type1/public/amsfonts/cm/cmsy10.pfb></nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/fonts/type1/public/amsfonts/cm/cmsy6.pfb>
-Output written on ryan_peckham_resume.pdf (1 page, 88331 bytes).
+ 75i,11n,79p,303b,466s stack positions out of 10000i,1000n,20000p,200000b,200000s
+</nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-te
+xmfdist/fonts/type1/public/amsfonts/cm/cmbx10.pfb></nix/store/c3gbkajibg2hkjy7i
+xpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/fonts/type1/public/amsf
+onts/cm/cmbx12.pfb></nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r7
+8234-final-env-texmfdist/fonts/type1/public/amsfonts/cm/cmcsc10.pfb></nix/store
+/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env-texmfdist/fonts
+/type1/public/amsfonts/cm/cmr10.pfb></nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhps
+s-texlive-2025-r78234-final-env-texmfdist/fonts/type1/public/amsfonts/cm/cmsy10
+.pfb></nix/store/c3gbkajibg2hkjy7ixpbs7wgi58jhpss-texlive-2025-r78234-final-env
+-texmfdist/fonts/type1/public/amsfonts/cm/cmsy6.pfb>
+Output written on ryan_peckham_resume.pdf (1 page, 89130 bytes).
 PDF statistics:
- 68 PDF objects out of 1000 (max. 8388607)
- 52 compressed objects within 1 object stream
+ 69 PDF objects out of 1000 (max. 8388607)
+ 53 compressed objects within 1 object stream
  7 named destinations out of 1000 (max. 500000)
  41 words of extra memory for PDF output out of 10000 (max. 10000000)
 
