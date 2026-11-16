@@ -170,8 +170,28 @@ let commands = {
     resume: new Command(
         "resume",
         "Get Ryan's resume",
-        "resume",
-        (args) => window.location.href = appUrl("home", "/ryan_peckham_resume.pdf")
+        "resume [--pdf]",
+        (args) => {
+            const resumeUrl = appUrl("home", "/resume");
+            const pdfUrl = appUrl("home", "/ryan_peckham_resume.pdf");
+            if (args.includes("--pdf") || args.includes("-p") || args.includes("-d") || args.includes("--download")) {
+                if (typeof document !== "undefined") {
+                    const link = document.createElement("a");
+                    link.href = pdfUrl;
+                    link.download = "ryan_peckham_resume.pdf";
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                }
+                return "Downloading " + makeLink(pdfUrl, "ryan_peckham_resume.pdf") + "...";
+            }
+            if (typeof window !== "undefined") {
+                window.location.href = resumeUrl;
+            }
+            return "Opening " + makeLink(resumeUrl, "peckhamr.com/resume") + " (direct PDF: " + makeLink(pdfUrl, "download") + ")...";
+        },
+        null,
+        () => ["--pdf"]
     ),
     helloworld: new Command(
         "helloworld",

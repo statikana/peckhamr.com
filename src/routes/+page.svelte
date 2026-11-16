@@ -87,8 +87,8 @@
 
             <!-- Clear, approachable primary actions for any visitor -->
             <div class="primary-actions">
-                <a class="action-primary" href="/ryan_peckham_resume.pdf" target="_blank">
-                    View Résumé (PDF) <span aria-hidden="true">↗</span>
+                <a class="action-primary" href="/resume">
+                    View Résumé <span aria-hidden="true">→</span>
                 </a>
                 <a class="action-secondary" href="mailto:peckhamr@umich.edu">
                     Email Me
