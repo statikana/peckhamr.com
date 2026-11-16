@@ -27,7 +27,8 @@
   "dependencies": {
     "@types/node": "^26.6.5",
     "better-auth": "^1.7.10",
-    "dompurify": "^3.4.17"
+    "dompurify": "^3.4.17",
+    "pdfjs-dist": "^6.5.438"
   },
   "allowScripts": {
     "esbuild": true,

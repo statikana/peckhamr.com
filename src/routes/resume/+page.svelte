@@ -1,11 +1,32 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onMount, onDestroy } from "svelte";
     import { page } from "$app/state";
+    import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
     import { appUrl } from "../../lib/apps";
 
+    const PDF_URL = "/ryan_peckham_resume.pdf";
+    const MIN_ZOOM = 0.75;
+    const MAX_ZOOM = 2.5;
+    const ZOOM_STEP = 0.25;
+    const MAX_DESKTOP_FIT_WIDTH = 860;
+    const MAX_CANVAS_PIXELS = 12_000_000;
+
     let theme = $state<"light" | "dark">("light");
-    let viewMode = $state<"web" | "pdf">("web");
-    let isDesktop = $state(false);
+    let zoom = $state(1);
+    let numPages = $state(0);
+    let loading = $state(true);
+    let errorMessage = $state<string | null>(null);
+
+    let stageEl = $state<HTMLDivElement | null>(null);
+    let pagesEl = $state<HTMLDivElement | null>(null);
+
+    let pdfDoc: PDFDocumentProxy | null = null;
+    let pdfjsLib: typeof import("pdfjs-dist") | null = null;
+    let activeRenderTasks: RenderTask[] = [];
+    let activeTextLayers: Array<{ cancel: () => void }> = [];
+    let renderGeneration = 0;
+    let lastMeasuredWidth = 0;
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
     function applyTheme(nextTheme: "light" | "dark") {
         theme = nextTheme;
@@ -14,40 +35,307 @@
         }
         try {
             localStorage.setItem("peckhamr-theme", theme);
-        } catch (e) {}
+        } catch {
+            // Ignore storage errors in restricted browsing contexts.
+        }
     }
 
     function toggleTheme() {
         applyTheme(theme === "light" ? "dark" : "light");
     }
 
+    function createLinkService() {
+        return {
+            externalLinkEnabled: true,
+            externalLinkTarget: 2, // LinkTarget.BLANK
+            externalLinkRel: "noopener noreferrer",
+            isInPresentationMode: false,
+            eventBus: null,
+            pagesCount: numPages,
+            page: 1,
+            rotation: 0,
+            addLinkAttributes(link: HTMLAnchorElement, url: string, newWindow = false) {
+                link.href = url;
+                link.title = url;
+                if (url.startsWith("http://") || url.startsWith("https://") || newWindow) {
+                    link.target = "_blank";
+                    link.rel = "noopener noreferrer";
+                }
+            },
+            getDestinationHash() {
+                return "#";
+            },
+            getAnchorUrl(hash: string) {
+                return hash || "#";
+            },
+            async goToDestination() {},
+            executeNamedAction() {},
+            executeSetOCGState() {}
+        };
+    }
+
+    function cancelActiveRendering() {
+        for (const task of activeRenderTasks) {
+            try {
+                task.cancel();
+            } catch {
+                // Ignore already-completed tasks.
+            }
+        }
+        activeRenderTasks = [];
+
+        for (const textLayer of activeTextLayers) {
+            try {
+                textLayer.cancel();
+            } catch {
+                // Ignore already-completed text layers.
+            }
+        }
+        activeTextLayers = [];
+    }
+
+    async function renderPage(
+        pdfPage: PDFPageProxy,
+        fitWidth: number,
+        generation: number
+    ): Promise<HTMLDivElement | null> {
+        if (!pdfjsLib || generation !== renderGeneration) return null;
+
+        const baseViewport = pdfPage.getViewport({ scale: 1 });
+        const scale = (fitWidth / baseViewport.width) * zoom;
+        const viewport = pdfPage.getViewport({ scale });
+
+        const cssWidth = Math.max(1, Math.floor(viewport.width));
+        const cssHeight = Math.max(1, Math.floor(viewport.height));
+
+        // Clamp DPR-scaled canvas area so iOS Safari does not hit its canvas memory limit.
+        const rawDpr = Math.min(window.devicePixelRatio || 1, 3);
+        const maxSafeDpr = Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, cssWidth * cssHeight));
+        const outputScale = Math.max(1, Math.min(rawDpr, maxSafeDpr));
+
+        const pageWrap = document.createElement("div");
+        pageWrap.className = "pdf-page";
+        pageWrap.style.width = `${cssWidth}px`;
+        pageWrap.style.height = `${cssHeight}px`;
+        pageWrap.style.setProperty("--scale-factor", `${scale}`);
+        pageWrap.style.setProperty("--total-scale-factor", `${scale}`);
+        pageWrap.style.setProperty("--scale-round-x", "1px");
+        pageWrap.style.setProperty("--scale-round-y", "1px");
+
+        const canvas = document.createElement("canvas");
+        canvas.className = "pdf-canvas";
+        canvas.width = Math.max(1, Math.floor(cssWidth * outputScale));
+        canvas.height = Math.max(1, Math.floor(cssHeight * outputScale));
+        canvas.style.width = `${cssWidth}px`;
+        canvas.style.height = `${cssHeight}px`;
+
+        const textLayerDiv = document.createElement("div");
+        textLayerDiv.className = "textLayer";
+
+        const annotationLayerDiv = document.createElement("div");
+        annotationLayerDiv.className = "annotationLayer";
+
+        pageWrap.appendChild(canvas);
+        pageWrap.appendChild(textLayerDiv);
+        pageWrap.appendChild(annotationLayerDiv);
+
+        const transform =
+            outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined;
+
+        const renderTask = pdfPage.render({
+            canvas,
+            viewport,
+            transform,
+            background: "rgb(255, 255, 255)"
+        });
+        activeRenderTasks.push(renderTask);
+
+        await renderTask.promise;
+        if (generation !== renderGeneration) return null;
+
+        const textContent = await pdfPage.getTextContent();
+        if (generation !== renderGeneration) return null;
+
+        const textLayer = new pdfjsLib.TextLayer({
+            textContentSource: textContent,
+            container: textLayerDiv,
+            viewport
+        });
+        activeTextLayers.push(textLayer);
+        await textLayer.render();
+        if (generation !== renderGeneration) return null;
+
+        const annotations = await pdfPage.getAnnotations();
+        if (generation !== renderGeneration) return null;
+
+        if (annotations.length > 0) {
+            const linkService = createLinkService();
+            const annotationLayer = new pdfjsLib.AnnotationLayer({
+                div: annotationLayerDiv,
+                accessibilityManager: undefined,
+                annotationCanvasMap: undefined,
+                annotationEditorUIManager: undefined,
+                page: pdfPage,
+                viewport: viewport.clone({ dontFlip: true }),
+                structTreeLayer: undefined,
+                commentManager: undefined,
+                linkService: linkService as unknown as ConstructorParameters<
+                    typeof pdfjsLib.AnnotationLayer
+                >[0]["linkService"],
+                annotationStorage: undefined
+            });
+            await annotationLayer.render({
+                annotations,
+                viewport: viewport.clone({ dontFlip: true }),
+                div: annotationLayerDiv,
+                page: pdfPage,
+                linkService: linkService as unknown as Parameters<
+                    typeof annotationLayer.render
+                >[0]["linkService"],
+                renderForms: false
+            });
+        }
+
+        return pageWrap;
+    }
+
+    async function renderAllPages() {
+        if (!pdfDoc || !stageEl || !pagesEl) return;
+
+        const generation = ++renderGeneration;
+        cancelActiveRendering();
+
+        const containerWidth = stageEl.clientWidth;
+        if (containerWidth <= 0) return;
+
+        const fitWidth = Math.min(Math.max(1, containerWidth - 2), MAX_DESKTOP_FIT_WIDTH);
+        const fragment = document.createDocumentFragment();
+
+        try {
+            for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+                const pdfPage = await pdfDoc.getPage(pageNum);
+                if (generation !== renderGeneration) return;
+
+                const pageEl = await renderPage(pdfPage, fitWidth, generation);
+                if (!pageEl || generation !== renderGeneration) return;
+                fragment.appendChild(pageEl);
+            }
+
+            if (generation !== renderGeneration || !pagesEl) return;
+            pagesEl.replaceChildren(fragment);
+            errorMessage = null;
+        } catch (err) {
+            const name = err instanceof Error ? err.name : "";
+            if (name === "RenderingCancelledException" || name === "AbortException") {
+                return;
+            }
+            console.error("Failed to render resume PDF:", err);
+            errorMessage = "Unable to render the PDF preview in this browser.";
+        }
+    }
+
+    function changeZoom(delta: number) {
+        const next = Math.round((zoom + delta) * 100) / 100;
+        const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, next));
+        if (clamped !== zoom) {
+            zoom = clamped;
+            void renderAllPages();
+        }
+    }
+
+    function resetZoom() {
+        if (zoom !== 1) {
+            zoom = 1;
+            void renderAllPages();
+        }
+    }
+
     onMount(() => {
         try {
             const saved = localStorage.getItem("peckhamr-theme");
             applyTheme(saved === "dark" ? "dark" : "light");
-        } catch (e) {
+        } catch {
             applyTheme("light");
         }
 
-        const updateMedia = () => {
-            isDesktop = window.innerWidth >= 960;
+        let disposed = false;
+        let observer: ResizeObserver | null = null;
+
+        (async () => {
+            try {
+                const [pdfjs, workerModule] = await Promise.all([
+                    import("pdfjs-dist"),
+                    import("pdfjs-dist/build/pdf.worker.min.mjs?url")
+                ]);
+                if (disposed) return;
+
+                pdfjs.GlobalWorkerOptions.workerSrc = workerModule.default;
+                pdfjsLib = pdfjs;
+
+                const loadingTask = pdfjs.getDocument({ url: PDF_URL });
+                const loadedPdf = await loadingTask.promise;
+                if (disposed) {
+                    await loadingTask.destroy();
+                    return;
+                }
+
+                pdfDoc = loadedPdf;
+                numPages = loadedPdf.numPages;
+                loading = false;
+
+                if (stageEl) {
+                    lastMeasuredWidth = stageEl.clientWidth;
+                    observer = new ResizeObserver((entries) => {
+                        const width = Math.round(entries[0]?.contentRect.width ?? 0);
+                        // Ignore height-only resizes (e.g. mobile browser URL bar collapse on scroll).
+                        if (width <= 0 || Math.abs(width - lastMeasuredWidth) < 2) {
+                            return;
+                        }
+                        lastMeasuredWidth = width;
+                        if (resizeTimer) clearTimeout(resizeTimer);
+                        resizeTimer = setTimeout(() => {
+                            void renderAllPages();
+                        }, 120);
+                    });
+                    observer.observe(stageEl);
+                }
+
+                await renderAllPages();
+            } catch (err) {
+                if (disposed) return;
+                console.error("Failed to load resume PDF:", err);
+                loading = false;
+                errorMessage = "Could not load the inline PDF viewer.";
+            }
+        })();
+
+        return () => {
+            disposed = true;
+            if (observer) observer.disconnect();
+            if (resizeTimer) clearTimeout(resizeTimer);
         };
-        updateMedia();
-        window.addEventListener("resize", updateMedia);
-        return () => window.removeEventListener("resize", updateMedia);
+    });
+
+    onDestroy(() => {
+        renderGeneration++;
+        cancelActiveRendering();
+        if (pdfDoc) {
+            void pdfDoc.loadingTask.destroy();
+            pdfDoc = null;
+        }
     });
 </script>
 
 <svelte:head>
     <title>Ryan Peckham — Résumé</title>
-    <meta name="description" content="Résumé of Ryan Peckham, Computer Engineering student at the University of Michigan." />
+    <meta name="description" content="Résumé PDF of Ryan Peckham, Computer Engineering student at the University of Michigan." />
 </svelte:head>
 
 <div class="resume-shell">
     <header class="resume-nav no-print">
         <div class="nav-left">
             <a href={appUrl("home", "/", page.url)} class="nav-back">
-                <span class="back-arrow" aria-hidden="true">←</span>
+                <span aria-hidden="true">←</span>
                 <span>peckhamr.com</span>
             </a>
             <span class="nav-divider">/</span>
@@ -55,46 +343,57 @@
         </div>
 
         <div class="nav-right">
-            {#if isDesktop}
-                <div class="mode-toggles" role="group" aria-label="Resume display mode">
-                    <button
-                        type="button"
-                        class="mode-btn"
-                        class:active={viewMode === "web"}
-                        onclick={() => (viewMode = "web")}
-                    >
-                        Web View
-                    </button>
-                    <button
-                        type="button"
-                        class="mode-btn"
-                        class:active={viewMode === "pdf"}
-                        onclick={() => (viewMode = "pdf")}
-                    >
-                        Embedded PDF
-                    </button>
-                </div>
-            {/if}
+            <div class="zoom-controls" role="group" aria-label="PDF zoom controls">
+                <button
+                    type="button"
+                    class="zoom-btn"
+                    onclick={() => changeZoom(-ZOOM_STEP)}
+                    disabled={zoom <= MIN_ZOOM || loading || !!errorMessage}
+                    aria-label="Zoom out"
+                    title="Zoom out"
+                >
+                    −
+                </button>
+                <button
+                    type="button"
+                    class="zoom-btn zoom-reset"
+                    onclick={resetZoom}
+                    disabled={loading || !!errorMessage}
+                    title="Reset zoom to fit width"
+                >
+                    {Math.round(zoom * 100)}%
+                </button>
+                <button
+                    type="button"
+                    class="zoom-btn"
+                    onclick={() => changeZoom(ZOOM_STEP)}
+                    disabled={zoom >= MAX_ZOOM || loading || !!errorMessage}
+                    aria-label="Zoom in"
+                    title="Zoom in"
+                >
+                    +
+                </button>
+            </div>
 
             <a
                 class="action-btn download-btn"
-                href="/ryan_peckham_resume.pdf"
+                href={PDF_URL}
                 download="ryan_peckham_resume.pdf"
                 title="Download PDF to device"
             >
-                <span class="btn-icon" aria-hidden="true">↓</span>
-                <span>Download PDF</span>
+                <span aria-hidden="true">↓</span>
+                <span>Download</span>
             </a>
 
             <a
                 class="action-btn raw-btn"
-                href="/ryan_peckham_resume.pdf"
+                href={PDF_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                title="Open PDF directly"
+                title="Open raw PDF file"
             >
-                <span>Raw PDF</span>
-                <span class="btn-icon" aria-hidden="true">↗</span>
+                <span>Open PDF</span>
+                <span aria-hidden="true">↗</span>
             </a>
 
             <button
@@ -104,200 +403,71 @@
                 aria-label="Toggle Monokai Pro Light/Dark"
                 title={theme === "light" ? "Switch to Monokai Pro Dark" : "Switch to Monokai Pro Light"}
             >
-                <span class="theme-icon" aria-hidden="true">{theme === "light" ? "☾" : "☀"}</span>
-                <span>{theme === "light" ? "Dark" : "Light"}</span>
+                <span aria-hidden="true">{theme === "light" ? "☾" : "☀"}</span>
+                <span class="theme-label">{theme === "light" ? "Dark" : "Light"}</span>
             </button>
         </div>
     </header>
 
     <main class="resume-content">
-        {#if viewMode === "pdf" && isDesktop}
-            <div class="pdf-container no-print">
-                <iframe
-                    src="/ryan_peckham_resume.pdf"
-                    title="Ryan Peckham Résumé PDF"
-                    class="pdf-frame"
-                ></iframe>
-            </div>
-        {:else}
-            <!-- Responsive Web Résumé (Works reliably on mobile & desktop, prints cleanly) -->
-            <article class="resume-paper">
-                <header class="resume-header">
-                    <h1 class="candidate-name">Ryan Peckham</h1>
-                    <div class="contact-line">
-                        <a href="mailto:peckhamr@umich.edu">peckhamr@umich.edu</a>
-                        <span class="bullet">·</span>
-                        <a href="https://peckhamr.com">peckhamr.com</a>
-                        <span class="bullet">·</span>
-                        <a href="https://github.com/statikana" target="_blank" rel="noopener noreferrer">github.com/statikana</a>
-                        <span class="bullet">·</span>
-                        <span class="contact-item">(616) 834-2160</span>
-                        <span class="bullet">·</span>
-                        <span class="contact-item">Ann Arbor, MI</span>
+        <div class="pdf-stage" bind:this={stageEl}>
+            {#if loading}
+                <div class="pdf-status no-print" role="status" aria-live="polite">
+                    <span class="status-dot" aria-hidden="true"></span>
+                    <span>Loading résumé PDF…</span>
+                </div>
+            {:else if errorMessage}
+                <div class="pdf-fallback no-print">
+                    <p class="fallback-title">{errorMessage}</p>
+                    <p class="fallback-sub">
+                        You can still open or download the PDF directly:
+                    </p>
+                    <div class="fallback-actions">
+                        <a
+                            class="action-btn download-btn"
+                            href={PDF_URL}
+                            download="ryan_peckham_resume.pdf"
+                        >
+                            ↓ Download PDF
+                        </a>
+                        <a
+                            class="action-btn raw-btn"
+                            href={PDF_URL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            Open Raw PDF ↗
+                        </a>
                     </div>
-                </header>
+                </div>
+            {/if}
 
-                <!-- 01 EDUCATION -->
-                <section class="section">
-                    <h2 class="section-title">Education</h2>
-                    <div class="entry">
-                        <div class="entry-head">
-                            <span class="entry-title bold">University of Michigan</span>
-                            <span class="entry-right">Ann Arbor, MI</span>
-                        </div>
-                        <div class="entry-sub">
-                            <span class="entry-role">B.S. in Computer Engineering (GPA: 3.35/4.0)</span>
-                            <span class="entry-date">Expected May 2029</span>
-                        </div>
-                        <p class="entry-note">
-                            <strong>Relevant Coursework:</strong> Programming &amp; Data Structures, Discrete Mathematics, Multivariable &amp; Vector Calculus, Probability &amp; Statistics, Electricity &amp; Magnetism
-                        </p>
+            <div class="pdf-pages" bind:this={pagesEl} class:hidden={loading || !!errorMessage}></div>
+
+            <noscript>
+                <div class="pdf-fallback">
+                    <p class="fallback-title">JavaScript is required for the inline viewer.</p>
+                    <div class="fallback-actions">
+                        <a class="action-btn download-btn" href={PDF_URL}>
+                            Open / Download Résumé PDF ↗
+                        </a>
                     </div>
-                </section>
-
-                <!-- 02 TECHNICAL SKILLS -->
-                <section class="section">
-                    <h2 class="section-title">Technical Skills</h2>
-                    <dl class="skills-list">
-                        <div class="skill-row">
-                            <dt class="skill-label">Languages</dt>
-                            <dd class="skill-desc">C/C++, Python, Rust, Java, C#, SQL, JavaScript, MATLAB</dd>
-                        </div>
-                        <div class="skill-row">
-                            <dt class="skill-label">Robotics &amp; Autonomy</dt>
-                            <dd class="skill-desc">ROS 2, OpenCV, SITL/HITL Simulation, PID Control, Sensor Interfacing (IMU, GPS)</dd>
-                        </div>
-                        <div class="skill-row">
-                            <dt class="skill-label">Systems &amp; Tools</dt>
-                            <dd class="skill-desc">Linux (Ubuntu, Debian, NixOS), Docker, Git/GitHub, Multithreading, PostgreSQL</dd>
-                        </div>
-                        <div class="skill-row">
-                            <dt class="skill-label">Hardware Prototyping</dt>
-                            <dd class="skill-desc">Raspberry Pi, Circuit Prototyping, Soldering, Machining (CNC, Lathe, Mill)</dd>
-                        </div>
-                    </dl>
-                </section>
-
-                <!-- 03 ENGINEERING EXPERIENCE -->
-                <section class="section">
-                    <h2 class="section-title">Engineering Experience</h2>
-
-                    <div class="entry">
-                        <div class="entry-head">
-                            <span class="entry-title bold">Michigan Autonomous Security Team (M-AST)</span>
-                            <span class="entry-right">Jan. 2026 – Present</span>
-                        </div>
-                        <div class="entry-sub">
-                            <span class="entry-role italic">Chief Software Engineer · University of Michigan</span>
-                        </div>
-                        <ul class="bullets">
-                            <li>
-                                Lead a team of engineers developing onboard firmware and sensor drivers for an autonomous quadcopter, integrating and calibrating IMU (gyroscope/accelerometer), magnetometer, barometer, and GPS modules.
-                            </li>
-                            <li>
-                                Co-architected modular flight software architecture and inter-subsystem data pipelines, containerizing services with Docker to enable Software-in-the-Loop (SITL) and Hardware-in-the-Loop (HITL) flight simulation.
-                            </li>
-                            <li>
-                                Integrated ROS 2 nodes, OpenCV vision pipelines, autonomous waypoint navigation, and real-time telemetry into a unified flight software stack.
-                            </li>
-                            <li>
-                                Direct repository architecture across submodules, enforcing peer code reviews, CI workflows, and quality standards.
-                            </li>
-                        </ul>
-                    </div>
-
-                    <div class="entry">
-                        <div class="entry-head">
-                            <span class="entry-title bold">FIRST Robotics Competition (FRC), Team 141 "WOBOT"</span>
-                            <span class="entry-right">Aug. 2023 – Oct. 2024</span>
-                        </div>
-                        <div class="entry-sub">
-                            <span class="entry-role italic">Programming Team Lead · West Ottawa High School</span>
-                        </div>
-                        <ul class="bullets">
-                            <li>
-                                Programmed robot drivetrain kinematics and mechanism control in Java, tuning closed-loop PIDF feedback controllers to achieve precision autonomous trajectory tracking and responsive teleoperation.
-                            </li>
-                            <li>
-                                Troubleshot real-time software exceptions and electrical faults under tight match turnarounds, collaborating with drive and pit teams to win the District Championship and Engineering Inspiration award.
-                            </li>
-                        </ul>
-                    </div>
-
-                    <div class="entry">
-                        <div class="entry-head">
-                            <span class="entry-title bold">Cultural, Technological, and Environmental Exchange (CTEE) Club</span>
-                            <span class="entry-right">Sep. 2024 – Apr. 2025</span>
-                        </div>
-                        <div class="entry-sub">
-                            <span class="entry-role italic">Hardware Technician · West Ottawa High School</span>
-                        </div>
-                        <ul class="bullets">
-                            <li>
-                                Diagnosed and refurbished desktop workstations, troubleshooting hardware-level faults across motherboards, power supplies, RAM, and storage drives.
-                            </li>
-                            <li>
-                                Configured operating systems, drivers, and network configurations to provision ready-to-deploy machines for humanitarian delivery to schools in Cambodia and Haiti.
-                            </li>
-                        </ul>
-                    </div>
-                </section>
-
-                <!-- 04 TECHNICAL PROJECTS -->
-                <section class="section">
-                    <h2 class="section-title">Technical Projects</h2>
-                    <ul class="bullets projects-list">
-                        <li>
-                            <strong>QRust (Custom Compiler)</strong> — Statically typed language in Rust targeting multiple ISAs via Cranelift; implemented lexical analysis, AST parsing, type checking, native SIMD vector primitives, and stack-allocated pointer semantics.
-                        </li>
-                        <li>
-                            <strong>Autonomous Solar Tracker</strong> — Engineered a dual-axis solar tracking system on a Raspberry Pi using C++; designed closed-loop feedback algorithms processing photoresistor arrays to control precision stepper motor orientation.
-                        </li>
-                        <li>
-                            <strong>Multi-Threaded File Downloader</strong> — Built a concurrent CLI file downloader in Python; segmented large payloads via HTTP Range headers to stream chunks across worker threads with thread-safe file reassembly.
-                        </li>
-                        <li>
-                            <strong>Algorithmic Sudoku Solver</strong> — Implemented a high-performance solver modeling grid states with bitmasks and NumPy; developed constraint propagation techniques and human strategies (hidden singles/pairs, X-Wing, Swordfish).
-                        </li>
-                        <li>
-                            <strong>FlyMast.com &amp; peckhamr.com</strong> — Designed and deployed production web applications using Svelte, JavaScript, and Cloudflare Workers, incorporating responsive modular components for team updates and sponsor engagement.
-                        </li>
-                    </ul>
-                </section>
-
-                <!-- 05 WORK EXPERIENCE -->
-                <section class="section">
-                    <h2 class="section-title">Work Experience</h2>
-                    <div class="work-history-table">
-                        <div class="work-history-row">
-                            <span class="work-history-name">Ace Hardware, Delivery and Assembly Technician</span>
-                            <span class="work-history-date">May 2026 – Aug. 2026</span>
-                        </div>
-                        <div class="work-history-row">
-                            <span class="work-history-name">Chick-fil-A, Crew Member</span>
-                            <span class="work-history-date">June 2025 – Jan. 2026</span>
-                        </div>
-                        <div class="work-history-row">
-                            <span class="work-history-name">Target, Electronics Consultant &amp; Team Leader</span>
-                            <span class="work-history-date">Nov. 2022 – Aug. 2024</span>
-                        </div>
-                    </div>
-                </section>
-            </article>
-        {/if}
+                </div>
+            </noscript>
+        </div>
     </main>
 </div>
 
 <style>
     .resume-shell {
         min-height: 100vh;
+        min-height: 100dvh;
         display: flex;
         flex-direction: column;
         background-color: var(--mp-bg);
         color: var(--mp-text);
     }
 
-    /* Top Sticky Navigation Bar */
     .resume-nav {
         position: sticky;
         top: 0;
@@ -306,8 +476,8 @@
         align-items: center;
         justify-content: space-between;
         flex-wrap: wrap;
-        gap: 0.75rem 1rem;
-        padding: 0.85rem 1.5rem;
+        gap: 0.65rem 1rem;
+        padding: 0.75rem 1.25rem;
         background-color: var(--mp-bg);
         border-bottom: 1px solid var(--mp-border);
         backdrop-filter: blur(8px);
@@ -316,7 +486,7 @@
     .nav-left {
         display: flex;
         align-items: center;
-        gap: 0.5rem;
+        gap: 0.45rem;
         font-family: var(--mono-font);
         font-size: 0.88rem;
     }
@@ -346,39 +516,56 @@
         display: flex;
         align-items: center;
         flex-wrap: wrap;
-        gap: 0.6rem;
+        gap: 0.5rem;
     }
 
-    .mode-toggles {
+    .zoom-controls {
         display: inline-flex;
-        border: 1px solid var(--mp-border);
+        align-items: center;
+        border: 1px solid var(--mp-border-strong);
         border-radius: 6px;
         overflow: hidden;
-        background-color: var(--mp-bg-subtle);
+        background-color: var(--mp-bg-elevated);
     }
 
-    .mode-btn {
+    .zoom-btn {
         background: transparent;
         border: none;
-        padding: 0.35rem 0.75rem;
-        font-family: inherit;
-        font-size: 0.8rem;
+        color: var(--mp-text);
+        font-family: var(--mono-font);
+        font-size: 0.82rem;
         font-weight: 600;
-        color: var(--mp-text-muted);
+        padding: 0.4rem 0.6rem;
+        min-height: 34px;
         cursor: pointer;
         transition: background-color 0.15s ease, color 0.15s ease;
     }
 
-    .mode-btn.active {
-        background-color: var(--mp-bg-elevated);
-        color: var(--mp-text);
+    .zoom-btn:hover:not(:disabled) {
+        background-color: var(--mp-bg-hover);
+        color: var(--mp-cyan);
+    }
+
+    .zoom-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+    }
+
+    .zoom-reset {
+        border-left: 1px solid var(--mp-border);
+        border-right: 1px solid var(--mp-border);
+        min-width: 3.3rem;
+        text-align: center;
     }
 
     .action-btn {
         display: inline-flex;
         align-items: center;
+        justify-content: center;
         gap: 0.35rem;
-        padding: 0.4rem 0.85rem;
+        padding: 0.4rem 0.8rem;
+        min-height: 34px;
+        box-sizing: border-box;
         border-radius: 6px;
         font-family: inherit;
         font-size: 0.84rem;
@@ -423,301 +610,258 @@
         color: var(--mp-orange);
     }
 
-    /* Main Content Area */
     .resume-content {
         flex: 1;
         display: flex;
         justify-content: center;
-        padding: 2rem 1.25rem 4rem 1.25rem;
+        padding: 1.5rem 1rem 3rem;
     }
 
-    .pdf-container {
+    .pdf-stage {
         width: 100%;
-        max-width: 900px;
-        height: 85vh;
+        max-width: 960px;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .pdf-pages {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1.25rem;
+        width: fit-content;
+        min-width: 100%;
+        margin: 0 auto;
+    }
+
+    .pdf-pages.hidden {
+        display: none;
+    }
+
+    .pdf-status,
+    .pdf-fallback {
+        margin: 2rem auto 0;
+        padding: 1.5rem 1.75rem;
         border: 1px solid var(--mp-border);
         border-radius: 8px;
-        overflow: hidden;
         background-color: var(--mp-bg-elevated);
+        color: var(--mp-text);
+        text-align: center;
+        max-width: 440px;
+        width: 100%;
+        box-sizing: border-box;
     }
 
-    .pdf-frame {
+    .pdf-status {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.6rem;
+        font-family: var(--mono-font);
+        font-size: 0.9rem;
+        color: var(--mp-text-muted);
+    }
+
+    .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: var(--mp-cyan);
+        animation: pulse 1.1s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+        0%,
+        100% {
+            opacity: 0.35;
+            transform: scale(0.85);
+        }
+        50% {
+            opacity: 1;
+            transform: scale(1.1);
+        }
+    }
+
+    .fallback-title {
+        margin: 0 0 0.45rem;
+        font-weight: 600;
+    }
+
+    .fallback-sub {
+        margin: 0 0 1rem;
+        font-size: 0.9rem;
+        color: var(--mp-text-muted);
+    }
+
+    .fallback-actions {
+        display: flex;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+    }
+
+    /* Dynamically created PDF page, text layer, and link annotations */
+    :global(.pdf-page) {
+        position: relative;
+        background-color: #ffffff;
+        border: 1px solid var(--mp-border);
+        border-radius: 4px;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08);
+        overflow: hidden;
+        flex-shrink: 0;
+    }
+
+    :global(.pdf-canvas) {
+        display: block;
+    }
+
+    :global(.pdf-page .textLayer) {
+        color-scheme: only light;
+        position: absolute;
+        inset: 0;
+        overflow: clip;
+        opacity: 1;
+        line-height: 1;
+        letter-spacing: normal;
+        word-spacing: normal;
+        -webkit-text-size-adjust: none;
+        -moz-text-size-adjust: none;
+        text-size-adjust: none;
+        transform-origin: 0 0;
+        z-index: 1;
+        --min-font-size: 1;
+        --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+        --min-font-size-inv: calc(1 / var(--min-font-size));
+    }
+
+    :global(.pdf-page .textLayer :is(span, br)) {
+        color: transparent;
+        position: absolute;
+        white-space: pre;
+        cursor: text;
+        transform-origin: 0% 0%;
+        -webkit-user-select: text;
+        -moz-user-select: text;
+        user-select: text;
+    }
+
+    :global(.pdf-page .textLayer > :not(.markedContent)),
+    :global(.pdf-page .textLayer .markedContent span:not(.markedContent)) {
+        z-index: 1;
+        --font-height: 0;
+        font-size: calc(var(--text-scale-factor) * var(--font-height));
+        --scale-x: 1;
+        --rotate: 0deg;
+        transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+    }
+
+    :global(.pdf-page .textLayer .markedContent) {
+        display: contents;
+    }
+
+    :global(.pdf-page .textLayer ::selection) {
+        background: rgba(0, 102, 255, 0.25);
+        color: transparent;
+    }
+
+    :global(.pdf-page .textLayer .endOfContent) {
+        display: block;
+        position: absolute;
+        inset: 100% 0 0;
+        z-index: 0;
+        cursor: default;
+        user-select: none;
+    }
+
+    :global(.pdf-page .annotationLayer) {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        transform-origin: 0 0;
+        z-index: 2;
+    }
+
+    :global(.pdf-page .annotationLayer section) {
+        position: absolute;
+        text-align: initial;
+        pointer-events: auto;
+        box-sizing: border-box;
+        transform-origin: 0 0;
+        user-select: none;
+    }
+
+    :global(.pdf-page .annotationLayer .linkAnnotation > a) {
+        position: absolute;
+        top: 0;
+        left: 0;
         width: 100%;
         height: 100%;
-        border: none;
     }
 
-    /* Paper-style Web Résumé */
-    .resume-paper {
-        width: 100%;
-        max-width: 820px;
-        background-color: var(--mp-bg-elevated);
-        border: 1px solid var(--mp-border);
-        border-radius: 8px;
-        padding: 2.75rem 3rem;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
-        line-height: 1.45;
-        font-size: 0.95rem;
-        color: var(--mp-text-body);
+    :global(.pdf-page .annotationLayer .linkAnnotation > a:hover) {
+        background-color: rgba(255, 255, 0, 0.2);
     }
 
-    .resume-header {
-        text-align: center;
-        margin-bottom: 1.5rem;
-        padding-bottom: 0.75rem;
-    }
-
-    .candidate-name {
-        margin: 0 0 0.35rem 0;
-        font-size: 2.1rem;
-        font-weight: 700;
-        letter-spacing: -0.01em;
-        color: var(--mp-text);
-    }
-
-    .contact-line {
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: center;
-        align-items: center;
-        gap: 0.35rem 0.55rem;
-        font-size: 0.85rem;
-        color: var(--mp-text-muted);
-    }
-
-    .contact-line a {
-        color: var(--mp-cyan);
-        text-decoration: none;
-    }
-
-    .contact-line a:hover {
-        color: var(--mp-red);
-        text-decoration: underline;
-    }
-
-    .bullet {
-        color: var(--mp-border-strong);
-    }
-
-    /* Sections */
-    .section {
-        margin-top: 1.35rem;
-    }
-
-    .section-title {
-        margin: 0 0 0.65rem 0;
-        font-size: 1.12rem;
-        font-weight: 700;
-        letter-spacing: 0.03em;
-        text-transform: uppercase;
-        color: var(--mp-text);
-        border-bottom: 1.5px solid var(--mp-border-strong);
-        padding-bottom: 0.25rem;
-    }
-
-    .entry {
-        margin-bottom: 1rem;
-    }
-
-    .entry-head,
-    .entry-sub {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 0.5rem;
-    }
-
-    .entry-head {
-        font-size: 0.98rem;
-    }
-
-    .entry-title {
-        color: var(--mp-text);
-    }
-
-    .entry-right,
-    .entry-date {
-        font-family: var(--mono-font);
-        font-size: 0.84rem;
-        color: var(--mp-orange);
-        white-space: nowrap;
-        text-align: right;
-    }
-
-    .entry-sub {
-        margin-top: 0.1rem;
-        margin-bottom: 0.35rem;
-    }
-
-    .entry-role {
-        font-size: 0.92rem;
-        color: var(--mp-purple);
-        font-weight: 500;
-    }
-
-    .entry-note {
-        margin: 0.3rem 0 0 0;
-        font-size: 0.9rem;
-        line-height: 1.45;
-        color: var(--mp-text-body);
-    }
-
-    .bold {
-        font-weight: 700;
-    }
-
-    .italic {
-        font-style: italic;
-    }
-
-    .bullets {
-        margin: 0.3rem 0 0 0;
-        padding-left: 1.25rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.35rem;
-        font-size: 0.91rem;
-        line-height: 1.5;
-        color: var(--mp-text-body);
-    }
-
-    .bullets li::marker {
-        color: var(--mp-text-muted);
-    }
-
-    /* Skills definition list */
-    .skills-list {
-        margin: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 0.4rem;
-        font-size: 0.91rem;
-    }
-
-    .skill-row {
-        display: grid;
-        grid-template-columns: 190px 1fr;
-        gap: 0.75rem;
-        align-items: baseline;
-    }
-
-    .skill-label {
-        font-weight: 700;
-        color: var(--mp-text);
-    }
-
-    .skill-desc {
-        margin: 0;
-        color: var(--mp-text-body);
-        line-height: 1.45;
-    }
-
-    /* Work History Table */
-    .work-history-table {
-        display: flex;
-        flex-direction: column;
-        gap: 0.35rem;
-        margin-top: 0.35rem;
-    }
-
-    .work-history-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 0.75rem;
-        font-size: 0.9rem;
-    }
-
-    .work-history-name {
-        color: var(--mp-text);
-        font-weight: 500;
-    }
-
-    .work-history-date {
-        font-family: var(--mono-font);
-        font-size: 0.82rem;
-        color: var(--mp-orange);
-        white-space: nowrap;
-    }
-
-    /* Responsive adjustments */
-    @media (max-width: 768px) {
-        .resume-paper {
-            padding: 1.75rem 1.25rem;
-            border-radius: 6px;
-        }
-
-        .candidate-name {
-            font-size: 1.7rem;
-        }
-
-        .skill-row {
-            grid-template-columns: 1fr;
-            gap: 0.15rem;
-        }
-
-        .entry-head,
-        .entry-sub,
-        .work-history-row {
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 0.1rem;
-        }
-
-        .entry-right,
-        .entry-date,
-        .work-history-date {
-            text-align: left;
-        }
-
+    @media (max-width: 640px) {
         .resume-nav {
-            padding: 0.75rem 1rem;
+            padding: 0.6rem 0.75rem;
+            gap: 0.5rem;
+        }
+
+        .nav-right {
+            width: 100%;
+            justify-content: space-between;
+            gap: 0.35rem;
+        }
+
+        .zoom-btn {
+            padding: 0.35rem 0.5rem;
+            font-size: 0.78rem;
+        }
+
+        .zoom-reset {
+            min-width: 2.75rem;
+        }
+
+        .action-btn {
+            padding: 0.35rem 0.55rem;
+            font-size: 0.78rem;
+            gap: 0.25rem;
+        }
+
+        .theme-label {
+            display: none;
+        }
+
+        .resume-content {
+            padding: 0.75rem 0.5rem 2rem;
+        }
+
+        .pdf-pages {
+            gap: 0.75rem;
         }
     }
 
-    /* Print styling */
     @media print {
         .no-print {
             display: none !important;
         }
 
-        .resume-shell {
+        .resume-shell,
+        .resume-content,
+        .pdf-stage {
             background: white !important;
-            color: black !important;
-        }
-
-        .resume-content {
             padding: 0 !important;
+            margin: 0 !important;
+            overflow: visible !important;
+            max-width: none !important;
         }
 
-        .resume-paper {
+        :global(.pdf-page) {
             border: none !important;
             box-shadow: none !important;
-            padding: 0 !important;
-            max-width: 100% !important;
-            background: white !important;
-            color: black !important;
-            font-size: 10.5pt !important;
-            line-height: 1.35 !important;
-        }
-
-        .candidate-name,
-        .section-title,
-        .entry-title,
-        .skill-label {
-            color: black !important;
-        }
-
-        .entry-right,
-        .entry-date,
-        .work-history-date,
-        .entry-role {
-            color: #333 !important;
-        }
-
-        .contact-line a {
-            color: black !important;
-            text-decoration: none !important;
+            border-radius: 0 !important;
+            break-after: page;
         }
     }
 </style>
