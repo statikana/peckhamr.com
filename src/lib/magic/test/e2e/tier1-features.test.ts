@@ -187,7 +187,8 @@ describe('Tier 1: Comprehensive Feature Coverage (51 Features × 5 Tests)', () =
 				return;
 			}
 			const { state, p1, p2 } = setupE2EGame();
-			const p2Card = addCardToZone(state, p2, synthCard({ name: 'P2 Permanent' }), 'battlefield');
+			const p2Card = addCardToZone(state, p2, synthCard({ name: 'P2 Permanent', power: '2', toughness: '2' }), 'battlefield');
+			const versionBefore = p2Card.objectVersion ?? 1;
 			const warp = addCardToZone(state, p1, synthCard({
 				name: 'Chaos Warp Synth',
 				manaCost: '{2}{R}',
@@ -197,7 +198,13 @@ describe('Tier 1: Comprehensive Feature Coverage (51 Features × 5 Tests)', () =
 			p1.manaPool.R = 3;
 			castSpellAction(state, p1, warp, { targets: [{ kind: 'permanent', id: p2Card.instanceId, label: 'P2 Permanent' }] });
 			passAllPriority(state);
-			assert.equal(p2.battlefield.some((c) => c.instanceId === p2Card.instanceId), false);
+			assert.equal(p1.library.some((c) => c.instanceId === p2Card.instanceId), false, 'Must not be in caster library');
+			const cardOnBf = p2.battlefield.find((c) => c.instanceId === p2Card.instanceId);
+			if (cardOnBf) {
+				assert.ok((cardOnBf.objectVersion ?? 1) > versionBefore, 'Object version must bump on re-entry');
+			} else {
+				assert.equal(p2.library.some((c) => c.instanceId === p2Card.instanceId), true, 'Target card must be in owner library if not on BF');
+			}
 		});
 
 		it('Case 4: Target permanent is a token', (t) => {
@@ -227,6 +234,7 @@ describe('Tier 1: Comprehensive Feature Coverage (51 Features × 5 Tests)', () =
 			}
 			const { state, p1, p2 } = setupE2EGame();
 			const ench = addCardToZone(state, p2, synthCard({ name: 'Enchantment', typeLine: 'Enchantment' }), 'battlefield');
+			const versionBefore = ench.objectVersion ?? 1;
 			const warp = addCardToZone(state, p1, synthCard({
 				name: 'Chaos Warp Synth',
 				manaCost: '{2}{R}',
@@ -236,7 +244,12 @@ describe('Tier 1: Comprehensive Feature Coverage (51 Features × 5 Tests)', () =
 			p1.manaPool.R = 3;
 			castSpellAction(state, p1, warp, { targets: [{ kind: 'permanent', id: ench.instanceId, label: 'Enchantment' }] });
 			passAllPriority(state);
-			assert.equal(p2.battlefield.some((c) => c.instanceId === ench.instanceId), false);
+			const enchOnBf = p2.battlefield.find((c) => c.instanceId === ench.instanceId);
+			if (enchOnBf) {
+				assert.ok((enchOnBf.objectVersion ?? 1) > versionBefore, 'Object version must bump on re-entry');
+			} else {
+				assert.equal(p2.library.some((c) => c.instanceId === ench.instanceId), true, 'Enchantment must be in library if not on BF');
+			}
 		});
 	});
 
