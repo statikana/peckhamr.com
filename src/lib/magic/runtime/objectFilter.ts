@@ -93,6 +93,10 @@ import {
 	evaluateP17bCondition,
 	matchesP17bObjectFilter
 } from './costsWave6.ts';
+import {
+	evaluateConditionWave9,
+	evaluateObjectFilterAmountWave9
+} from './staticsWave9.ts';
 // --- End Track P17b ---
 // --- Track P20b ---
 import { evaluateP20bAmount, evaluateP20bCondition } from './costsWave7.ts';
@@ -146,6 +150,12 @@ import {
 	matchesP22bObjectFilter
 } from './triggersWave8.ts';
 // --- End Track P22b ---
+// --- Wave 9 ---
+import { evaluateWave9Condition } from './triggersWave9.ts';
+// --- End Wave 9 ---
+// --- Wave 10 ---
+import { hasWave10ObjectFilterFields, matchesObjectFilterWave10 } from './combatWave10.ts';
+// --- End Wave 10 ---
 
 export interface FilterContext {
 	state: GameState;
@@ -166,6 +176,10 @@ export interface FilterContext {
 		damagedByThisTurn?: Array<{ sourceId: string; sourceVersion?: number }>;
 	};
 	// --- End Track P22b ---
+	// --- Wave 9 ---
+	eventObject?: CardInstance;
+	eventLki?: StackItem['eventLki'];
+	// --- End Wave 9 ---
 }
 
 const ZONES = ['library', 'hand', 'battlefield', 'graveyard', 'exile', 'command'] as const;
@@ -595,6 +609,12 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		}
 		// --- End Track P22a ---
 	}
+	if (filter.notOfChosenType) {
+		const chosenSub = ctx.source?.chosenSubType ?? ctx.stackItem?.sourceChosenSubType;
+		const chosenCardType = ctx.source?.chosenCardType ?? ctx.stackItem?.sourceChosenCardType;
+		if (chosenSub && hasSubType(chosenSub)) return false;
+		if (chosenCardType && matchesChosenCardType(types, chosenCardType)) return false;
+	}
 	if (filter.ofChosenColor) {
 		const chosenColor = ctx.source?.chosenColor ?? ctx.stackItem?.sourceChosenColor;
 		if (!chosenColor) return false;
@@ -866,6 +886,9 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	) {
 		return false;
 	}
+	if (filter.manaValueCompare && !compare(objectManaValue(state, obj), filter.manaValueCompare, ctx)) {
+		return false;
+	}
 	if (filter.power) {
 		const p = objectPower(state, obj);
 		if (p === null || !compare(p, filter.power, ctx)) return false;
@@ -873,6 +896,13 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 	if (filter.toughness) {
 		const t = objectToughness(state, obj);
 		if (t === null || !compare(t, filter.toughness, ctx)) return false;
+	}
+	if (filter.powerOrToughness) {
+		const p = objectPower(state, obj);
+		const t = objectToughness(state, obj);
+		const pOk = p !== null && compare(p, filter.powerOrToughness, ctx);
+		const tOk = t !== null && compare(t, filter.powerOrToughness, ctx);
+		if (!pOk && !tOk) return false;
 	}
 	if (filter.attacking !== undefined) {
 		const attacking = state.combat.attackers.some((a) => a.attackerInstanceId === obj.instanceId);
@@ -979,6 +1009,38 @@ export function matchesObjectFilter(obj: CardInstance, filter: ObjectFilter, ctx
 		return false;
 	}
 	// --- End Track P22b ---
+	// --- Wave 10 ---
+	if (
+		hasWave10ObjectFilterFields(filter) &&
+		!matchesObjectFilterWave10(
+			state,
+			obj,
+			filter,
+			{
+				controllerId: ctx.controllerId,
+				source: ctx.source,
+				targets: ctx.stackItem?.targets,
+				evalAmount: (a) => evaluateAmount(a, ctx),
+				readStat: {
+					manaValue: objectManaValue,
+					power: objectPower,
+					toughness: objectToughness
+				}
+			},
+			objZone
+		)
+	) {
+		return false;
+	}
+	// --- End Wave 10 ---
+	// --- Wave 12 ---
+	if (filter.castFromZones?.length) {
+		if (!obj.castFromZone || !filter.castFromZones.includes(obj.castFromZone)) return false;
+	}
+	if (filter.putIntoGraveyardFromNonBattlefieldThisTurn) {
+		if (obj.enteredGraveyardFromNonBattlefieldTurn !== state.turnNumber) return false;
+	}
+	// --- End Wave 12 ---
 	return true;
 }
 
@@ -1047,6 +1109,24 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 			return evaluateKickedCountAmount(amount, info);
 		}
 		case 'stat': {
+			if (amount.of.k === 'eventObject') {
+				const evObj = ctx.eventObject;
+				const evLki = ctx.eventLki ?? ctx.stackItem?.eventLki;
+				if (amount.stat === 'manaValue') {
+					if (evObj) return objectManaValue(ctx.state, evObj);
+					if (evLki) return evLki.manaValue;
+					return 0;
+				}
+				if (amount.stat === 'power') {
+					if (evObj) return objectPower(ctx.state, evObj) ?? 0;
+					return evLki?.power ?? 0;
+				}
+				if (amount.stat === 'toughness') {
+					if (evObj) return objectToughness(ctx.state, evObj) ?? 0;
+					return evLki?.toughness ?? 0;
+				}
+				return 0;
+			}
 			if (amount.of.k !== 'self' || !ctx.source) return 0;
 			if (amount.stat === 'power') return objectPower(ctx.state, ctx.source) ?? 0;
 			if (amount.stat === 'toughness') return objectToughness(ctx.state, ctx.source) ?? 0;
@@ -1224,7 +1304,7 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		// --- End Track P17b ---
 		// --- Track P16a ---
 		case 'countersRemovedThisWay':
-			return ctx.stackItem?.lastCountersRemoved ?? 0;
+			return ctx.stackItem?.lastCountersRemoved ?? ctx.stackItem?.removedCounterCount ?? 0;
 		case 'playerCounters': {
 			// --- Track P22a ---
 			if (amount.players) {
@@ -1309,8 +1389,25 @@ export function evaluateAmount(amount: Amount, ctx: FilterContext): number {
 		case 'conditional':
 			return evaluateAmount(evaluateCondition(amount.condition, ctx) ? amount.then : amount.else, ctx);
 		// --- End Track P22c ---
-		default:
+		// --- Wave 9 ---
+		case 'cardsDiscardedThisTurn': {
+			const turnKey = ctx.state.turnSerial ?? ctx.state.turnNumber;
+			let count = 0;
+			for (const pl of ctx.state.players) {
+				for (const z of ZONES) {
+					for (const c of pl[z]) {
+						if (c.discardedTurnSerial === turnKey) count += 1;
+					}
+				}
+			}
+			return count;
+		}
+		// --- End Wave 9 ---
+		default: {
+			const w9 = evaluateObjectFilterAmountWave9(amount, ctx);
+			if (w9 !== null) return w9;
 			return 0;
+		}
 	}
 }
 
@@ -1611,8 +1708,102 @@ export function evaluateCondition(cond: Condition, ctx: FilterContext): boolean 
 			);
 		}
 		// --- End Track P22c ---
+		// --- Wave 11 activation & inline conditions ---
+		case 'sameNameLandsControlledAtLeast': {
+			const ctrl = ctx.state.players.find((p) => p.playerId === ctx.controllerId);
+			if (!ctrl) return false;
+			const counts = new Map<string, number>();
+			for (const perm of ctrl.battlefield) {
+				if (perm.phasedOut || perm.isFaceDown) continue;
+				const ev = evaluatePermanent(ctx.state, perm);
+				if (!ev.isLand) continue;
+				const n = ev.effectiveName;
+				const next = (counts.get(n) ?? 0) + 1;
+				if (next >= cond.min) return true;
+				counts.set(n, next);
+			}
+			return false;
+		}
+		case 'createdTokenThisTurn': {
+			const ctrl = ctx.state.players.find((p) => p.playerId === ctx.controllerId);
+			return Boolean(ctrl && (ctrl.tokensCreatedCountThisTurn ?? 0) > 0);
+		}
+		case 'playedLandThisTurn': {
+			const ctrl = ctx.state.players.find((p) => p.playerId === ctx.controllerId);
+			return Boolean(ctrl && (ctrl.playedLandThisTurn || (ctrl.landsPlayedThisTurn ?? 0) > 0));
+		}
+		case 'sourceHasCounter': {
+			const src = ctx.source;
+			if (!src) return false;
+			return (src.counters[cond.counter] ?? 0) >= (cond.min ?? 1);
+		}
+		case 'attachedPermanentMatches': {
+			const attachedId = ctx.source?.attachedToId;
+			if (!attachedId) return false;
+			let attachedPerm: CardInstance | undefined;
+			for (const p of ctx.state.players) {
+				attachedPerm = p.battlefield.find((b) => b.instanceId === attachedId);
+				if (attachedPerm) break;
+			}
+			if (!attachedPerm || attachedPerm.phasedOut) return false;
+			if (cond.untapped && attachedPerm.tapped) return false;
+			if (cond.colors?.length) {
+				const ev = evaluatePermanent(ctx.state, attachedPerm);
+				if (!cond.colors.some((col) => ev.colors.includes(col))) return false;
+			}
+			return true;
+		}
+		case 'controlsFilter': {
+			const ctrl = ctx.state.players.find((p) => p.playerId === ctx.controllerId);
+			if (!ctrl) return false;
+			const bfCtx: FilterContext =
+				ctx.zone === 'battlefield' ? ctx : { ...ctx, zone: 'battlefield' };
+			return ctrl.battlefield.some(
+				(perm) => !perm.phasedOut && matchesObjectFilter(perm, cond.filter, bfCtx)
+			);
+		}
+		case 'noSpellCastThisTurn': {
+			const ctrl = ctx.state.players.find((p) => p.playerId === ctx.controllerId);
+			return Boolean(ctrl && (ctrl.spellsCastThisTurn ?? 0) === 0);
+		}
+		case 'attackedWithCommanderThisTurn': {
+			return ctx.state.players.some((p) => Boolean(p.attackedWithCommanderThisTurn));
+		}
+		case 'playerHasFewerHandThan': {
+			const pid =
+				!cond.targetPlayer || cond.targetPlayer.k === 'you'
+					? ctx.controllerId
+					: cond.targetPlayer.k === 'activePlayer'
+						? ctx.state.players[ctx.state.activePlayerIndex]?.playerId
+						: cond.targetPlayer.k === 'eventPlayer'
+							? ctx.eventPlayerId
+							: cond.targetPlayer.k === 'controllerOf' && cond.targetPlayer.of.k === 'self'
+								? ctx.source?.controllerId
+								: cond.targetPlayer.k === 'ownerOf' && cond.targetPlayer.of.k === 'self'
+									? ctx.source?.ownerId
+									: undefined;
+			const pl = pid ? ctx.state.players.find((p) => p.playerId === pid) : undefined;
+			return Boolean(pl && pl.hand.length < (cond.max ?? 7));
+		}
 		// --- Track P22b ---
 		default: {
+			const w9s = evaluateConditionWave9(cond, ctx);
+			if (w9s !== null) return w9s;
+			const w9 = evaluateWave9Condition(
+				cond,
+				{
+					state: ctx.state,
+					controllerId: ctx.controllerId,
+					sourceInstanceId: ctx.source?.instanceId ?? '',
+					source: ctx.source,
+					stackItem: ctx.stackItem,
+					eventObject: ctx.eventObject,
+					eventLki: ctx.eventLki ?? ctx.stackItem?.eventLki,
+					eventPlayerId: ctx.eventPlayerId
+				},
+				matchesObjectFilter
+			);
+			if (w9 !== undefined) return w9;
 			const p22b = evaluateP22bCondition(
 				cond,
 				{

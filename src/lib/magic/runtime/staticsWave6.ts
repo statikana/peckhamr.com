@@ -68,6 +68,7 @@ import {
 	type BlockerPairAssignment
 } from './staticsLayersAndRestrictions.ts';
 import { getActiveSimultaneousZoneBatchToken, withSimultaneousZoneBatch } from './triggers.ts';
+import { collectWave9ExtraGrantedSpellKeywords } from './staticsWave9.ts';
 
 const ALL_MANA_COLORS: readonly ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
 
@@ -165,7 +166,7 @@ function buildSpellViewForCast(
 		fused
 	});
 	const stackCard: ScryfallCard =
-		resolved.name === cardInst.card.name && resolved.typeLine === cardInst.card.typeLine
+		resolved.name === cardInst.card.name && !cardInst.card.faces?.length && !cardInst.card.backFace
 			? cardInst.card
 			: {
 					...cardInst.card,
@@ -450,6 +451,7 @@ export function getGrantedSpellKeywordsForSpell(
 				}
 				for (const rawKw of def.keywords) {
 					const kw = rawKw.toLowerCase();
+					if (def.paramN !== undefined && kw === 'ripple') continue;
 					if (cumulativeSpellKws.has(kw)) {
 						out.push(kw);
 					} else if (!seenSingle.has(kw)) {
@@ -461,6 +463,14 @@ export function getGrantedSpellKeywordsForSpell(
 			'spellGrantKeyword'
 		);
 	});
+	for (const kw of collectWave9ExtraGrantedSpellKeywords(state, casterId, spellView)) {
+		if (kw === 'cascade') {
+			out.push(kw);
+		} else if (!seenSingle.has(kw)) {
+			seenSingle.add(kw);
+			out.push(kw);
+		}
+	}
 	return out;
 }
 
@@ -1897,9 +1907,9 @@ export function checkWave6SpellCastLocks(
 						blockedError = `Illegal Cast: ${sourceName} prevents casting additional matching spells this turn.`;
 					}
 				} else if (def.rule === 'cantCastMatchingSpells') {
-					const fromZones = def.params?.fromZones as ZoneType[] | undefined;
-					if (fromZones && !fromZones.includes(fromZone)) return;
 					const filter = def.params?.filter as ObjectFilter | undefined;
+					const fromZones = (def.params?.fromZones as ZoneType[] | undefined) ?? filter?.castFromZones;
+					if (fromZones && !fromZones.includes(fromZone)) return;
 					if (filter) {
 						if (!spellView) return;
 						if (!matchesObjectFilter(spellView, filter, { state, controllerId, source: perm })) {

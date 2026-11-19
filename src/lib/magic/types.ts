@@ -623,6 +623,12 @@ export interface ManaSpendContext {
 	manaSourceSpendKind?: 'creature' | 'basicLand' | 'snow' | 'treasure' | 'chosenColor';
 	manaSourceChosenColor?: ManaColor;
 	// --- End Track P20b ---
+	// --- Wave 11 ---
+	/** Set when mana from a Cavern of Souls-style bucket was spent on this spell. */
+	spentManaGrantsUncounterable?: boolean;
+	/** Bonus +1/+1 counters granted when Opal Palace-style mana is spent to cast your commander. */
+	spentManaCommanderBonusCounters?: number;
+	// --- End Wave 11 ---
 }
 
 // --- Track P10 ---
@@ -643,6 +649,7 @@ export interface PlainManaObjectFilter {
 	hasKeywords?: string[];
 	castFromZone?: ZoneType;
 	ofChosenType?: boolean;
+	anyOf?: PlainManaObjectFilter[];
 }
 
 export interface ManaSpendingRestrictionSpec {
@@ -660,6 +667,14 @@ export interface ManaSpendingRestrictionSpec {
 		foretell?: boolean;
 	};
 	sourceChosenSubType?: string;
+	// --- Wave 11 ---
+	/** CR 106.6: Mana can't be spent to pay generic mana costs (*Jegantha, the Wellspring*). */
+	disallowGeneric?: boolean;
+	/** CR 106.6 / 106.12: When spent to cast a matching spell, that spell can't be countered (*Cavern of Souls*). */
+	onSpendCantBeCountered?: boolean;
+	/** CR 106.6: When spent to cast your commander, it enters with extra +1/+1 counters equal to commanderCastCount (*Opal Palace*). */
+	onSpendCommanderBonusCounters?: boolean;
+	// --- End Wave 11 ---
 }
 
 export interface RestrictedManaBucket {
@@ -701,6 +716,8 @@ export interface EffectiveActivatedAbility {
 	manaRestriction?: ManaRestriction;
 	/** Card that granted this ability via Layer 6 `grantAbility`, if granted (transient / plain card data). */
 	grantSourceCard?: ScryfallCard;
+	/** Face index on `grantSourceCard` for multi-face granted/backup abilities. */
+	grantFaceIndex?: number;
 	// --- Track P6 ---
 	/** Existence condition for striated frames (CR 711.5 Leveler, CR 722.2 Station); transient / never serialized in GameState. */
 	grantCondition?: import('./ir.ts').Condition;
@@ -793,6 +810,12 @@ export interface PlayableFromExilePermission {
 	/** `"without paying its mana cost"`: free alternative cost `{0}` with `X = 0` (CR 118.9, 107.3b). */
 	withoutPayingManaCost?: boolean;
 	// --- End Track P2 ---
+	// --- Wave 9 ---
+	alternativeManaCost?: string;
+	payLifeEqualManaValue?: boolean;
+	costReductionGeneric?: number;
+	isPlotted?: boolean;
+	// --- End Wave 9 ---
 }
 
 // --- Track P13 ---
@@ -1215,6 +1238,53 @@ export interface CardInstance {
 	/** True once this permanent's mana-adding trigger/ability added mana this turn (*Carpet of Flowers*). */
 	addedManaThisTurn?: boolean;
 	// --- End Track P22b ---
+	// --- Wave 9 ---
+	/** True once a counter was placed on this permanent this turn (*Wakka, Devoted Guardian*). */
+	counterPutOnThisTurn?: boolean;
+	/** Key (`instanceId:objectVersion:abilityIndex`) of the ability that put this permanent onto the battlefield (*Kodama of the East Tree*). */
+	putOntoBattlefieldByAbilityKey?: string;
+	/** True iff an optional additional cost (e.g. blight) was paid as this spell was cast (*Burning Curiosity*). */
+	additionalCostPaidOnCast?: boolean;
+	// --- End Wave 9 ---
+	// --- Wave 10 ---
+	/** Player ID this creature must attack this turn if able (*Ruhan*, *Territorial Hellkite*). */
+	mustAttackPlayerIdThisTurn?: string;
+	/** True iff this creature must attack during its controller's next combat phase if able (*Trench Behemoth*). */
+	mustAttackNextCombat?: boolean;
+	/** Player IDs this creature attacked during its controller's last combat (*Territorial Hellkite*). */
+	attackedLastCombatPlayerIds?: string[];
+	/** Player restrictions while counter is present (*Promise of Loyalty*). */
+	cantAttackPlayerWhileCounter?: Array<{ playerId: string; counter: string }>;
+	/** Source permanent `(instanceId, objectVersion)` that created this token (*Tombstone Stairwell*). */
+	createdBySource?: { instanceId: string; objectVersion: number };
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	/** *The Phasing of Zhalfir*: phased-out permanent can't phase in while source is controlled by `controllerId`. */
+	cantPhaseInWhileSource?: {
+		sourceInstanceId: string;
+		sourceObjectVersion: number;
+		controllerId: string;
+	};
+	/** *Palace Jailer*: exiled card returns when an opponent of `controllerId` becomes the monarch. */
+	exiledUntilOpponentMonarch?: {
+		controllerId: string;
+		returnControllerId: string;
+	};
+	/** *Rikku, Resourceful Guardian*: can't be blocked by creatures opponents control this turn. */
+	cantBeBlockedByOpponentsThisTurn?: boolean;
+	/** *The Trickster-God's Heist* / *Zack Fair*: Equipment IDs attached right before leaving battlefield (LKI). */
+	lastKnownAttachedEquipmentIds?: string[];
+	/** *Opal Palace*: bonus +1/+1 counters when cast as commander using Opal Palace mana. */
+	pendingOpalPalaceBonusCounters?: number;
+	grantedSunburst?: boolean;
+	enteredGraveyardFromBattlefieldTurn?: number;
+	// --- End Wave 11 ---
+	// --- Wave 12 ---
+	/** Turn number on which this card entered a graveyard from any non-battlefield zone. */
+	enteredGraveyardFromNonBattlefieldTurn?: number;
+	/** Count of mana from artifact sources spent to cast this spell/permanent. */
+	artifactManaSpentCount?: number;
+	// --- End Wave 12 ---
 }
 
 export interface TargetRef {
@@ -1323,6 +1393,12 @@ export interface SpellModifications {
 	sacrificedCostPermCount?: number;
 	removedCostCounterCount?: number;
 	// --- End Track P20b ---
+	// --- Wave 12 ---
+	/** Permanent enters tapped due to a zone-play permission or replacement ("It enters tapped"). */
+	entersTapped?: boolean;
+	/** Creature permanent gains haste until end of turn if cast via this permission. */
+	grantHasteUntilEndOfTurn?: boolean;
+	// --- End Wave 12 ---
 }
 
 export interface CastOptionOptionalCost {
@@ -1426,6 +1502,16 @@ export interface CastOption {
 	/** CR 702.117a: cast by paying its surge cost. */
 	surged?: boolean;
 	// --- End Track P19b ---
+	// --- Wave 12 ---
+	/** Permanent enters tapped via static zone-play permission ("It enters tapped"). */
+	entersTapped?: boolean;
+	/** Creature permanent gains haste until end of turn if cast via this option. */
+	grantHasteUntilEndOfTurn?: boolean;
+	/** Mana of any type/color can be spent to cast this spell. */
+	spendManaAsAnyColor?: boolean;
+	/** Allows casting as though the spell had flash via a static/first-creature-spell permission. */
+	grantFlash?: boolean;
+	// --- End Wave 12 ---
 }
 
 // --- Track P3 ---
@@ -1497,6 +1583,23 @@ export interface StackItem {
 	/** Step F: plain-data payload for a delayed trigger created by a resolving effect. */
 	delayedEffect?: DelayedTriggerEffect;
 	targetObjectVersions?: Record<string, number>;
+	w10DestroyedControllerIds?: string[];
+	// --- Wave 11 ---
+	/** *Cavern of Souls*: true when mana from a Cavern-style uncounterable bucket was spent on this spell. */
+	cantBeCounteredByMana?: boolean;
+	/** *Opal Palace*: extra +1/+1 counters granted on ETB from Opal Palace-style mana. */
+	opalPalaceBonusCounters?: number;
+	/** *Calamity of the Titans* / *Titan's Presence*: revealed cost card snapshot. */
+	revealedCostCard?: ScryfallCard;
+	/** *Lifestream's Blessing*: greatest power among creatures controlled as spell was cast. */
+	castGreatestControlledPower?: number;
+	/** *Lethal Scheme*: instanceIds of creatures that convoked this spell. */
+	convokedByInstanceIds?: string[];
+	/** *Dark Intimations*: bonus loyalty counters from graveyard exile triggers. */
+	bonusLoyaltyCounters?: number;
+	/** *Solar Array* / *Lux Artillery*: true when sunburst was granted to this spell. */
+	grantedSunburst?: boolean;
+	// --- End Wave 11 ---
 	/**
 	 * Steps C+D: the trigger event a triggered ability refers to ("that creature", "that player",
 	 * "that many"). Not targets: they are never checked for legality (CR 603.7c, 608.2b).
@@ -1752,6 +1855,8 @@ export interface StackItem {
 	treasureManaSpent?: boolean;
 	/** CR 603.7a: id of the spell-created event delayed trigger entry on `state.wave7SpellDelayedTriggers`. */
 	wave7SpellDelayedId?: string;
+	/** Wave 9: step index of a delayed trigger registered by an EffectStep on its outer ability. */
+	delayedSubStepIndex?: number;
 	// --- End Track P19b ---
 	// --- Track P20b ---
 	/** Count of counters removed while paying this stack item's cost (CR 602.2b / 601.2h). */
@@ -1799,6 +1904,33 @@ export interface StackItem {
 	/** Card snapshots exiled while paying a graveyard/board cost (*Back from the Brink*, *Baron Helmut Zemo*). */
 	exiledCostCards?: ScryfallCard[];
 	// --- End Track P22b ---
+	// --- Wave 9 ---
+	/** True iff an optional additional cost (e.g. blight) was paid on cast (*Burning Curiosity*). */
+	additionalCostPaidOnCast?: boolean;
+	/** LKI snapshot of `source.counterPutOnThisTurn` at trigger time (*Wakka, Devoted Guardian*). */
+	sourceCounterPutOnThisTurn?: boolean;
+	// --- End Wave 9 ---
+	// --- Wave 12 ---
+	/** Count of mana from artifact sources spent to cast this spell. */
+	artifactManaSpentCount?: number;
+	/** Enters tapped when resolving due to a zone-play permission ("It enters tapped"). */
+	entersTappedFromZonePermission?: boolean;
+	/** Permanent gains haste until end of turn when resolving due to a zone-play permission. */
+	grantHasteUntilEndOfTurn?: boolean;
+	/** Marker for damage-prevention reflexive damage trigger stack items. */
+	wave9ReflexiveOnPrevented?: boolean;
+	/** Plain-JSON tag and parameters for Wave 9S reflexive triggers (e.g. dies-exile pay-for-token). */
+	wave9Tag?: string;
+	wave9PayCost?: string;
+	wave9TokenData?: {
+		name: string;
+		typeLine: string;
+		power: number;
+		toughness: number;
+		colors: ManaColor[];
+		quotedAbilities?: string[];
+	};
+	// --- End Wave 12 ---
 }
 
 // --- Track P10 ---
@@ -1814,6 +1946,8 @@ export interface CompiledReflexiveTrigger {
 	abilityId?: string;
 	abilityIndex?: number;
 	grantSourceCard?: ScryfallCard;
+	grantFaceIndex?: number;
+	grantAbilityIndex?: number;
 	grantedKeyword?: string;
 	grantedAbilityText?: string;
 	chosenModes?: number[];
@@ -1881,6 +2015,7 @@ export interface EffectResumeFrame {
 	// --- End Track P13 ---
 	// --- Track P19a ---
 	lastCountedByKind?: Record<string, number>;
+	w10DestroyedControllerIds?: string[];
 	// --- End Track P19a ---
 	pendingOptionalCost?: {
 		stepIndex: number;
@@ -1983,6 +2118,7 @@ export interface SerializedPendingTrigger {
 	lastTappedManaColors?: ManaColor[];
 	treasureManaSpent?: boolean;
 	wave7SpellDelayedId?: string;
+	delayedSubStepIndex?: number;
 	// --- End Track P19b ---
 }
 
@@ -2013,6 +2149,7 @@ export interface CompiledDelayedEffect {
 	grantAbilityIndex?: number;
 	// --- End Track P11 ---
 	grantedKeyword?: string;
+	grantedAbilityText?: string;
 	chosenModes?: number[];
 	/** Index path to the `delayedTrigger` step from the originating compiled effect's root steps. */
 	stepPath: number[];
@@ -2718,6 +2855,69 @@ export interface PlayerGameState {
 	/** True once this player cast a noncreature spell this turn (*Eshki Dragonclaw*). */
 	castNoncreatureSpellThisTurn?: boolean;
 	// --- End Track P22b ---
+	/** Number of life-loss events this player had during their own turn (*Valgavoth, Harrower of Souls*). */
+	lifeLossEventsOnOwnTurn?: number;
+	/** True iff this player activated a loyalty ability of a planeswalker this turn (*The Chain Veil*). */
+	activatedLoyaltyAbilityThisTurn?: boolean;
+	// --- Wave 10 ---
+	/** Lowercased card names of creatures that have dealt combat damage to this player this game (*Gollum, Obsessed Stalker*). */
+	combatDamageDealtByCardNamesThisGame?: string[];
+	/** Source permanent `instanceId`s (and subtypes) that dealt combat damage to this player this turn (*Estinien Varlineau*, *Steel Hellkite*). */
+	combatDamageDealtBySourceIdsThisTurn?: string[];
+	combatDamageDealtBySubtypesThisTurn?: string[];
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	/** Number of tokens created by this player this turn (*Thalisse*, *Idol of Oblivion*). */
+	tokensCreatedCountThisTurn?: number;
+	/** Total cards put into this player's graveyard from their hand or library this turn (*Welcome the Dead*). */
+	cardsPutIntoGraveyardFromHandOrLibraryThisTurn?: number;
+	/** True when this player played a land this turn (*River of Tears*). */
+	playedLandThisTurn?: boolean;
+	/** Turn-scoped spell/ability restrictions (*Abeyance*, *Ranger-Captain*, *Calamity's Wake*, *Conduit of Worlds*). */
+	cantCastNoncreatureSpellsThisTurn?: boolean;
+	cantCastInstantsOrSorceriesThisTurn?: boolean;
+	cantActivateNonManaAbilitiesThisTurn?: boolean;
+	cantCastAdditionalSpellsThisTurn?: boolean;
+	creatureSpellsCantBeCounteredThisTurn?: boolean;
+	/** One-shot next-spell bonuses (*Mutated Cultist*, *Yuna, Grand Summoner*, *Solar Array*). */
+	nextSpellCostReductionGeneric?: number;
+	nextCreatureSpellBonusPlusCounters?: number;
+	nextArtifactSpellGainsSunburst?: boolean;
+	/** Delayed mana added at beginning of next main phase (*Mana Drain*). */
+	pendingNextMainPhaseMana?: Partial<Record<ManaColor, number>>;
+	/** *Elspeth Conquers Death* II: spells matching filter cast by opponents cost N more until your next turn. */
+	opponentsSpellsCostMoreUntilNextTurn?: Array<{
+		sourcePlayerId: string;
+		noncreatureOnly?: boolean;
+		mana: number;
+	}>;
+	/** *Summon: Yojimbo* II/III: creatures attacking `sourcePlayerId` must pay {tax} each until next turn. */
+	attackTaxUntilNextTurn?: Array<{
+		sourcePlayerId: string;
+		tax: number;
+	}>;
+	tokenMultiplierThisTurn?: number;
+	skippedTurnsCount?: number;
+	attackedWithCommanderThisTurn?: boolean;
+	// --- End Wave 11 ---
+	// --- Wave 12 ---
+	/** Amount of mana currently in mana pool produced by artifact permanents. */
+	artifactManaInPool?: number;
+	/** Count of artifact-source mana spent to cast the spell currently being paid for. */
+	spentArtifactManaOnCurrentSpellCount?: number;
+	/** Count of spells cast by this player this turn using at least one mana from a Treasure. */
+	spellsCastWithTreasureManaThisTurn?: number;
+	/** True once this player has activated an ability of a permanent that targeted a creature they control this turn. */
+	activatedTargetedOwnCreatureAbilityThisTurn?: boolean;
+	/** Number of cascade instances granted to the next spell this player casts this turn. */
+	nextSpellCascadeCount?: number;
+	/** Optional next land/nonland draw replacement choice. */
+	abundanceNextChoice?: 'land' | 'nonland';
+	// --- End Wave 12 ---
+	// --- Wave 13 ---
+	/** Extra loyalty ability activations allowed per planeswalker this turn (*The Chain Veil*). */
+	extraLoyaltyActivationsThisTurn?: number;
+	// --- End Wave 13 ---
 }
 
 export interface ManaRider {
@@ -2803,6 +3003,7 @@ export interface TimedContinuousEffect {
 	layer4?: {
 		addTypes?: string[];
 		setTypes?: string[];
+		removeTypes?: string[];
 		addSubtypes?: string[];
 		setSubtypes?: string[];
 	};
@@ -2899,6 +3100,8 @@ export interface PendingCostPayment {
 	// --- Track P13 ---
 	manaColorsAllSpent?: ManaColor[];
 	// --- End Track P13 ---
+	cantBeCounteredByMana?: boolean;
+	opalPalaceBonusCounters?: number;
 	exSourceName?: string;
 	sourceCard?: ScryfallCard;
 	additionalIncomplete?: boolean;
@@ -2925,6 +3128,7 @@ export interface PendingCostPayment {
 	effectText?: string;
 	abilityCostIncomplete?: boolean;
 	grantSourceCard?: ScryfallCard;
+	grantFaceIndex?: number;
 	chosenColor?: ManaColor;
 	// --- Track P4 ---
 	chosenBundle?: ManaColor[];
@@ -3008,6 +3212,28 @@ export interface DamagePreventionShieldEntry {
 		targetObjectVersion?: number;
 	};
 	// --- End Track P22d ---
+	// --- Wave 10 ---
+	sourceInstanceId?: string;
+	sourceCard?: ScryfallCard;
+	redirectTo?: 'sourceController' | 'chosenPermanent';
+	redirectTargetId?: string;
+	redirectTargetVersion?: number;
+	redirectSourceColorFilter?: ManaColor[];
+	redirectSourceKind?: 'creature' | 'noncreature' | 'any';
+	minLifeFloor?: number;
+	fromNotControlledBy?: string;
+	fromSourceColors?: ManaColor[];
+	fromSourceNotSubtypes?: string[];
+	onPreventedToDamageSourceController?: boolean;
+	onPreventedCreature?: {
+		kind: 'dealDamageEqual';
+		to: 'sourceCreature' | 'sourceController';
+	};
+	onPreventedNoncreature?: {
+		kind: 'dealDamageEqual';
+		to: 'sourceController';
+	};
+	// --- End Wave 10 ---
 }
 
 export interface TimedCombatRestrictionEntry {
@@ -3102,6 +3328,10 @@ export interface GameState {
 	monarchPlayerId?: string | null;
 	/** CR 500.8: number of additional combat phases to begin after the current combat phase ends. */
 	additionalCombatPhases?: number;
+	/** CR 500.8: true when additional combat phase(s) were entered from postcombat main2 so ending them proceeds to end_step. */
+	additionalCombatAfterMain2?: boolean;
+	/** CR 500.8: LIFO queue of plain-JSON extra-combat slot IDs paired with `additionalCombatPhases`. */
+	extraCombatSlotIds?: string[];
 	// --- Track P7 ---
 	damagePreventionShields?: DamagePreventionShieldEntry[];
 	damageCantBePreventedThisTurn?: boolean;
@@ -3178,6 +3408,44 @@ export interface GameState {
 	/** Plain JSON `ScryfallCard` snapshots of objects put into graveyards from the battlefield this turn (*Ichor Shade*). */
 	battlefieldToGraveyardThisTurnCards?: ScryfallCard[];
 	// --- End Track P22b ---
+	// --- Wave 9 ---
+	/** True iff any player activated a loyalty ability of a planeswalker this turn (*The Chain Veil*). */
+	activatedLoyaltyAbilityThisTurn?: boolean;
+	// --- End Wave 9 ---
+	// --- Wave 10 ---
+	/** Active until-your-next-turn combat directives (*Kardur, Doomscourge*, *The Akroan War* II). */
+	untilYourNextTurnCombatDirectives?: Array<{
+		sourcePlayerId: string;
+		mustAttack: boolean;
+		avoidYou?: boolean;
+	}>;
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	/** *Gather Specimens*: playerId who steals creatures entering under opponents' control this turn. */
+	stealOpponentEnteringCreaturesPlayerIdThisTurn?: string;
+	/** *Twins of Discord*: mana value parity ('odd' | 'even') that cannot block this turn. */
+	cantBlockManaValueParityThisTurn?: 'odd' | 'even';
+	/** *Rod of Absorption*: resolving instant/sorcery spells are exiled linked to this source instead of going to graveyard. */
+	exileResolvingInstantsSorceriesToSource?: Array<{
+		sourceInstanceId: string;
+		sourceObjectVersion: number;
+	}>;
+	/** *Bilbo's Gambit*: true when players can't cast spells this turn. */
+	allPlayersCantCastSpellsThisTurn?: boolean;
+	/** *Lux Artillery*: active trigger-level sunburst grant sources. */
+	pendingSunburstSpellIds?: string[];
+	// --- End Wave 11 ---
+	// --- Wave 13 ---
+	/** *Illusionist's Gambit*: creatures removed from combat that must attack next combat if able and not attack caster or their planeswalkers. */
+	gambitNextCombatDirective?: {
+		attackerIds: string[];
+		casterPlayerId: string;
+	};
+	gambitActiveCombatDirective?: {
+		attackerIds: string[];
+		casterPlayerId: string;
+	};
+	// --- End Wave 13 ---
 }
 
 // --- Track P19b ---
@@ -3191,6 +3459,20 @@ export interface Wave7SpellDelayedTrigger {
 	oneShot: boolean;
 	expiresEndOfTurn: boolean;
 	waitForNextUpkeepOfPlayerId?: string;
+	// --- Wave 9 ---
+	/** Plain-JSON locator when the delayed trigger belongs to an effect step's inner sub-trigger (not top-level `ab.trigger`). */
+	subTriggerStepIndex?: number;
+	subTriggerAbilityKind?: 'triggered' | 'spell' | 'activated' | 'loyalty';
+	/** Player whose next turn starts expiry ("until your next turn"). */
+	untilYourNextTurnOfPlayerId?: string;
+	createdOnTurnSerial?: number;
+	/** Wait for the next combat phase begun this turn (*Moraug*). */
+	waitForNextCombatThisTurn?: boolean;
+	/** CR 500.8: optional extra-combat slot ID pairing this `nextCombat` delayed trigger with a specific `extraCombatPhase`. */
+	extraCombatSlotId?: string;
+	/** Plain-JSON instanceIds watched by this delayed trigger ("that creature" / "either of those creatures"). */
+	watchedObjectIds?: string[];
+	// --- End Wave 9 ---
 }
 // --- End Track P19b ---
 

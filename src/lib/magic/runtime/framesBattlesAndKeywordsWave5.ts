@@ -1867,7 +1867,8 @@ export function deliverPromisedGift(
 	state: GameState,
 	giftKind: NonNullable<StackItem['giftKind']>,
 	recipientId: string | undefined,
-	sourceName: string
+	sourceName: string,
+	giverId?: string
 ): void {
 	if (!recipientId) return;
 	const recipient = state.players.find((p) => p.playerId === recipientId && !p.lost);
@@ -1961,6 +1962,14 @@ export function deliverPromisedGift(
 			);
 			break;
 	}
+	if (giverId) {
+		host.emitEvent(state, {
+			kind: 'GiftGiven',
+			playerId: giverId,
+			recipientId: recipient.playerId,
+			giftKind
+		});
+	}
 }
 
 // ============================================================================
@@ -2038,6 +2047,33 @@ export function collectWave5CastTriggers(
 				controllerId: caster.playerId,
 				label,
 				wave5Tag: 'demonstrate'
+			});
+		}
+	}
+	if (castItem.grantedSpellKeywords?.length) {
+		for (let gi = 0; gi < castItem.grantedSpellKeywords.length; gi++) {
+			const gkw = castItem.grantedSpellKeywords[gi]!;
+			const rm = gkw.match(/^ripple(?:\s+(\d+))?$/i);
+			if (!rm) continue;
+			const n = rm[1] ? Number(rm[1]) : 4;
+			const label = `${castItem.card.name} — Ripple ${n}`;
+			const rt: Wave5RuntimeTrigger = {
+				abilityIndex: -1 - gi,
+				trigger: { event: 'cast', filter: { object: 'self' } },
+				effectSupported: true,
+				text: label,
+				effect: { steps: [], targets: [], unparsed: [] },
+				wave5Tag: 'ripple',
+				wave5N: n
+			};
+			out.push({
+				ability: rt,
+				source: castCard,
+				sourceCard: castItem.card,
+				controllerId: caster.playerId,
+				label,
+				wave5Tag: 'ripple',
+				wave5N: n
 			});
 		}
 	}
@@ -3007,7 +3043,7 @@ export function resolveWave5StackItem(state: GameState, item: StackItem): 'done'
 
 		case 'gift_etb': {
 			if (item.giftKind && item.giftRecipientId) {
-				deliverPromisedGift(state, item.giftKind, item.giftRecipientId, item.card.name);
+				deliverPromisedGift(state, item.giftKind, item.giftRecipientId, item.card.name, controller.playerId);
 			}
 			return 'done';
 		}

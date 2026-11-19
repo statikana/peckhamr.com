@@ -4735,6 +4735,53 @@ export function getKeywordSpec(name: string): KeywordSpec | undefined {
 	return KEYWORD_REGISTRY[name.trim().toLowerCase()];
 }
 
+export function formatGrantedKeywordDef(kw: KeywordDef): string {
+	const name = kw.name.toLowerCase();
+	if (name === 'protection') {
+		return kw.param ? `protection from ${kw.param}` : 'protection';
+	}
+	if (name === 'hexproof') {
+		return kw.param ? `hexproof from ${kw.param}` : 'hexproof';
+	}
+	if (name === 'ward') {
+		if (kw.cost) return `ward ${kw.cost}`;
+		if (kw.param) return `ward—${kw.param}`;
+		if (kw.n !== undefined) return `ward ${kw.n}`;
+		return 'ward';
+	}
+	if (name === 'impending') {
+		const nStr = kw.impendingN ?? kw.n;
+		const nPart = nStr !== undefined ? ` ${nStr}` : '';
+		const costPart = kw.cost ? `—${kw.cost}` : '';
+		return `impending${nPart}${costPart}`;
+	}
+	if (name === 'bloodthirst') {
+		if (kw.param === 'X') return 'bloodthirst x';
+		if (kw.n !== undefined) return `bloodthirst ${kw.n}`;
+		if (kw.param) return `bloodthirst ${kw.param}`;
+		return 'bloodthirst';
+	}
+	if (name === 'devour' && kw.devourX) {
+		return 'devour x';
+	}
+	if (kw.dynamicAmount) {
+		return `${name} x`;
+	}
+	if (kw.n !== undefined && kw.cost) {
+		return `${name} ${kw.n}—${kw.cost}`;
+	}
+	if (kw.n !== undefined) {
+		return `${name} ${kw.n}`;
+	}
+	if (kw.cost) {
+		return `${name} ${kw.cost}`;
+	}
+	if (kw.param) {
+		return `${name} ${kw.param}`;
+	}
+	return name;
+}
+
 /** Canonical lower-case names of all implemented keywords. */
 export const IMPLEMENTED_KEYWORDS: ReadonlySet<string> = new Set(
 	REGISTRY_ENTRIES.filter(([, spec]) => spec.status === 'implemented').map(([name]) => name)

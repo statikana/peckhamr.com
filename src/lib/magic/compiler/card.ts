@@ -68,11 +68,13 @@ import {
 	parseSpellFace,
 	type EffectParse
 } from './effects.ts';
+import { splitQuotedSentenceEndingsWave8 } from './effectsWave8.ts';
 import {
 	SUPPORTED_OPTIONAL_COST_KINDS,
 	staticallyInterpretable,
 	triggerTargetsSupported
 } from './interpretable.ts';
+import { parseActivateOnlyWave11 } from './manaCountersWave11.ts';
 import {
 	isAbilityOrFlavorWord,
 	normalizeFace,
@@ -1009,6 +1011,8 @@ function isWardPayableCostDef(d: CostDef): boolean {
 				d.filter !== 'self' &&
 				(d.zone === 'graveyard' || d.zone === 'hand' || d.zone === 'battlefield')
 			);
+		case 'putCounters':
+			return d.count.k === 'const' && d.on !== 'self';
 		case 'choice':
 			return d.options.length > 0 && d.options.every((opt) => opt.length > 0 && opt.every(isWardPayableCostDef));
 		default: {
@@ -1777,7 +1781,7 @@ function keywordLine(ctx: Ctx, line: NormalizedLine): AbilityDef[] | null {
 	const frameKw = parseP18bFrameKeywordLine(ctx, line);
 	if (frameKw) return frameKw;
 	if (
-		line.abilityWord ||
+		(line.abilityWord && !/^equip\b/i.test(line.body)) ||
 		(/\.$/.test(line.body) &&
 			!isDashCostKeywordLine(line.body) &&
 			!/^(?:craft\s+with\b|gift\s+an?\b|splice\s+onto\b|(?:ward|equip(?:\s+[a-z][a-z ,'-]*?)?|flashback|kicker|multikicker|morph|megamorph|disguise|unearth|buyback|evoke|escape|foretell|plot|entwine|disturb|blitz|cumulative upkeep|offspring|squad|replicate|warp|transmute|level up|reinforce(?:\s+\d+)?|echo|madness|dash|commander ninjutsu|ninjutsu|scavenge|outlast|embalm|eternalize|encore|bestow|escalate|recover|harmonize|miracle|spectacle|surge|awaken(?:\s+\d+)?|emerge|sneak|beam me up|mayhem|web-slinging|partner|cleave|reconfigure|freerunning|impending(?:\s+\d+)?|prowl|more than meets the eye|transfigure|aura swap|cycling|(?:[a-z][a-z -]*\s+)?[a-z]*cycling)\s*[—–-])/i.test(
@@ -2706,8 +2710,8 @@ function sagaChapterLine(group: NormalizedLine[]): AbilityDef[] | null {
 /**
  * CR 701.43d: Attack-exert abilities ("You may exert ~ as it attacks." and
  * "If ~ hasn't been exerted this turn, you may exert it as it attacks.", optionally followed by a
- * non-targeted "When you do, <effect>"). Targeted reflexive "When you do, ... target ..." triggers
- * are intentionally left unsupported because CR 603.12 chooses targets only after exerting.
+ * "When you do, <effect>"). Targeted reflexive triggers emit `params.reflexiveTrigger` (CR 603.12)
+ * so targets are chosen only after exerting.
  */
 function exertAttackLine(group: NormalizedLine[]): AbilityDef[] | null {
 	if (group.length !== 1) return null;
@@ -2748,8 +2752,8 @@ function exertAttackLine(group: NormalizedLine[]): AbilityDef[] | null {
 	const followStart = Math.max(line.bodySpan.start, line.bodySpan.end - followText.length);
 	const followEffect = parseEffects(followText, followStart, 'triggered', trigger);
 	if (
-		followEffect.targets.length > 0 ||
 		followEffect.steps.length === 0 ||
+		followEffect.unparsed.length > 0 ||
 		!staticallyInterpretable(followEffect, true)
 	) {
 		const gaps =
@@ -2761,6 +2765,31 @@ function exertAttackLine(group: NormalizedLine[]): AbilityDef[] | null {
 				...unsupported('unparsed', fullText, span, gaps),
 				trigger,
 				...(condition ? { condition } : {})
+			}
+		];
+	}
+
+	if (followEffect.targets.length > 0) {
+		const reflExertStep: EffectStep = {
+			...exertStep,
+			params: {
+				reflexiveTrigger: {
+					targets: followEffect.targets,
+					effect: followEffect.steps,
+					text: `When you do, ${followText}`,
+					eventFilter: 'whenYouDo'
+				}
+			}
+		};
+		return [
+			{
+				kind: 'triggered',
+				trigger,
+				...(condition ? { condition } : {}),
+				targets: [],
+				effect: [reflExertStep],
+				text: fullText,
+				span
 			}
 		];
 	}
@@ -2971,7 +3000,7 @@ function caseToSolveLine(group: NormalizedLine[]): AbilityDef[] | null {
 			},
 			condition: { k: 'and', of: [{ k: 'caseUnsolved' }, solveCond] },
 			targets: [],
-			effect: [],
+			effect: [{ verb: 'solveCase', subject: { k: 'self' }, span: line.span }],
 			text: line.text,
 			span: line.span
 		}
@@ -3200,6 +3229,25 @@ function normalizeStepVerbForInterpretability(step: EffectStep): EffectStep {
 								...b,
 								effect: b.effect.map(normalizeStepVerbForInterpretability)
 							}))
+						}
+					: {}),
+				...(step.params.conditionalSequence
+					? {
+							conditionalSequence: {
+								condition: normalizeConditionForInterpretability(
+									step.params.conditionalSequence.condition
+								),
+								thenSteps: step.params.conditionalSequence.thenSteps.map(
+									normalizeStepVerbForInterpretability
+								),
+								...(step.params.conditionalSequence.elseSteps
+									? {
+											elseSteps: step.params.conditionalSequence.elseSteps.map(
+												normalizeStepVerbForInterpretability
+											)
+										}
+									: {})
+							}
 						}
 					: {})
 			}
@@ -3584,6 +3632,23 @@ function mapStepWave4(step: EffectStep, opts: Wave4TextRewriteOpts): EffectStep 
 							: {}),
 						...(baseParams.count
 							? { count: mapAmountWave4(baseParams.count, opts) }
+							: {}),
+						...(baseParams.conditionalSequence
+							? {
+									conditionalSequence: {
+										condition: mapConditionWave4(baseParams.conditionalSequence.condition, opts),
+										thenSteps: baseParams.conditionalSequence.thenSteps.map((s) =>
+											mapStepWave4(s, opts)
+										),
+										...(baseParams.conditionalSequence.elseSteps
+											? {
+													elseSteps: baseParams.conditionalSequence.elseSteps.map((s) =>
+														mapStepWave4(s, opts)
+													)
+												}
+											: {})
+									}
+								}
 							: {})
 					}
 				}
@@ -5397,7 +5462,7 @@ function parseP18bActivationCostReductionSentence(
 	return null;
 }
 
-function parseP18bActivateOnlySentence(sentenceText: string): {
+export function parseP18bActivateOnlySentence(sentenceText: string): {
 	sorcery: boolean;
 	restrictions: ActivationRestriction[];
 	conditions: Condition[];
@@ -5437,7 +5502,7 @@ function parseP18bActivateOnlySentence(sentenceText: string): {
 			pushRes('duringYourTurn');
 			p = p.replace(yourTurnTail, '').trim();
 		}
-		const lower = p.toLowerCase();
+		const lower = p.toLowerCase().replace(/’/g, "'");
 		if (lower === 'as a sorcery' || lower === 'any time you could cast a sorcery') {
 			sorcery = true;
 			continue;
@@ -5470,30 +5535,56 @@ function parseP18bActivateOnlySentence(sentenceText: string): {
 			pushRes('duringCombat');
 			continue;
 		}
-		if (
-			lower === 'before attackers are declared' ||
-			lower === 'during combat before attackers are declared'
-		) {
+		if (lower === 'before attackers are declared') {
+			pushRes('beforeAttackers');
+			continue;
+		}
+		if (lower === 'during combat before attackers are declared') {
+			pushRes('duringCombat');
 			pushRes('beforeAttackers');
 			continue;
 		}
 		if (
 			lower === 'after attackers are declared' ||
-			lower === 'during combat after attackers are declared' ||
 			lower === 'during the declare attackers step'
 		) {
 			pushRes('afterAttackers');
+			continue;
+		}
+		if (lower === 'during combat after attackers are declared') {
+			pushRes('duringCombat');
+			pushRes('afterAttackers');
+			continue;
+		}
+		if (lower === 'before blockers are declared') {
+			pushRes('beforeBlockers');
+			continue;
+		}
+		if (lower === 'during combat before blockers are declared') {
+			pushRes('duringCombat');
+			pushRes('beforeBlockers');
 			continue;
 		}
 		if (lower === 'during the declare blockers step') {
 			pushRes('duringBlockers');
 			continue;
 		}
-		if (
-			lower === 'after blockers are declared' ||
-			lower === 'during combat after blockers are declared'
-		) {
+		if (lower === 'after blockers are declared') {
 			pushRes('afterBlockers');
+			continue;
+		}
+		if (lower === 'during combat after blockers are declared') {
+			pushRes('duringCombat');
+			pushRes('afterBlockers');
+			continue;
+		}
+		if (lower === 'after combat' || lower === 'during the postcombat main phase') {
+			pushRes('afterCombat');
+			continue;
+		}
+		if (lower === 'during your postcombat main phase') {
+			pushRes('duringYourTurn');
+			pushRes('afterCombat');
 			continue;
 		}
 		const zoneMatch = p.match(/^if ~ is in your (hand|graveyard)$/i);
@@ -5539,7 +5630,7 @@ function extractActivatedTimingAndRestrictions(
 	cleanedEffectForParse: string;
 	cleanedModalHeader: string;
 } {
-	const sentences = splitSentences(effectText, effectStart);
+	const sentences = splitQuotedSentenceEndingsWave8(splitSentences(effectText, effectStart));
 	const lowerTexts = sentences.map((s) => s.text.toLowerCase());
 	let sorcery = isLoyalty || lowerTexts.some((s) => /^(?:activate|equip) only as a sorcery\.?$/.test(s));
 	const activationRestrictions: ActivationRestriction[] = [];
@@ -5665,6 +5756,16 @@ function extractActivatedTimingAndRestrictions(
 			for (const r of p18bActOnly.restrictions) addRestriction(r);
 			for (const c of p18bActOnly.conditions) activationConditions.push(c);
 			if (p18bActOnly.explicitZone) explicitActivationZones = [p18bActOnly.explicitZone];
+			strippedSpans.push(sent.span);
+			parseBlankSpans.push(sent.span);
+			continue;
+		}
+		const w11ActOnly = parseActivateOnlyWave11(sTrim);
+		if (w11ActOnly) {
+			if (w11ActOnly.activatorWho) activatorWho = w11ActOnly.activatorWho;
+			if (w11ActOnly.sorcery) sorcery = true;
+			if (w11ActOnly.onceEachTurn) addRestriction('onceEachTurn');
+			if (w11ActOnly.condition) activationConditions.push(w11ActOnly.condition);
 			strippedSpans.push(sent.span);
 			parseBlankSpans.push(sent.span);
 		}
@@ -6080,7 +6181,9 @@ function manaStepComplete(step: EffectStep): boolean {
 			step.params?.manaChoice ||
 			step.params?.manaWithChosenColor ||
 			step.params?.manaBundles ||
-			step.params?.manaCombinationColors
+			step.params?.manaCombinationColors ||
+			step.params?.addManaPerColorControlled ||
+			step.params?.addManaFromExiledColors
 	);
 }
 
@@ -6145,7 +6248,7 @@ function parseP18bCastRestrictionSentence(sentenceText: string): {
 			pushRes('duringYourTurn');
 			p = p.replace(yourTurnTail, '').trim();
 		}
-		const lower = p.toLowerCase();
+		const lower = p.toLowerCase().replace(/’/g, "'");
 		if (lower === 'during combat') {
 			pushRes('duringCombat');
 			continue;
@@ -6209,8 +6312,13 @@ function parseP18bCastRestrictionSentence(sentenceText: string): {
 			pushRes('afterBlockers');
 			continue;
 		}
+		if (lower === 'during your postcombat main phase') {
+			pushRes('duringYourTurn');
+			pushRes('afterCombat');
+			continue;
+		}
 		if (
-			lower === 'during your postcombat main phase' ||
+			lower === 'during the postcombat main phase' ||
 			lower === 'after combat' ||
 			lower === 'during the end of combat step'
 		) {

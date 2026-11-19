@@ -1,6 +1,6 @@
 # MTG Engine: Master Architecture Plan: Cards as Data
 
-**Status:** Phases 0–10 and Steps A–F are **complete** as of 2026-11-09 (all 5 architecture ratchet categories at `0`, legacy text parser and adapter retired; `ruleTree.ts` and `oracle.ts` remain as thin helpers over the IR). For the current `COMPILER_VERSION` and coverage, see [`COVERAGE.md`](./COVERAGE.md). Ongoing card coverage expansion continues under **Phase 11+** (§3) and Comprehensive Rules gap remediation is tracked in [`rules-audit/00-SUMMARY-AND-PRIORITIZED-GAPS.md`](./rules-audit/00-SUMMARY-AND-PRIORITIZED-GAPS.md).
+**Status:** Phases 0–10, Steps A–F, Tracks A/B/D/E/F, Engine Waves 1–8 (`P1–P22`), UI Tracks `U1–U9`, and **Wave 2 Stages 1–3** (`teamwork-mtg-wave2`, `COMPILER_VERSION = 46`) are **complete** (all 10 architecture ratchet categories at `0`, `41` `PRECON_DECKS` / `2,188` precon cards at `100.0%` support, `25,417/35,062 = 72.5%` Scryfall full-card coverage, `38` hash-gated JSON overrides = `1.74% < 5%`). For current coverage numbers, see [`COVERAGE.md`](./COVERAGE.md); Comprehensive Rules gap remediation is tracked in [`rules-audit/00-SUMMARY-AND-PRIORITIZED-GAPS.md`](./rules-audit/00-SUMMARY-AND-PRIORITIZED-GAPS.md).
 
 **Goal:** the engine knows **what kinds of things abilities can do**, and nothing about specific
 cards. Each card is compiled **once** from its Oracle text into a typed data structure (the
@@ -18,12 +18,12 @@ The 2026-11-08 pre-rewrite baseline is historical; it moved to
 [`deprecated/ENGINE_PHASES_0-10_LOG.md`](./deprecated/ENGINE_PHASES_0-10_LOG.md). For current numbers see
 [`COVERAGE.md`](./COVERAGE.md) and [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md) §0.
 
-## Project decisions (2026-11-08)
+## Project decisions (2026-11-08, updated 2026-11-18)
 
 | Topic | Decision |
 |---|---|
-| Branch | All work on `engine-rewrite`, one commit (or more) per phase. |
-| Comprehensive Rules | `src/lib/rules.txt` (effective 2026-11-06). Cite rules by number from this file. |
+| Branch | `engine-rewrite` merged to `master` (2026-11-16); Wave 2 work runs on `teamwork-mtg-wave2` (one commit or more per milestone/slice). |
+| Comprehensive Rules | `src/lib/rules.txt` (effective 2026-11-06; split section index in [`src/lib/rules/INDEX.md`](../../rules/INDEX.md)). Cite rules by number from this file. |
 | Scryfall data | `~/data/scryfall/oracle-cards.jsonl.gz` (symlink to a dated file; gzipped JSON Lines, ~39k entries including tokens/art cards). **Never** copy it into the repo or into D1/R2. Refresh by downloading a new dated file and moving the symlink. |
 | Compiled IR storage | **No D1 table.** The user wants to avoid Cloudflare storage costs and wholesale database rewrites when the IR format changes. Compile at runtime, cache per isolate, keyed by `oracleId + textHash + COMPILER_VERSION`. Phase 1 measures compile time for a 4×100-card game to confirm cold starts are acceptable. |
 | Games in progress at deploy | **End them.** On deploy of an incompatible `engineVersion`, active games are finished with a system log entry; no compatibility path. |
@@ -107,40 +107,53 @@ re-adding card special cases while the migration is in progress.
 
 ## 2. Architecture
 
-The diagram is the architecture as built. §2.1 is the original IR sketch; `ir.ts` is the source of truth where they differ.
+The diagram is the architecture as built (`COMPILER_VERSION = 46`). §2.1 is the original IR sketch; `ir.ts` is the source of truth where they differ.
 
 ```
-Scryfall bulk data / deck JSON
-          │  (ScryfallCard: name, typeLine, oracleText, …)
+Scryfall bulk data / deck JSON / Archidekt precon store (precons.archidekt.json)
+          │  (ScryfallCard: name, typeLine, oracleText, layout, faces, …)
           ▼
-┌───────────────────────┐   normalise (~ for self-refs, strip reminder text,
-│ compiler/             │   split abilities & sentences)
-│  lexer → grammar      │   parse each sentence with a real grammar
-│  → CardDefinition IR  │   record source spans; collect unparsed spans
-└───────────────────────┘
-          │  CardDefinition (cached by oracleId + text hash + COMPILER_VERSION)
+┌─────────────────────────────────────────────────────────────────────────┐
+│ compiler/ (19 modules + overrides/ 38 hash-gated JSON overrides)        │
+│  normalize → grammar (card, effects, triggers, statics, costs,          │
+│  effectsWave5–11, triggersWave9, staticsWave9, manaCountersWave11) →    │
+│  CardDefinition IR (cached by oracleId + textHash + COMPILER_VERSION);  │
+│  keywords.ts registry (214 / 218 implemented)                           │
+└─────────────────────────────────────────────────────────────────────────┘
+          │  CardDefinition
           ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│ runtime/                                                              │
-│  zones.ts       single moveObject() → emits ZoneChange events + LKI   │
-│  events.ts      event bus                                             │
-│  triggers.ts    trigger matching from IR TriggerDefs                  │
-│  layers.ts      continuous effects from IR StaticDefs (CR 613)        │
-│  layerCache.ts  board snapshots + read-tracked cache for layers.ts    │
-│  objectFilter.ts  ObjectFilter matching over evaluated objects        │
-│  replace.ts     replacement effects and rule modifiers (CR 614/616)   │
-│  costs.ts       cost planning and payment from IR CostDefs            │
-│  effects.ts     interpreter for IR EffectStep lists with bindings     │
-│  choices.ts     generic choice protocol (6 ChoiceRequest kinds)       │
-│  random.ts      seeded PRNG and opaque ids                            │
-└───────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│ runtime/ (65 non-test modules; all <= 6,000 lines; max 5,433 lines)     │
+│  zones.ts (4.9k)     single moveObject() → ZoneChange events + LKI      │
+│  events.ts           event bus                                          │
+│  triggers.ts (5.3k)  trigger matching (+ triggersFiltersAndQueue,       │
+│                      triggerStacking, triggersWave6–9)                  │
+│  layers.ts (5.4k)    CR 613 continuous effects (+ layersPredicates.ts)  │
+│  layerCache.ts       board snapshots + BigInt read-tracked cache        │
+│  objectFilter.ts     ObjectFilter matching over evaluated objects       │
+│  replace.ts          replacement effects and rule modifiers (+ Wave 9)  │
+│  costs.ts (3.9k)     cost planning & payment (+ castingAndCosts,        │
+│                      costsWave6–7)                                      │
+│  effects.ts (5.4k)   IR EffectStep interpreter (+ effectsSteps,         │
+│                      effectsDamageAndMana, effectsConditionsAndAmounts, │
+│                      effectsWave5–11)                                   │
+│  stackResolution.ts / legalityAndTargets.ts / turnAndPrompts.ts /       │
+│    combat.ts / combatWave10.ts / sba.ts / autoTap.ts /                  │
+│    viewerRedaction.ts / engineHost.ts                                   │
+│  faces.ts / mana.ts / manaCountersWave11.ts / kicker.ts / choices.ts /  │
+│    random.ts                                                            │
+│  Wave 3–9 modules: orthogonalKeywords, keywordActions, striatedFrames,  │
+│    tuckFreezeChosen, copyPreventionAndEffects, staticsLayersAndRestrictions,  │
+│    reflexiveManaAndActions, staticsDynamicAndCosts, keywordsWave3–6,    │
+│    frames*Wave5–8, statics*Wave5–9                                      │
+└─────────────────────────────────────────────────────────────────────────┘
           │
-   engine.ts  stack, priority, turn structure, combat and SBAs. Still
-              one ~11k-line module; splitting it is proposed in
-              FULL_COVERAGE_STRUCTURE.md §1.6, not done.
+   engine.ts (3,957 lines — top-level turn/action/lobby orchestration &
+              public API facade after Stage 1A decomposition)
           ▲                                   ▲
-       ai.ts (reads IR + evaluated state)   ArenaTable.svelte (displays text,
-                                             renders generic choices)
+       ai.ts (reads IR + evaluated state)   ArenaTable.svelte +
+                                            src/lib/magic/ui/ (UI helpers,
+                                            view models & modals)
 ```
 
 ### 2.1 Card IR: type sketch (new file `src/lib/magic/ir.ts`, *not* `types.ts`)
@@ -284,9 +297,7 @@ Design notes:
   intervening-if conditions on resolution (CR 603.4).
 - `triggerOnEtb`, `triggerOnAttack`, `triggerOnSpellCast`, `triggerOnAttach` and the
   upkeep/end-step loops all become **event emission**.
-- As built, `moveObject` does nothing implicitly: each caller opts in to `bumpVersion`,
-  `newTimestamp` and `leaveBattlefieldReset` (see `ENGINE_INVARIANTS.md` §3.2). `state.stack` is
-  still mutated outside `zones.ts`.
+- CR 400.7 defaults are enforced by `zones.ts` (`withCr400_7Defaults` + `leaveBattlefieldReset` resetting `summoningSick = false`) and locked by `moveObjectResetOptOut = 0` in `architecture.test.ts` (explicit `bumpVersion: false` / `newTimestamp: false` opt-outs remain only for same-zone reorders and pregame mulligans). `state.stack` is still pushed/spliced directly by stack-manipulation callers outside `zones.ts`.
 
 ### 2.4 Runtime: layers
 - `computeContinuousState(state)` collects every `StaticDef{k:'continuous'}` from the IR of
@@ -296,7 +307,7 @@ Design notes:
 - Ability-removal effects (layer 6) remove `AbilityDef`s from the evaluated object; everything
   downstream (triggers, costs, statics) reads evaluated abilities, so "lost all abilities" works
   everywhere automatically.
-- **Caching, as built (Phases 6a–6d).** There is no `state.version`; the engine mutates state in
+- **Caching, as built (Phases 6a–6d + Stage 1A BigInt widening).** There is no `state.version`; the engine mutates state in
   place. Instead:
   - `layerCache.ts` keeps a `BoardSnapshot` per `GameState` in a `WeakMap` (never in state). It is
     re-validated against an O(n) fingerprint of each battlefield object's identity, controller,
@@ -304,13 +315,16 @@ Design notes:
   - `layers.ts` caches each board evaluation with a **read-tracked dynamic fingerprint**. The
     evaluation records which non-board inputs it actually read (tapped filters, life, zone sizes,
     and so on), and only those invalidate it. The stack is not part of the fingerprint.
+    *(Stage 1A widened `READ_*` / `layerReads` in `runtime/layersPredicates.ts` and `runtime/layers.ts`
+    from 32-bit signed integers to `bigint` (`1n << Nn`), eliminating the Wave 8 32-bit shift ceiling.)*
   - Read-only entry points (legality checks, cost calculation, trigger matching, bot decisions) run
     inside `withStableLayerInputs(state, fn)`, which validates once per scope instead of once per
     query. `applyGameAction` always runs outside these scopes.
   - Equivalence with an uncached recomputation is tested (`runtime/layerCache*.test.ts`) and can be
     checked live with `MAGIC_LAYER_CACHE_CHECK=1`.
-- Not built: layers 2 and 3 as layer passes, and `CR 613.8` dependency ordering (see
-  `ENGINE_INVARIANTS.md` §2.2).
+- Built as of Track E (§2.16): Layer 2 (`evaluateLayer2Control`, Pass 0, `CR 613.1b`). Not built:
+  Layer 3 text-changing effects (`CR 612`) as a layer pass, and general `CR 613.8` dependency
+  ordering (see `ENGINE_INVARIANTS.md` §2.2).
 
 ### 2.5 Runtime: replacement and rule modifiers
 - Rule modifiers (`StaticDef` `{ k: 'ruleModifier', rule: RuleModKind }`) and `ReplacementDef`s
@@ -388,7 +402,7 @@ current design.
   it is held in `state.pendingZoneMoves` with its LKI, no `ZoneChange` is emitted, and the move
   finishes when the `zone_replacement_choice` prompt is answered. State-based actions pause while a
   `chooseReplacement` prompt is pending.
-- **Hidden information (`sanitizeGameStateForViewer`, `engine.ts`).**
+- **Hidden information (`sanitizeGameStateForViewer`, `runtime/viewerRedaction.ts`, re-exported by `engine.ts`).**
   - Every viewer's copy has `rngState`, `nextUid`, `idSalt` and stack `effectResume` frames removed.
   - Other players' prompts are reduced to a public allowlist ("Opponent is choosing…", no
     candidates).
@@ -598,23 +612,21 @@ Previously, casting options were hardcoded around a binary union:
 
 ### 2.14 Object model for multi-faced and face-down cards (`CR 707–712, 708, 716`)
 
-*Status: design doc only (Track B4, written before implementation; no code changes in this package).*
+*Status: **✅ Implemented** across Track B4 (Phases 1–3: `runtime/faces.ts` `resolveObjectFaces`, `CastOption.faceIndex`, `sanitizeGameStateForViewer` face-down scrubbing) plus Waves 5–6 (`Meld`, `Flip`, `Room`, `Omen`, `Prepare`); `multiface` unsupported abilities in [`COVERAGE.md`](./COVERAGE.md) are **`0`**.*
 
-Today the engine assumes one active face (`compileCard(card).faces[0]`) almost everywhere: [`normalizeScryfallCard`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/scryfall.ts) drops Scryfall `layout` and concatenates multi-face oracle texts with `"\n//\n"`, [`compileFaces`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/compiler/card.ts) flags any card with `backFace` or `"\n//\n"` as `unsupported('multiface')` (`895` cards in [`COVERAGE.md`](./COVERAGE.md)), ~40 runtime/compiler sites index `.faces[0]` directly, [`CardInstance`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/types.ts) only carries `transformed: boolean` (unused at runtime) and `isFaceDown?: boolean`, and [`sanitizeGameStateForViewer`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/engine.ts) leaks hidden face-down card identities on the battlefield, stack, and exile.
-
-The sections below answer the five design questions required before implementation.
+Prior to Track B4, the engine assumed one active face (`compileCard(card).faces[0]`): [`normalizeScryfallCard`](../scryfall.ts) dropped Scryfall `layout`, [`compileFaces`](../compiler/card.ts) flagged any card with `backFace` or `"\n//\n"` as `unsupported('multiface')` (`895` cards), ~40 sites indexed `.faces[0]` directly, [`CardInstance`](../types.ts) only carried `transformed: boolean` and `isFaceDown?: boolean`, and [`sanitizeGameStateForViewer`](../engine.ts) leaked hidden face-down card identities on the battlefield, stack, and exile. The design specification below was implemented across B4 Phases 1–3 and Waves 5–6:
 
 #### 1. Representation in `ScryfallCard`, `CardInstance` / `StackItem`, and the IR
 
 - **`ScryfallCard` (`types.ts`, `scryfall.ts`):**
-  - Add `layout?: CardLayout` (`'normal' | 'split' | 'flip' | 'transform' | 'modal_dfc' | 'adventure' | 'meld' | 'reversible_card'`; omit defaults to `'normal'`) and `faces?: ScryfallCardFace[]` (each entry holding `{ name, manaCost, cmc?, typeLine, oracleText, colors, colorIndicator?, keywords?, power?, toughness?, loyalty?, defense?, imageUrl, artCropUrl? }`).
+  - Add `layout?: CardLayout` (`'normal' | 'split' | 'flip' | 'transform' | 'modal_dfc' | 'adventure' | 'meld' | 'reversible_card'`; plus Wave 5 `'prepare' | 'omen'`; omit defaults to `'normal'`) and `faces?: ScryfallCardFace[]` (each entry holding `{ name, manaCost, cmc?, typeLine, oracleText, colors, colorIndicator?, keywords?, power?, toughness?, loyalty?, defense?, imageUrl, artCropUrl? }`).
   - Preserve `backFace` only as a normalized backward-compatibility projection from `faces[1]` when `faces.length === 2` (and stop flattening `oracleText` into `"\n//\n"` once `faces[]` is populated; legacy stored decks without `faces` can be lazily upgraded in memory from `backFace` + `oracleText.split('\n//\n')` with inferred `layout`).
   - Keep `colorIdentity` and top-level combined `cmc` at card level (`CR 903.4d` checks all faces for Commander color identity; top-level `cmc` on split cards keeps printed combined MV `CR 709.4b`).
 
 - **IR (`ir.ts`, `compiler/card.ts`, `compiler/index.ts`):**
-  - [`CardDefinition`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/ir.ts) already has `faces: FaceDefinition[]`. Add `layout?: CardLayout` and optional `colorIndicator?: ManaColor[]` / `frontManaValue?: number` metadata on [`FaceDefinition`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/ir.ts) / `Characteristics`.
+  - [`CardDefinition`](../ir.ts) already has `faces: FaceDefinition[]`. Add `layout?: CardLayout` and optional `colorIndicator?: ManaColor[]` / `frontManaValue?: number` metadata on [`FaceDefinition`](../ir.ts) / `Characteristics`.
   - Remove the top-of-function `multiface` bailout in `compileFaces` and compile **each** entry of `card.faces` independently into `FaceDefinition` (using `face.colors` / `colorIndicator` so back faces with no mana cost retain their color indicator!). Note: `compiledTriggerEffect`, `compiledStackItemEffects`, `abilityById`, and `RuleTree` read from a specified `faceIndex` (default `0`, or combined halves for split cards outside the stack) instead of assuming `.faces[0]`.
-  - Add optional `meldPartnerName?: string` / `meldResult?: ScryfallCardFace` only when Meld (`CR 713`) is later scheduled; Meld (`CR 713.1a`, two physical cards becoming one battlefield object) should be deferred behind TDFCs, MDFCs, Split cards, Adventures, and Face-down cards.
+  - Add optional `meldPartnerName?: string` / `meldResult?: ScryfallCardFace` when Meld (`CR 713`) is added (subsequently implemented in Wave 6 Track P18b).
 
 - **Plain-JSON runtime state (`types.ts` — `CardInstance` & `StackItem`):**
   - Replace the boolean-only view on `CardInstance` with plain JSON state:
@@ -627,7 +639,7 @@ The sections below answer the five design questions required before implementati
 
 #### 2. Which Face's Characteristics Apply in Each Zone
 
-Introduce one pure resolver helper `resolveObjectFaces(card, objState, zone): ActiveFaceView` (used across `layers.ts`, `ruleTree.ts`, `costs.ts`, `triggers.ts`, `objectFilter.ts`, and `engine.ts` to replace all direct `.faces[0]` indexing):
+Introduce one pure resolver helper `resolveObjectFaces(card, objState, zone): ActiveFaceView` (`runtime/faces.ts`, used across `layers.ts`, `ruleTree.ts`, `costs.ts`, `triggers.ts`, `objectFilter.ts`, and `engine.ts` to replace all direct `.faces[0]` indexing):
 
 | Card Layout | Hand / Library / Graveyard / Exile / Command | Stack (`StackItem`) | Battlefield (`CardInstance`) |
 |---|---|---|---|
@@ -650,7 +662,7 @@ Introduce one pure resolver helper `resolveObjectFaces(card, objState, zone): Ac
 
 #### 4. Casting & Land Plays via Track B2 `CastOption` (`CR 708.4, 709.3, 712.8–9, 716.3`)
 
-- Extend [`CastOption`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/types.ts) (plus a symmetrical `LandPlayOption` / `play_land { faceIndex }` or `fromZone` selection) instead of adding mechanic-specific cast modes:
+- Extend [`CastOption`](../types.ts) (plus a symmetrical `LandPlayOption` / `play_land { faceIndex }` or `fromZone` selection) instead of adding mechanic-specific cast modes:
   - **Add `faceIndex?: number` (`0 | 1`) and `fused?: boolean` onto `CastOption` and `cast_spell` `GameActionPayload`** (default `0`).
   - **Candidate generation (`enumerateCandidateCastOptions`):**
     - `modal_dfc` (`CR 712.8b`): emit options for face `0` (if spell) and face `1` (if spell), checking **only** the chosen face's castability, mana cost, timing, and targets (`CR 712.8c`); for `play_land` (`CR 712.9`), let land plays choose any face with type `'Land'` (`faceIndex: 0 | 1`).
@@ -663,26 +675,26 @@ Introduce one pure resolver helper `resolveObjectFaces(card, objState, zone): Ac
 #### 5. Layer Engine (`CR 613.1a, 707.2–3, 708.2`) & Client / Viewer Redaction (`CR 708.5, 712.4`)
 
 - **Layers (`runtime/layers.ts`):**
-  - Split current Layer 1 step ([`runtime/layers.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/runtime/layers.ts#L1320-L1427)) cleanly into:
+  - Split Layer 1 step ([`runtime/layers.ts`](../runtime/layers.ts)) cleanly into:
     - **Layer 1a (`CR 613.2a`):** Start from printed card `activeFaceIndex`, then apply copy effects (`perm.copiableState`, setting copiable card/face and `"except ..."` modifications). Copy effects copy the **face that's currently up** on a TDFC/MDFC/Room (`CR 707.2`, `712.6d`), whereas a Clone of a face-down permanent copies `{ 2/2 Creature }` (not the hidden front card!) and a permanent turned face-down after copying keeps the copy values underneath (`CR 708.10`).
     - **Layer 1b (`CR 613.2b`, `CR 708.2`):** If `inst.isFaceDown`, replace Layer 1a's copiable values with `inst.faceDownSpec` (default `2/2`, Creature, colorless, nameless, MV `0`, Ward `{2}` if Disguise, Artifact Creature if Cyberman, etc.), suppressing innate abilities/statics/CDAs of the hidden face.
   - **Layer cache (`runtime/layerCache.ts`):** Fingerprint `inst.activeFaceIndex` / `inst.unlockedFaces` / `inst.faceDownSpec` / `inst.copiableState` alongside `inst.isFaceDown` and `inst.copiableCard` so transforming, flipping, unlocking a Room, or turning face up deterministically invalidates the board snapshot.
-  - **Other `.faces[0]` consumers:** Replace direct `.faces[0]` access across [`ruleTree.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/ruleTree.ts), [`runtime/triggers.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/runtime/triggers.ts), [`runtime/effects.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/runtime/effects.ts), [`runtime/replace.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/runtime/replace.ts), [`runtime/kicker.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/runtime/kicker.ts), and [`engine.ts`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/engine.ts) with zone-aware helpers `activeFaceDefs(card, instOrItem, zone)`.
+  - **Other `.faces[0]` consumers:** Replace direct `.faces[0]` access across [`ruleTree.ts`](../ruleTree.ts), [`runtime/triggers.ts`](../runtime/triggers.ts), [`runtime/effects.ts`](../runtime/effects.ts), [`runtime/replace.ts`](../runtime/replace.ts), [`runtime/kicker.ts`](../runtime/kicker.ts), and [`engine.ts`](../engine.ts) with zone-aware helpers `activeFaceDefs(card, instOrItem, zone)`.
 
 - **Viewer Redaction (`engine.ts` `sanitizeGameStateForViewer`) & Client UI (`ArenaTable.svelte`):**
-  - **Fix `CR 708.5` hidden-information leak:** Today [`sanitizeGameStateForViewer`](file:///home/ryan/Documents/github/statikana/peckhamr.com/src/lib/magic/engine.ts#L11775-L11867) only filters `pendingZoneMoves` for `c.isFaceDown` and sends full battlefield/stack/exile `CardInstance.card` objects to opponents. Under `CR 708.5`:
+  - **Fix `CR 708.5` hidden-information leak:** [`sanitizeGameStateForViewer`](../engine.ts) scrubs face-down cards across battlefield, stack, exile, and `pendingZoneMoves`:
     - When `viewerId !== perm.controllerId` (or `!faceDownSpec.knownToPlayerIds?.includes(viewerId)`), replace `c.card`, `c.printedCard`, `c.copiableCard`, and `c.copiableState` on any face-down battlefield permanent or face-down stack item with a scrubbed face-down `ScryfallCard` proxy (showing only `faceDownLabel` + `faceDownSpec` stats/Ward/types — **zero** real name, oracle text, mana cost, or art URL!).
     - For face-down exiled cards (Foretell, Hideaway, Bomat Courier, etc.), scrub `card` unless `viewerId` has explicit peek permission (`CR 406.3`).
     - When revealed on leaving battlefield/stack or game end (`CR 708.9`), clear `isFaceDown` before serialization or emit a reveal log entry so opponents see the revealed card cleanly.
-  - **UI (`ArenaTable.svelte`):**
+  - **UI (`ArenaTable.svelte` & `src/lib/magic/ui/`):**
     - `CR 712.4`: when `viewer` may look at a double-faced/split/adventure card (in hand, command, graveyard, revealed exile, stack, or face-up battlefield), render a flip/face-inspect toggle in `inspectedCard` / card preview using `card.faces` / `card.backFace`, and display the active face art (`card.faces?.[inst.activeFaceIndex ?? 0]?.imageUrl ?? card.imageUrl`) on battlefield and stack permanents.
     - Face-down permanents render the `faceDownLabel` differentiation badge (`CR 708.6`) plus a controller-only "Peek / Turn Face Up" affordance when special-action `turn_face_up` costs are legal (`CR 708.5`, `708.7`).
 
-#### Recommended Phasing (Deferred Implementation Spec)
+#### Implementation Phases (Completed)
 
-1. **B4 Phase 1 (Representation & Viewer Redaction):** Populate `ScryfallCard.faces` + `layout` cleanly, replace raw `.faces[0]` calls with `resolveObjectFaces` / `activeFaceDefs`, separate Layer 1a/1b cleanly, and close the `CR 708.5` leak in `sanitizeGameStateForViewer`.
-2. **B4 Phase 2 (`split`, `modal_dfc`, `adventure` casting & resolution):** Wire `CastOption.faceIndex` + Adventure exile loop (`CR 716.3d`) + Room designations (`CR 709.5`) + UI flip/preview toggle.
-3. **B4 Phase 3 (`transform` + face-down Morph/Disguise/Manifest/Cloak):** Implement `TransformedEvent`, non-identity-changing transform (`CR 712.15`), special-action `turn_face_up` (`CR 708.7–11`), and `CR 708.9` reveal rules. *(Meld `CR 713` remains an optional Phase 4 follow-up.)*
+1. **B4 Phase 1 (Representation & Viewer Redaction — ✅ Done):** Populated `ScryfallCard.faces` + `layout`, replaced raw `.faces[0]` calls with `resolveObjectFaces` / `activeFaceDefs` (`runtime/faces.ts`), separated Layer 1a/1b, and closed the `CR 708.5` leak in `sanitizeGameStateForViewer`.
+2. **B4 Phase 2 (`split`, `modal_dfc`, `adventure` casting & resolution — ✅ Done):** Wired `CastOption.faceIndex` + Adventure exile loop (`CR 716.3d`) + Room designations (`CR 709.5`) + UI flip/preview toggle (`b4-phase2-multiface.test.ts`).
+3. **B4 Phase 3 (`transform` + face-down Morph/Disguise/Manifest/Cloak — ✅ Done):** Implemented `TransformedEvent`, non-identity-changing transform (`CR 712.15`), special-action `turn_face_up` (`CR 708.7–11`), and `CR 708.9` reveal rules (`transform-flip-facedown.test.ts`), followed by `Meld` (`CR 713`) and `Flip` (`CR 710`) in Wave 6 Track P18b.
 
 ---
 
@@ -908,7 +920,7 @@ Introduce one pure resolver helper `resolveObjectFaces(card, objState, zone): Ac
 
 ### 2.19 Modular UI Architecture (`U1–U4`) & Wave 2 Orthogonal Engine Worktrees (`P4–P6`)
 
-*Status: active in parallel git worktrees off `1b85366` alongside `teamwork-mtg-engine`.*
+*Status: **✅ Implemented and merged** to `master` (UI Tracks `U1–U4` and Wave 2 Engine Tracks `P4–P6`).*
 
 #### Part A — Modular Svelte 5 UI Architecture (`src/lib/magic/ui/`, Tracks `U1–U4`)
 - **UI Track U1 (`mtg_u1_board_hud`):** Single-pass O(B) `boardViewModel.ts` (eliminating O(B²) attachment scans and duplicate `evaluatePermanent` calls), read-only `autoTapPreview.ts`, upgraded `ManaSymbol.svelte` (`{E}`, `{Q}`, `{S}`, Phyrexian & split-hybrid glyphs), `HudBar.svelte` (exposing `first_strike_damage` & `end_combat` phase stops, Waiting-on-Opponent pill, `Space`/`Enter`/`Ctrl` hotkeys), `PlayerVitals.svelte` & `OpponentPod.svelte` (`monarchPlayerId` crown, `energyCounters` `{E}`, `experienceCounters`, all `restrictedMana` keys, shield badges, `radCounters` slot), and `PermanentCard.svelte` & `HandTray.svelte` (rendering all counter types including Saga `lore` + amber auto-tap hover glow).
@@ -1048,13 +1060,41 @@ To eliminate the single-worker `effects + triggers` wall-clock bottleneck, Wave 
 
 ### 2.24 Wave 7 Five-Way Parallel Worktree Plan (`Tracks P19a–P21`, post-`v39` — targeting `~88%–91%+` Scryfall / Paper Eternal Ceiling Convergence)
 
-Wave 7 closes the remaining post-Wave-6 Paper Eternal tail across **5 compiler-file-disjoint worktrees** using the remaining signed 32-bit `runtime/layers.ts` bitmasks (`READ_P19A = 1 << 26` .. `READ_P21 = 1 << 30`):
+Wave 7 closed the post-Wave-6 Paper Eternal tail across **5 compiler-file-disjoint worktrees** using what were then the remaining signed 32-bit `runtime/layers.ts` bitmasks (`READ_P19A = 1 << 26` .. `READ_P21 = 1 << 30`, since widened to `bigint` `1n << Nn` in `runtime/layersPredicates.ts` during Stage 1A):
 
-1. **Track P19a (`mtg_p19a_effects_wave7` — owns `compiler/effects.ts`, `compiler/interpretable.ts`, `runtime/effectsWave7.ts`; `READ_P19A = 1 << 26`; `+2,100–2,700` cards):** Compound imperative clauses, aggregate `Amount` math (`greatest/least MV/power`, `destroyed/discarded this way`), non-targeted self-bounce/sacrifice, reveal-hand-and-choose pipelines, APNAP `Each player` symmetrical loops (`CR 101.4`), `Monarch` (`CR 724`) & `Goad` (`CR 701.15`) completions, multi-layer permanent animation & complex quoted token templates, resolution Layer 2 `gainControl` (`CR 613.1b`), impulse-exile play windows with `"mana of any color"` spending overrides (`CR 609.4b`), and `CR 115.7` stack target redirection.
-2. **Track P19b (`mtg_p19b_triggers_mana_wave7` — owns `compiler/triggers.ts`, `runtime/triggersWave7.ts`; `READ_P19B = 1 << 27`; `+650–980` cards):** `CR 605.1b, 605.4a` triggered mana abilities (*Mirari's Wake*, *Utopia Sprawl*, *Wild Growth* — stackless immediate resolution), `"attacks you or a planeswalker you control"` disambiguation, cause-attributed opponent discard/mill triggers, and remaining batch LKI triggers.
-3. **Track P20a (`mtg_p20a_clones_cda_replacements_wave7` — owns `compiler/statics.ts`, `runtime/staticsWave7.ts`; `READ_P20A = 1 << 28`; `+1,400–1,950` cards):** Full `ObjectFilter` parity in `statics.ts`, Layer 1 Clone / `"enter as a copy ... except"` extensions & Layer 3 text-changing (`CR 707`, `CR 612`), remaining all-zone `*/*` Layer 7a CDAs (`CR 604.3`), *Circle of Protection* dynamic source-chosen prevention/redirection shields (`CR 614.9`, `615.1`), classic `Regenerate` (`CR 701.19`), unified `CR 614.12` `"As ~ enters, choose..."` anchors, and static Layer 2 `control enchanted/equipped`.
-4. **Track P20b (`mtg_p20b_costs_tail_wave7` — owns `compiler/costs.ts`, `runtime/costsWave7.ts`; `READ_P20B = 1 << 29`; `+60–120` cards):** Remaining exotic activation/cast costs (`Unattach`, `Roll a dN:`, arbitrary `±M/±N` counter placement costs, *Processor* opponent-exile-to-GY costs, and long-tail `parseObjectPhrase` qualifiers).
-5. **Track P21 (`mtg_p21_frames_overrides_wave7` — owns `keywords.ts`, `compiler/card.ts`, `compiler/index.ts`, `src/lib/magic/overrides/`, `runtime/framesWave7.ts`; `READ_P21 = 1 << 30`; `+100` frame/keyword cards + bespoke override escape hatch):** Complex Aura `Enchant [filter]` (incl. graveyard-card Auras *Animate Dead* / *Dance of the Dead*), remaining `Level up` / `Prototype` frame edge cases, and the schema-validated, behaviour-tested `src/lib/magic/overrides/<oracleId>.json` data-only loader in `compiler/index.ts` (§3 below) for true one-off Commander staples in the final `~3%` bespoke prose tail.
+1. **Track P19a (`mtg_p19a_effects_wave7` — owns `compiler/effects.ts`, `compiler/interpretable.ts`, `runtime/effectsWave7.ts`; historical `READ_P19A` bit 26; `+2,100–2,700` cards):** Compound imperative clauses, aggregate `Amount` math (`greatest/least MV/power`, `destroyed/discarded this way`), non-targeted self-bounce/sacrifice, reveal-hand-and-choose pipelines, APNAP `Each player` symmetrical loops (`CR 101.4`), `Monarch` (`CR 724`) & `Goad` (`CR 701.15`) completions, multi-layer permanent animation & complex quoted token templates, resolution Layer 2 `gainControl` (`CR 613.1b`), impulse-exile play windows with `"mana of any color"` spending overrides (`CR 609.4b`), and `CR 115.7` stack target redirection.
+2. **Track P19b (`mtg_p19b_triggers_mana_wave7` — owns `compiler/triggers.ts`, `runtime/triggersWave7.ts`; historical `READ_P19B` bit 27; `+650–980` cards):** `CR 605.1b, 605.4a` triggered mana abilities (*Mirari's Wake*, *Utopia Sprawl*, *Wild Growth* — stackless immediate resolution), `"attacks you or a planeswalker you control"` disambiguation, cause-attributed opponent discard/mill triggers, and remaining batch LKI triggers.
+3. **Track P20a (`mtg_p20a_clones_cda_replacements_wave7` — owns `compiler/statics.ts`, `runtime/staticsWave7.ts`; historical `READ_P20A` bit 28; `+1,400–1,950` cards):** Full `ObjectFilter` parity in `statics.ts`, Layer 1 Clone / `"enter as a copy ... except"` extensions & Layer 3 text-changing (`CR 707`, `CR 612`), remaining all-zone `*/*` Layer 7a CDAs (`CR 604.3`), *Circle of Protection* dynamic source-chosen prevention/redirection shields (`CR 614.9`, `615.1`), classic `Regenerate` (`CR 701.19`), unified `CR 614.12` `"As ~ enters, choose..."` anchors, and static Layer 2 `control enchanted/equipped`.
+4. **Track P20b (`mtg_p20b_costs_tail_wave7` — owns `compiler/costs.ts`, `runtime/costsWave7.ts`; historical `READ_P20B` bit 29; `+60–120` cards):** Remaining exotic activation/cast costs (`Unattach`, `Roll a dN:`, arbitrary `±M/±N` counter placement costs, *Processor* opponent-exile-to-GY costs, and long-tail `parseObjectPhrase` qualifiers).
+5. **Track P21 (`mtg_p21_frames_overrides_wave7` — owns `keywords.ts`, `compiler/card.ts`, `compiler/index.ts`, `src/lib/magic/overrides/`, `runtime/framesWave7.ts`; historical `READ_P21` bit 30; `+100` frame/keyword cards + bespoke override escape hatch):** Complex Aura `Enchant [filter]` (incl. graveyard-card Auras *Animate Dead* / *Dance of the Dead*), remaining `Level up` / `Prototype` frame edge cases, and the schema-validated, behaviour-tested `src/lib/magic/overrides/<oracleId>.json` data-only loader in `compiler/index.ts` (§3 below) for true one-off Commander staples in the final `~3%` bespoke prose tail.
+
+### 2.25 Wave 8 (`Tracks P22a–P22d`), UI Tracks `U6–U9`, & Archidekt Precon Importer (`COMPILER_VERSION = 41`, historical)
+
+*Status: **✅ Implemented and merged** to `master`.*
+
+1. **Wave 8 Engine Tracks (`P22a–P22d`, exhausting remaining `READ_P22A..P22C` bit positions prior to Stage 1 `bigint` widening):**
+   - **Track P22a (`runtime/staticsWave8.ts`):** Remaining `CR 614.12` ETB choices (`CardType`, `Number`, `TwoColors`, `TwoPlayers`, `AnotherCreature`, disjunctive subtypes, Commander pre-game color), damage redirection & unpreventable shields (`CR 614.9, 615.12`), counter locks & zone-persistent counters (`CR 122.2, 122.6`), player-counter/starting-life-delta/distinct-name scaling, symmetrical land drops & stax locks, and graveyard/hand alt-ability grants.
+   - **Track P22b (`runtime/triggersWave8.ts`):** Trigger-head & intervening-if expansions (`loyalty`/ability-activation/`vote`/`clash`/`shuffle`/`counter`/`saga`/`saddle` triggers, `CR 603.8` state-trigger evaluation, and cost/modifier extensions).
+   - **Track P22c (`runtime/framesWave8.ts` + `overrides/`):** Short-name normalization, bullet flavor words, modal bounds/conditional random-mode/distinct-player-per-mode targeting riders, and 19 additional hash-gated JSON overrides (bringing `src/lib/magic/overrides/` to `27` entries).
+   - **Track P22d (`compiler/effectsWave8.ts`, `runtime/effectsWave8.ts`):** Extended `exileUntil` (`stayExiled`, third-party library casting), extended `dig` (`keepTo: 'exile' | 'castFree'`, `rest: 'exile'`, `keepMaxManaValue`, `playFromExile`, `keepAttackingPlayer`, bindings), extended `preventDamage` (`chooseSource`, `nextDamageEventOnly`, `onPrevented` riders), and `compiler/interpretable.ts` unblocking.
+2. **UI Tracks `U6–U9` (`src/lib/magic/ui/`):**
+   - **`U6`:** `Class`/`Case`/`Mutate`/`Meld`/`Flip` frames, permanent status badges, per-mode costs.
+   - **`U7`:** `Companion` pedestal (`companion_to_hand`), graveyard/library playability, revealed hand/top HUD, permanent badges.
+   - **`U8`:** Arbitrary P/T & keyword counter badges, ETB anchors, source-linked freeze, stax HUD.
+   - **`U9`:** Auto-tap provenance immutability (`autoTapPreview.ts`), mana provenance HUD, linked-exile HUD, commander life tax, and `XValueChooser` (`xChooserModel.ts`).
+3. **Archidekt Precon Importer & Assurance (`scripts/magic-add-archidekt-precon.ts`):**
+   - Imports Archidekt Commander decks into `src/lib/magic/precons.archidekt.json` and `src/lib/magic/precon-oracle.fixture.json` (first Archidekt deck: *Bragos Spirit*, bringing `PRECON_DECKS` + `STAPLE_CARDS` to `201` distinct cards at `100.0%` support / `355/355` abilities).
+   - Guarded by `src/lib/magic/compiler/precon-assurance.test.ts` (asserting Commander legality and 100% support on every `PRECON_DECKS` and `STAPLE_CARDS` entry).
+
+### 2.26 Wave 2 Stages 1–3: Modularization, Invariants, 36 Archidekt Decks, & Coverage (`COMPILER_VERSION = 46`)
+
+*Status: **✅ Implemented** on `teamwork-mtg-wave2`.*
+
+1. **Stage 1 (Modularization & Invariant Gap Closure):**
+   - Widened `layerReads` / `READ_*` flags in `runtime/layersPredicates.ts` and `runtime/layerCache.ts` to arbitrary-width `bigint`; decomposed `engine.ts` (`26,791 -> 3,957` lines) and all non-test `runtime/*.ts` (`65` modules, max `5,433` lines) under the `<= 6,000`-line architectural ceiling.
+   - Closed `rawTypeLineRead`, `moveObjectResetOptOut` (`CR 400.7` defaults + `summoningSick = false` reset in `runtime/zones.ts`), and `scryfallLegacyDeckTables` / `scryfallOracleScan` in `scryfall.ts` (`10/10` ratchets at `0` in `architecture.test.ts`).
+2. **Stage 2–3 (Archidekt Corpus & 100% Coverage):**
+   - Imported `36` new popular Archidekt Commander decks into `precons.archidekt.json` (`37` Archidekt decks, `41` total `PRECON_DECKS`), expanded compiler/runtime Waves 9–11 (`19` compiler modules, `65` runtime modules) with `11` Wave 2 overrides (`38` total = `1.74% < 5%`), achieving `2,188/2,188 (100.0%)` precon cards, `4,579/4,579 (100.0%)` precon abilities, `25,417/35,062 (72.5%)` Scryfall coverage (`76.6%` ignoring statics, `0` errors), and 100% Archidekt multi-bot E2E smoke coverage (`runtime/archidekt-smoke.test.ts`).
 
 ---
 
@@ -1082,16 +1122,20 @@ Repeat:
 Track "% of saved-deck cards fully supported" as the headline metric.
 
 **Beyond the coverage loop:** the loop adds grammar and verbs one template at a time. The structural
-changes that full keyword and rules coverage would need first (cast options in place of `castMode`,
-pausable resolution, a keyword registry, multi-face and face-down objects) are proposed in
-[`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md) (2026-11-12, not scheduled).
+changes proposed in [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md) (cast options in
+place of `castMode`, pausable resolution, `KEYWORD_REGISTRY`, multi-face and face-down objects)
+are implemented across Tracks B1–B4 and Waves 1–8; Wave 2 Stage 1 decomposed `engine.ts` (`3,957` lines) and all non-test runtime modules to `<= 6,000` lines, and locked the architectural ratchet at `0` across all 10 invariant categories in `architecture.test.ts`.
 
-**Long-tail escape hatch (not built):** some cards are true one-offs. For those, the plan is a
-**hand-authored `CardDefinition` JSON override** in `src/lib/magic/overrides/<oracleId>.json`. Neither the
-directory nor override loading in `compileCard` exists yet. That is still data,
-never engine code. Optionally, an offline LLM can draft overrides, but each must pass schema
-validation **and** a behaviour test before it's committed. Generated output is never trusted
-unreviewed.
+**Long-tail escape hatch (✅ built in Track P21 / Wave 8):** some cards have true one-off prose that
+resists general compiler grammar rules. For those, `src/lib/magic/overrides/<oracleId>.json` holds
+**hand-authored pure-JSON `CardOverrideEntry` overrides** (`38` entries as of `v46`: `27` baseline + `11` Wave 2), statically
+imported in `src/lib/magic/overrides/index.ts` (so Cloudflare Workers never touch `node:fs`) and
+invoked by `compileCardByText` via `resolveCardOverride(oracleId, textHash, card.name, COMPILER_VERSION)`
+(`compiler/index.ts`). Each entry is hash-gated by `expectedTextHash` (falling back to
+`compileFaces` if Oracle text or card name changes) and validated by `overrides/overrides.test.ts`
+(uniqueness, `fullySupported === true`, zero `unsupported` abilities, JSON round-trip, and live
+Scryfall `textHash` parity). **Strict restraint rule:** overrides are reserved solely for true
+bespoke one-offs and must never be bulk-applied to bypass general grammar/runtime work.
 
 ---
 
@@ -1111,8 +1155,9 @@ unreviewed.
   with invented names, to prove the compiler isn't relying on names.
 - **Behaviour tests** (runtime): existing `magic.test.ts` suites stay as the regression net.
   **Write each new test so it fails before its fix.**
+- **Multi-bot E2E smoke tests**: `runtime/golden.test.ts` (behavior pin) and `runtime/archidekt-smoke.test.ts` (100% of Archidekt Commander decks across deterministic 4-bot pods + `pace: true` pod, verified normally and under `MAGIC_LAYER_CACHE_CHECK=1`).
 - **Layer snapshots** before Phase 6 (see Phase 6 entry).
-- **Coverage report** checked into CI as a number that must not decrease (another ratchet). *Not built:* the bulk data isn't in the repo, so CI doesn't run `scripts/magic-coverage.ts`. Only precon automation is ratcheted, by `compiler/automation.test.ts` against `compiler/automation.baseline.json`.
+- **Coverage & precon ratchets:** CI does not bundle the bulk Scryfall dataset, so `scripts/magic-coverage.ts` runs locally against `/home/ryan/data/scryfall/oracle-cards.jsonl.gz` to regenerate [`COVERAGE.md`](./COVERAGE.md). In CI/test runs, precon automation and Commander legality are enforced by `compiler/automation.test.ts` (against `compiler/automation.baseline.json`) and `compiler/precon-assurance.test.ts` (covering `STAPLE_CARDS` and all `PRECON_DECKS`, including `precons.archidekt.json` + `precon-oracle.fixture.json`).
 - **Architecture ratchet** (§1).
 
 ## 6. Risks and non-goals
@@ -1122,9 +1167,9 @@ unreviewed.
 - **Risk: behaviour drift during the layer rewrite.** Mitigation: snapshots before changing it.
 - **Risk: concurrent agents add special cases.** Mitigation: the ratchet.
 - **Risk: Workers cold-start compile cost.** Mitigation: measure in Phase 1, persist IR if needed.
-- **Non-goals for this plan:** full coverage of all ~30k cards; layer dependency ordering
-  (CR 613.8) beyond timestamps; MDFC/split/adventure/meld faces (the IR leaves room for `faces[]`);
-  formats other than Commander.
+- **Non-goals for this plan:** full coverage of non-Paper-Eternal / digital / acorn / Unfinity-sticker
+  cards; general layer dependency ordering (`CR 613.8`) beyond timestamps; Layer 3 text-changing
+  (`CR 612`); formats other than Commander.
 
 ## 7. Definition of done (whole plan)
 

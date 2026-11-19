@@ -18,25 +18,36 @@ import ov15d5b198 from './15d5b198-edbe-40f3-87e2-d72f7f0c58ab.json' with { type
 import ov240e85d3 from './240e85d3-e495-4877-8609-4b4056c402f7.json' with { type: 'json' };
 import ov2962fe4c from './2962fe4c-bf48-454b-8a6b-0f8253352ae8.json' with { type: 'json' };
 import ov32fbb638 from './32fbb638-ab14-4e8b-a07a-d4c44e3496f2.json' with { type: 'json' };
+import ov333745d9 from './333745d9-e930-439b-94d6-3aeea2877f69.json' with { type: 'json' };
 import ov33e85a8a from './33e85a8a-86df-4cdc-a9cc-8cbabe92c3c0.json' with { type: 'json' };
 import ov3d92e5ce from './3d92e5ce-9d30-4203-9f84-6c36117440cf.json' with { type: 'json' };
+import ov48534bbf from './48534bbf-06b6-46a0-8a86-b14f38caee58.json' with { type: 'json' };
 import ov49d4aef7 from './49d4aef7-d2d1-4f66-bc2a-79ec8cc96565.json' with { type: 'json' };
 import ov4ff07b7c from './4ff07b7c-e97a-4b57-bcf1-2f22c37a8bd6.json' with { type: 'json' };
 import ov5f15125e from './5f15125e-ae89-471e-b055-226a783bc7c1.json' with { type: 'json' };
 import ov699b192c from './699b192c-f3f2-4ac5-9ca9-e35bcf08ad8a.json' with { type: 'json' };
 import ov6f4ac4a4 from './6f4ac4a4-53ec-4bc9-8f5c-d4b801d867b2.json' with { type: 'json' };
+import ov723a66c3 from './723a66c3-2c2c-411c-bba5-922e8601981b.json' with { type: 'json' };
+import ov85ccae95 from './85ccae95-92c4-41ff-96fd-dcb515dc568e.json' with { type: 'json' };
+import ov8f351961 from './8f351961-69e3-4637-b010-d13f19daca39.json' with { type: 'json' };
 import ov9b9a10ff from './9b9a10ff-5a5d-4df8-88aa-18d84ff9117c.json' with { type: 'json' };
+import ov9f6828e3 from './9f6828e3-39d9-45d9-9bf1-0e3737a0321e.json' with { type: 'json' };
 import ovA54f0869 from './a54f0869-94c8-42af-9080-166efb9486a4.json' with { type: 'json' };
 import ovAa959340 from './aa959340-c869-4caa-92c7-572bd8d23eef.json' with { type: 'json' };
 import ovAb8d5f5c from './ab8d5f5c-1976-4f77-8ed2-8d28ee666741.json' with { type: 'json' };
 import ovC0d8fef4 from './c0d8fef4-65f4-4769-982d-b397d2b7e977.json' with { type: 'json' };
+import ovC12e2563 from './c12e2563-4ad4-4637-b9ae-72f23cca31d8.json' with { type: 'json' };
 import ovC549b0fd from './c549b0fd-1e08-4873-952e-a14dc45a0fd2.json' with { type: 'json' };
 import ovC823e687 from './c823e687-6311-4c99-974b-fd77d204141a.json' with { type: 'json' };
 import ovCfca44cb from './cfca44cb-8ca5-4ebb-bd5c-b621eca41944.json' with { type: 'json' };
+import ovE0cef79c from './e0cef79c-ad47-4cbc-9d73-a913e487ccb7.json' with { type: 'json' };
 import ovE11966cd from './e11966cd-2ee3-4df4-b099-abf42dcdf0db.json' with { type: 'json' };
 import ovE8863518 from './e8863518-0bfa-49c3-8c6e-6c9116a81051.json' with { type: 'json' };
 import ovEe6099b0 from './ee6099b0-fb1f-42f1-b862-7708c6e36d05.json' with { type: 'json' };
+import ovF36d1d8b from './f36d1d8b-8303-44a9-ab56-531931641ea2.json' with { type: 'json' };
 import ovFb60739e from './fb60739e-1dc3-481d-a056-ad72e665c680.json' with { type: 'json' };
+import ovFb773114 from './fb773114-6161-46a3-ab30-1853958fbcb0.json' with { type: 'json' };
+import ovFb88fb3d from './fb88fb3d-6a85-4bb1-b316-7f759b45a0fa.json' with { type: 'json' };
 import ovFd949f82 from './fd949f82-fc10-4e37-8aa9-6c7569fe3c55.json' with { type: 'json' };
 
 export interface CardOverrideEntry {
@@ -242,25 +253,36 @@ const RAW_ENTRIES: readonly unknown[] = [
 	ov240e85d3,
 	ov2962fe4c,
 	ov32fbb638,
+	ov333745d9,
 	ov33e85a8a,
 	ov3d92e5ce,
+	ov48534bbf,
 	ov49d4aef7,
 	ov4ff07b7c,
 	ov5f15125e,
 	ov699b192c,
 	ov6f4ac4a4,
+	ov723a66c3,
+	ov85ccae95,
+	ov8f351961,
 	ov9b9a10ff,
+	ov9f6828e3,
 	ovA54f0869,
 	ovAa959340,
 	ovAb8d5f5c,
 	ovC0d8fef4,
+	ovC12e2563,
 	ovC549b0fd,
 	ovC823e687,
 	ovCfca44cb,
+	ovE0cef79c,
 	ovE11966cd,
 	ovE8863518,
 	ovEe6099b0,
+	ovF36d1d8b,
 	ovFb60739e,
+	ovFb773114,
+	ovFb88fb3d,
 	ovFd949f82
 ];
 

@@ -18,7 +18,6 @@
  * - Zero unbounded loops; 100% plain-JSON state & continuations; deterministic PRNG (`nextRandom`).
  */
 
-import { cardManaSteps } from '../compiler/index.ts';
 import type {
 	Amount,
 	Condition,
@@ -29,7 +28,10 @@ import type {
 	Selector,
 	TargetSpec
 } from '../ir.ts';
-import { evaluatePermanent, inspectCardContinuousBreakdown } from '../ruleTree.ts';
+import {
+	evaluatePermanent,
+	permanentCouldProduceManaTypes as ruleTreePermanentCouldProduceManaTypes
+} from '../ruleTree.ts';
 import { effectiveCardForObject } from '../scryfall.ts';
 import type {
 	CardInstance,
@@ -51,6 +53,7 @@ import { executeCastFree, type P16aStepHost } from './effectsWave6.ts';
 import { activeAbilityDefs, instanceFaceOptions, resolveObjectFaces } from './faces.ts';
 import { addManaToPlayerPool } from './mana.ts';
 import {
+	evaluateCondition,
 	matchesObjectFilter,
 	objectManaValue,
 	objectPower,
@@ -65,15 +68,7 @@ import {
 import { flushTriggers } from './triggers.ts';
 import { moveObject } from './zones.ts';
 
-const FIVE_COLORS: readonly ManaColor[] = ['W', 'U', 'B', 'R', 'G'];
 const ALL_MANA_TYPES: readonly ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
-const BASIC_LAND_COLORS: ReadonlyArray<[string, ManaColor]> = [
-	['Plains', 'W'],
-	['Island', 'U'],
-	['Swamp', 'B'],
-	['Mountain', 'R'],
-	['Forest', 'G']
-];
 
 // ---- Runtime Host Registration --------------------------------------------------------------
 
@@ -200,30 +195,6 @@ export interface P19aStepHost {
 
 // ---- Slice P19a.1: Triggered-Mana & Land-Produced Mana (CR 605.1b, CR 106.7) ----------------
 
-function commanderColorsOf(player: PlayerGameState): ManaColor[] {
-	const set = new Set<ManaColor>();
-	for (const col of player.commanderColorIdentity ?? []) {
-		if (col !== 'C') set.add(col);
-	}
-	const zones: Array<readonly CardInstance[]> = [
-		player.command,
-		player.battlefield,
-		player.graveyard,
-		player.exile,
-		player.hand,
-		player.library
-	];
-	for (const z of zones) {
-		for (const c of z) {
-			if (!c.isCommander || c.ownerId !== player.playerId) continue;
-			for (const col of c.card.colorIdentity) {
-				if (col !== 'C') set.add(col);
-			}
-		}
-	}
-	return FIVE_COLORS.filter((c) => set.has(c));
-}
-
 /**
  * CR 106.7: Computes the mana types (`W, U, B, R, G, C` when `includeColorless`, else `W..G`)
  * that a single permanent on the battlefield could produce right now.
@@ -234,60 +205,7 @@ export function permanentCouldProduceManaTypes(
 	perm: CardInstance,
 	includeColorless: boolean
 ): ManaColor[] {
-	if (perm.phasedOut) return [];
-	const ev = evaluatePermanent(state, perm);
-	const out = new Set<ManaColor>();
-	const allow = (c: ManaColor) => {
-		if (c !== 'C' || includeColorless) out.add(c);
-	};
-	if (ev.isLand) {
-		for (const [sub, col] of BASIC_LAND_COLORS) {
-			if (ev.hasSubType(sub) || ev.typeLine.includes(sub)) allow(col);
-		}
-	}
-	const bd = inspectCardContinuousBreakdown(perm, state);
-	if (bd.items.some((i) => !i.removed && i.canonicalKey === 'mana_any')) {
-		for (const c of FIVE_COLORS) allow(c);
-	}
-	if (!ev.losesAllAbilities) {
-		for (const step of cardManaSteps(effectiveCardForObject(perm))) {
-			if (step.params?.mana) {
-				for (const c of step.params.mana) allow(c);
-			}
-			if (step.params?.manaWithChosenColor) {
-				for (const c of step.params.manaWithChosenColor) allow(c);
-				if (perm.chosenColor) allow(perm.chosenColor);
-			}
-			if (step.params?.manaOrChosenColor) {
-				for (const c of step.params.manaOrChosenColor) allow(c);
-				if (perm.chosenColor) allow(perm.chosenColor);
-			}
-			if (step.params?.manaBundles) {
-				for (const b of step.params.manaBundles) {
-					for (const c of b) allow(c);
-				}
-			}
-			if (step.params?.manaCombinationColors) {
-				const cols =
-					step.params.manaCombinationColors === 'any'
-						? FIVE_COLORS
-						: step.params.manaCombinationColors;
-				for (const c of cols) allow(c);
-			}
-			const ch = step.params?.manaChoice;
-			if (!ch) continue;
-			if (Array.isArray(ch)) {
-				for (const c of ch) allow(c);
-			} else if (ch === 'any') {
-				for (const c of FIVE_COLORS) allow(c);
-			} else if (ch === 'commanderIdentity') {
-				for (const c of commanderColorsOf(controller)) allow(c);
-			} else if (ch === 'chosenColor') {
-				if (perm.chosenColor) allow(perm.chosenColor);
-			}
-		}
-	}
-	return ALL_MANA_TYPES.filter((c) => out.has(c));
+	return ruleTreePermanentCouldProduceManaTypes(state, controller, perm, includeColorless);
 }
 
 export function resolveP19aManaChoiceColors(
@@ -1170,7 +1088,8 @@ export function executeExileUntilP19a(host: P19aStepHost, step: EffectStep): voi
 							}
 						: {}),
 					spendManaAsAnyColor: Boolean(spec.spendManaAsAnyColor),
-					...(spec.spellsOnly ? { spellsOnly: true } : {})
+					...(spec.spellsOnly ? { spellsOnly: true } : {}),
+					...(spec.payLifeEqualManaValue ? { payLifeEqualManaValue: true } : {})
 				};
 				host.bind(step, [hitInst]);
 			} else if (spec.hitAction === 'hand') {
@@ -1267,7 +1186,8 @@ export function executeExileUntilP19a(host: P19aStepHost, step: EffectStep): voi
 						subject: { k: 'binding', name: synBind },
 						params: {
 							castFreeSpec: {
-								withoutPayingManaCost: true
+								withoutPayingManaCost: true,
+								...(spec.payLifeEqualManaValue ? { payLifeEqualManaValue: true } : {})
 							}
 						},
 						span: step.span

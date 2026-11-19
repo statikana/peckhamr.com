@@ -69,6 +69,9 @@ function copyInstanceShell(inst: CardInstance): CardInstance {
 		...(inst.grantedKeywords ? { grantedKeywords: [...inst.grantedKeywords] } : {}),
 		...(inst.activatedAbilityIdsThisTurn
 			? { activatedAbilityIdsThisTurn: [...inst.activatedAbilityIdsThisTurn] }
+			: {}),
+		...(inst.usedOncePerGameAbilityIds
+			? { usedOncePerGameAbilityIds: [...inst.usedOncePerGameAbilityIds] }
 			: {})
 	};
 }

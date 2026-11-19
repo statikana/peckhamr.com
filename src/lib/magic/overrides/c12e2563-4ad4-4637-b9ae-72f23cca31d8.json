@@ -1,0 +1,71 @@
+{
+  "oracleId": "c12e2563-4ad4-4637-b9ae-72f23cca31d8",
+  "cardName": "Benthic Anomaly",
+  "expectedTextHash": "e543202d",
+  "compiledVersion": 44,
+  "notes": "Wave 13 override: Devoid + cast trigger choosing a creature per opponent and creating a colorless Eldrazi token copy with total P/T.",
+  "faces": [
+    {
+      "name": "Benthic Anomaly",
+      "characteristics": {
+        "manaCost": "{6}{U}",
+        "types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Eldrazi",
+          "Serpent"
+        ],
+        "supertypes": [],
+        "colors": [],
+        "power": 7,
+        "toughness": 8
+      },
+      "abilities": [
+        {
+          "kind": "keyword",
+          "keyword": {
+            "name": "devoid"
+          },
+          "span": {
+            "start": 0,
+            "end": 6
+          }
+        },
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "cast",
+            "filter": {
+              "object": "self",
+              "player": {
+                "relation": "you"
+              }
+            }
+          },
+          "targets": [],
+          "effect": [
+            {
+              "verb": "createToken",
+              "subject": {
+                "k": "none"
+              },
+              "params": {
+                "benthicAnomalyClone": true
+              },
+              "span": {
+                "start": 24,
+                "end": 308
+              }
+            }
+          ],
+          "text": "(This card has no color.)\nWhen you cast this spell, for each opponent, choose a creature that player controls. Create a token that's a copy of one of those creatures, except its power is equal to the total power of those creatures, its toughness is equal to the total toughness of those creatures, and it's a colorless Eldrazi creature.",
+          "span": {
+            "start": 7,
+            "end": 308
+          }
+        }
+      ]
+    }
+  ]
+}

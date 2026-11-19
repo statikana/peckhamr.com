@@ -1,9 +1,8 @@
 import {
-	abilityById,
 	compileSpellEffects,
 	effectOf,
 	expandModalEffects,
-	grantedAbilityById
+	resolveActivatedAbilityIr
 } from '../compiler/index.ts';
 import {
 	checkSpellCastLegality,
@@ -594,13 +593,14 @@ export function extractAbilityTargetSpecs(
 		return fromTargetInfo;
 	}
 	const faceIndex = ability.faceIndex ?? 0;
-	const irAb =
-		ability.grantSourceCard && ability.id.startsWith('granted:')
-			? grantedAbilityById(
-					ability.grantSourceCard,
-					ability.id.slice(ability.id.lastIndexOf(':') + 1)
-				)
-			: abilityById(card, ability.id, faceIndex);
+	const irAb = resolveActivatedAbilityIr(
+		card,
+		ability.id,
+		faceIndex,
+		ability.grantSourceCard,
+		ability.grantFaceIndex,
+		ability.grantedAbilityText
+	);
 	const compiled = effectOf(irAb);
 	const fromIr = compiled?.targets.filter((sp) => sp.max > 0);
 	if (fromIr && fromIr.length > 0) {
@@ -726,13 +726,14 @@ export function beginAbilityTargeting(
 	const abCard = params.inst.copiableCard ?? params.inst.card;
 	const specs = extractAbilityTargetSpecs(abCard, params.ability);
 	const faceIndex = params.ability.faceIndex ?? 0;
-	const irAb =
-		params.ability.grantSourceCard && params.ability.id.startsWith('granted:')
-			? grantedAbilityById(
-					params.ability.grantSourceCard,
-					params.ability.id.slice(params.ability.id.lastIndexOf(':') + 1)
-				)
-			: abilityById(abCard, params.ability.id, faceIndex);
+	const irAb = resolveActivatedAbilityIr(
+		abCard,
+		params.ability.id,
+		faceIndex,
+		params.ability.grantSourceCard,
+		params.ability.grantFaceIndex,
+		params.ability.grantedAbilityText
+	);
 	const unitLabel = inferDivideUnitLabel(effectOf(irAb)?.steps);
 
 	const baseMeta = {

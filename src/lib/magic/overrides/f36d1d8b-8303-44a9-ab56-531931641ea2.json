@@ -1,0 +1,44 @@
+{
+  "oracleId": "f36d1d8b-8303-44a9-ab56-531931641ea2",
+  "cardName": "Academy Manufactor",
+  "expectedTextHash": "4ba458fb",
+  "compiledVersion": 44,
+  "notes": "Wave 13 override: Clue/Food/Treasure token replacement creates one of each via CR 614 tokenReplacement oneOfEach.",
+  "faces": [
+    {
+      "name": "Academy Manufactor",
+      "characteristics": {
+        "manaCost": "{3}",
+        "types": [
+          "Artifact",
+          "Creature"
+        ],
+        "subtypes": [
+          "Assembly-Worker"
+        ],
+        "supertypes": [],
+        "colors": [],
+        "power": 1,
+        "toughness": 3
+      },
+      "abilities": [
+        {
+          "kind": "static",
+          "static": {
+            "k": "tokenReplacement",
+            "mode": "oneOfEach",
+            "matchSubtypes": [
+              "Clue",
+              "Food",
+              "Treasure"
+            ]
+          },
+          "span": {
+            "start": 0,
+            "end": 80
+          }
+        }
+      ]
+    }
+  ]
+}

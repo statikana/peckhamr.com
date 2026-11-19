@@ -662,18 +662,38 @@ export function normalizePromptAction(
 	}
 }
 
+export interface ChoicesHost {
+	isLandOnBattlefield: (state: GameState, inst: CardInstance) => boolean;
+	isLandInZone: (inst: CardInstance, zone: ZoneType) => boolean;
+}
+
+let choicesHost: ChoicesHost | null = null;
+
+export function registerChoicesHost(host: ChoicesHost): void {
+	choicesHost = host;
+}
+
+function isLandInZone(inst: CardInstance, zone: ZoneType, state?: GameState): boolean {
+	if (!choicesHost) return false;
+	if (zone === 'battlefield' && state) {
+		return choicesHost.isLandOnBattlefield(state, inst);
+	}
+	return choicesHost.isLandInZone(inst, zone);
+}
+
 /** Picks which top-of-library cards to keep vs move (bottom for scry, graveyard for surveil). */
 export function pickScryOrSurveilSplit(
 	player: PlayerGameState,
-	cards: CardInstance[]
+	cards: CardInstance[],
+	state?: GameState
 ): { topIds: string[]; bottomIds: string[] } {
 	const landCount =
-		player.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
-		player.hand.filter((h) => h.card.typeLine.includes('Land')).length;
+		player.battlefield.filter((b) => isLandInZone(b, 'battlefield', state)).length +
+		player.hand.filter((h) => isLandInZone(h, 'hand')).length;
 	const topIds: string[] = [];
 	const bottomIds: string[] = [];
 	for (const c of cards) {
-		const isLand = c.card.typeLine.includes('Land');
+		const isLand = isLandInZone(c, 'library');
 		if ((landCount >= 4 && isLand) || (landCount < 3 && !isLand && c.card.cmc > 4)) {
 			bottomIds.push(c.instanceId);
 		} else {
@@ -724,8 +744,8 @@ export function chooseBotAnswer(
 				const b = byId.get(idB);
 				if (!a || !b) return 0;
 				if (isOpponentHandChoice) {
-					const aLand = /\bLand\b/.test((a.copiableCard ?? a.card).typeLine.split('//')[0]);
-					const bLand = /\bLand\b/.test((b.copiableCard ?? b.card).typeLine.split('//')[0]);
+					const aLand = isLandInZone(a, 'hand');
+					const bLand = isLandInZone(b, 'hand');
 					if (aLand !== bLand) return aLand ? 1 : -1;
 					return b.card.cmc - a.card.cmc;
 				}
@@ -793,16 +813,16 @@ export function chooseBotAnswer(
 				};
 			}
 			if (choice.allowSplitBottom !== false) {
-				const { topIds, bottomIds } = pickScryOrSurveilSplit(player, cards);
+				const { topIds, bottomIds } = pickScryOrSurveilSplit(player, cards, state);
 				return { kind: 'orderObjects', topIds, bottomIds, shuffle: false };
 			}
 
 			const landCount =
-				player.battlefield.filter((b) => b.card.typeLine.includes('Land')).length +
-				player.hand.filter((h) => h.card.typeLine.includes('Land')).length;
+				player.battlefield.filter((b) => isLandInZone(b, 'battlefield', state)).length +
+				player.hand.filter((h) => isLandInZone(h, 'hand')).length;
 			const ordered = [...cards].sort((a, b) => {
-				const aLand = a.card.typeLine.includes('Land') ? 1 : 0;
-				const bLand = b.card.typeLine.includes('Land') ? 1 : 0;
+				const aLand = isLandInZone(a, 'library') ? 1 : 0;
+				const bLand = isLandInZone(b, 'library') ? 1 : 0;
 				return landCount < 3 ? bLand - aLand : aLand - bLand;
 			});
 			return {

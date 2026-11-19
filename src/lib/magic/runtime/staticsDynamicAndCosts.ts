@@ -1083,7 +1083,8 @@ export function collectExternalEtbCounters(
 			if (f.object === 'self' || f.object === undefined) return;
 			if (Array.isArray(def.with) || def.with.k !== 'modify') return;
 			const cSpec = def.with.additionalCounters ?? def.with.counters;
-			if (!cSpec) return;
+			const artManaSpec = def.with.countersPerArtifactMana;
+			if (!cSpec && !artManaSpec) return;
 			if (!matchesReplacementPlayer(f.player, controllerId, enteringControllerId)) return;
 			const ctx: FilterContext = { state, controllerId, source: perm };
 			if (def.condition && !evaluateCondition(def.condition, ctx)) return;
@@ -1092,9 +1093,17 @@ export function collectExternalEtbCounters(
 			} else if (!matchesObjectFilter(enteringObj, f.object, ctx)) {
 				return;
 			}
-			const n = Math.max(0, evaluateAmount(cSpec.amount, ctx));
-			if (n > 0) {
-				out.push({ counter: cSpec.counter, amount: n });
+			if (cSpec) {
+				const n = Math.max(0, evaluateAmount(cSpec.amount, ctx));
+				if (n > 0) {
+					out.push({ counter: cSpec.counter, amount: n });
+				}
+			}
+			if (artManaSpec) {
+				const artAmt = enteringObj.artifactManaSpentCount ?? 0;
+				if (artAmt > 0) {
+					out.push({ counter: artManaSpec.counter, amount: artAmt });
+				}
 			}
 		},
 		enteringObj.instanceId

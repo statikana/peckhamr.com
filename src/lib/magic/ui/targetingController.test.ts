@@ -29,6 +29,7 @@ import {
 	computeMaxAffordableX,
 	confirmCurrentSlot,
 	describeCurrentTargetSlot,
+	extractAbilityTargetSpecs,
 	getPendingTargetArrowRefs,
 	isCandidateLegalForCurrentSlot,
 	requiredZoneDrawerForCurrentSlot,
@@ -829,5 +830,81 @@ describe('targetingController — Multi-slot sequential targeting state machine'
 		assert.equal(bothPicked.status, 'ready_to_submit');
 		assert.equal(bothPicked.payload.type, 'cast_spell');
 		assert.deepEqual(bothPicked.payload.targets, [p2Ref, c1.ref, c2.ref]);
+	});
+
+	it('extracts quoted_eot: (grantedAbilityText) divide unit label as counters instead of defaulting to damage (canonical + cloneRenamed)', () => {
+		const baseBear = synthCard({
+			name: 'Runic Grizzly',
+			manaCost: '{1}{G}',
+			cmc: 2,
+			typeLine: 'Creature — Bear',
+			power: '2',
+			toughness: '2'
+		});
+		const baseTargetA = synthCard({
+			name: 'Meadow Sprite',
+			typeLine: 'Creature — Faerie',
+			power: '1',
+			toughness: '1'
+		});
+		const baseTargetB = synthCard({
+			name: 'Bog Strider',
+			typeLine: 'Creature — Frog',
+			power: '2',
+			toughness: '2'
+		});
+		const variants = [
+			{ bear: baseBear, targetA: baseTargetA, targetB: baseTargetB },
+			{
+				bear: { ...baseBear, id: `${baseBear.id}_ren`, oracleId: `${baseBear.oracleId}_ren`, name: 'Timber Bruin' },
+				targetA: { ...baseTargetA, id: `${baseTargetA.id}_ren`, oracleId: `${baseTargetA.oracleId}_ren`, name: 'Glade Pixie' },
+				targetB: { ...baseTargetB, id: `${baseTargetB.id}_ren`, oracleId: `${baseTargetB.oracleId}_ren`, name: 'Mire Leaper' }
+			}
+		];
+
+		for (const v of variants) {
+			const { state, p1Id } = makeTestMatch();
+			const bearPerm = addPermanent(state, 0, v.bear);
+			const c1 = addPermanent(state, 0, v.targetA);
+			const c2 = addPermanent(state, 1, v.targetB);
+			state.nextTimestamp = (state.nextTimestamp ?? 1) + 1;
+			(state.timedContinuousEffects ??= []).push({
+				sourceName: 'Quoted Counter Surge',
+				controllerId: p1Id,
+				timestamp: state.nextTimestamp,
+				expires: 'endOfTurn',
+				affected: [{ instanceId: bearPerm.inst.instanceId, objectVersion: bearPerm.inst.objectVersion ?? 1 }],
+				layer6: {
+					grantedAbilityTexts: [
+						'{T}: Distribute three +1/+1 counters among one or two target creatures.'
+					]
+				}
+			});
+			const abs = getEffectiveActivatedAbilities(state, state.players[0]!, bearPerm.inst);
+			const quotedAb = abs.find((a) => a.id.startsWith('quoted_eot:'));
+			assert.ok(quotedAb, 'Expected quoted_eot: ability');
+			assert.ok(quotedAb.grantedAbilityText);
+
+			const specs = extractAbilityTargetSpecs(bearPerm.inst.card, quotedAb);
+			assert.equal(specs.length, 1);
+			assert.equal(specs[0]?.divideTotal?.k, 'const');
+
+			const res = beginAbilityTargeting({
+				inst: bearPerm.inst,
+				ability: quotedAb,
+				gameState: state,
+				actorId: p1Id
+			});
+			assert.equal(res.status, 'targeting');
+			assert.equal(res.session.currentDivideUnitLabel, 'counters');
+
+			// Complete division (1 on c1, 1 on c2) and verify submit payload
+			const afterC1 = toggleOrAdvanceTarget(state, p1Id, res.session, c1.ref);
+			assert.equal(afterC1.status, 'targeting');
+			const afterC2 = toggleOrAdvanceTarget(state, p1Id, afterC1.session, c2.ref);
+			assert.equal(afterC2.status, 'targeting');
+			assert.equal(afterC2.session.awaitingDivision, true);
+			assert.equal(afterC2.session.currentDivideUnitLabel, 'counters');
+		}
 	});
 });

@@ -6,15 +6,16 @@
  * Pure IR and GameState metadata only — zero card-name comparisons and zero runtime rules-text reads.
  */
 import {
-	abilityById,
 	compiledTriggerEffect,
 	compileSpellEffects,
 	describeModalModes,
 	effectOf,
 	expandModalEffects,
-	grantedAbilityById
+	grantedTriggerEffect,
+	resolveActivatedAbilityIr
 } from '../compiler/index.ts';
 import { compileQuotedAbilityString } from '../compiler/effects.ts';
+import { getKeywordSpec } from '../keywords.ts';
 import type {
 	AbilityDef,
 	Amount,
@@ -58,6 +59,10 @@ import {
 	spellCastRestrictions,
 	type CostContext
 } from './costs.ts';
+import {
+	hasCounterRemovalSerializedPart,
+	totalRemovedCountersFromSerializedParts
+} from './costsWave7.ts';
 import { emitEvent } from './events.ts';
 import {
 	activeAbilityDefs,
@@ -258,6 +263,31 @@ export function resolveQuotedActivatedOrTriggeredSteps(
 				unparsed: []
 			};
 		}
+		if (kind === 'triggered' && ab.kind === 'keyword') {
+			const spec = getKeywordSpec(ab.keyword.name);
+			if (
+				spec?.status === 'implemented' &&
+				(spec.implementation?.kind === 'trigger' ||
+					(spec.implementation?.kind === 'castOption' && spec.implementation.buildTriggers))
+			) {
+				const built = spec.implementation.buildTriggers!(ab.keyword, 0, ab.span);
+				const base = built[0]?.effect;
+				if (
+					base &&
+					(base.steps.length > 0 || base.targets.length > 0 || Boolean(base.modal))
+				) {
+					const resolved =
+						base.modal && chosenModes ? expandModalEffects(base.modal, chosenModes) : base;
+					if (!resolved) return null;
+					return {
+						steps: resolved.steps,
+						targets: resolved.targets,
+						...(base.modal ? { modal: base.modal } : {}),
+						unparsed: []
+					};
+				}
+			}
+		}
 	}
 	return null;
 }
@@ -298,21 +328,30 @@ export function resolveReflexiveSpecFromCompiled(
 		steps = expanded?.steps ?? null;
 	} else if (ref.abilityKind === 'activated') {
 		if (ref.abilityId) {
-			const base =
-				ref.grantSourceCard && ref.abilityId.startsWith('granted:')
-					? effectOf(
-							grantedAbilityById(
-								ref.grantSourceCard,
-								ref.abilityId.slice(ref.abilityId.lastIndexOf(':') + 1)
-							)
-						)
-					: effectOf(abilityById(ref.sourceCard, ref.abilityId, faceIdx));
+			const base = effectOf(
+				resolveActivatedAbilityIr(
+					ref.sourceCard,
+					ref.abilityId,
+					faceIdx,
+					ref.grantSourceCard,
+					ref.grantFaceIndex,
+					ref.grantedAbilityText
+				)
+			);
 			const expanded =
 				base?.modal && ref.chosenModes ? expandModalEffects(base.modal, ref.chosenModes) : base;
 			steps = expanded?.steps ?? null;
 		}
 	} else if (ref.abilityKind === 'triggered') {
-		if (ref.grantedKeyword || ref.abilityIndex !== undefined) {
+		if (ref.grantSourceCard && ref.grantAbilityIndex !== undefined) {
+			const trig = grantedTriggerEffect(
+				ref.grantSourceCard,
+				ref.grantFaceIndex ?? 0,
+				ref.grantAbilityIndex,
+				ref.chosenModes
+			);
+			steps = trig?.steps ?? null;
+		} else if (ref.grantedKeyword || ref.abilityIndex !== undefined) {
 			const trig = compiledTriggerEffect(
 				ref.sourceCard,
 				ref.abilityIndex ?? -1,
@@ -366,6 +405,7 @@ const OBJECT_ACTING_REFLEXIVE_VERBS = new Set<string>([
 	'sacrifice',
 	'discard',
 	'exile',
+	'exert',
 	'tap',
 	'untap',
 	'tapOrUntap',
@@ -455,16 +495,18 @@ export function enqueueReflexiveTriggerForStep(
 	}
 
 	const item = host.item;
-	const parentReflexive = item.reflexiveTrigger;
-	const abilityKind: CompiledReflexiveTrigger['abilityKind'] = parentReflexive
-		? parentReflexive.abilityKind
+	const parentLocator =
+		item.reflexiveTrigger ??
+		(item.delayedEffect?.kind === 'compiledDelayed' ? item.delayedEffect : undefined);
+	const abilityKind: CompiledReflexiveTrigger['abilityKind'] = parentLocator
+		? parentLocator.abilityKind
 		: item.kind === 'spell'
 			? 'spell'
 			: item.kind === 'activated'
 				? 'activated'
 				: 'triggered';
 
-	const stepPath = [...(host.stepPathPrefix ?? parentReflexive?.stepPath ?? []), host.stepIndex];
+	const stepPath = [...(host.stepPathPrefix ?? parentLocator?.stepPath ?? []), host.stepIndex];
 	const boundRefs = host.captureBoundRefs();
 
 	const firstObj = matchingObjects[0];
@@ -496,33 +538,39 @@ export function enqueueReflexiveTriggerForStep(
 			: item.sourceLkiToughness ?? item.lkiToughness;
 
 	const compiled: CompiledReflexiveTrigger = {
-		sourceCard: parentReflexive ? parentReflexive.sourceCard : host.sourceCard,
-		...(parentReflexive?.faceIndex !== undefined
-			? { faceIndex: parentReflexive.faceIndex }
+		sourceCard: parentLocator ? parentLocator.sourceCard : host.sourceCard,
+		...(parentLocator?.faceIndex !== undefined
+			? { faceIndex: parentLocator.faceIndex }
 			: item.faceIndex !== undefined
 				? { faceIndex: item.faceIndex }
 				: {}),
-		...(parentReflexive?.fused ?? item.fused ? { fused: true } : {}),
+		...(parentLocator?.fused ?? item.fused ? { fused: true } : {}),
 		abilityKind,
-		...(parentReflexive?.abilityId ?? item.abilityId
-			? { abilityId: parentReflexive?.abilityId ?? item.abilityId }
+		...(parentLocator?.abilityId ?? item.abilityId
+			? { abilityId: parentLocator?.abilityId ?? item.abilityId }
 			: {}),
-		...(parentReflexive?.abilityIndex !== undefined
-			? { abilityIndex: parentReflexive.abilityIndex }
+		...(parentLocator?.abilityIndex !== undefined
+			? { abilityIndex: parentLocator.abilityIndex }
 			: item.triggeredAbilityIndex !== undefined
 				? { abilityIndex: item.triggeredAbilityIndex }
 				: {}),
-		...(parentReflexive?.grantSourceCard ?? item.grantSourceCard
-			? { grantSourceCard: parentReflexive?.grantSourceCard ?? item.grantSourceCard }
+		...(parentLocator?.grantSourceCard ?? item.grantSourceCard
+			? { grantSourceCard: parentLocator?.grantSourceCard ?? item.grantSourceCard }
 			: {}),
-		...(parentReflexive?.grantedKeyword ?? item.grantedKeyword
-			? { grantedKeyword: parentReflexive?.grantedKeyword ?? item.grantedKeyword }
+		...((parentLocator?.grantFaceIndex ?? item.grantFaceIndex) !== undefined
+			? { grantFaceIndex: parentLocator?.grantFaceIndex ?? item.grantFaceIndex }
 			: {}),
-		...(parentReflexive?.grantedAbilityText ?? item.grantedAbilityText
-			? { grantedAbilityText: parentReflexive?.grantedAbilityText ?? item.grantedAbilityText }
+		...((parentLocator?.grantAbilityIndex ?? item.grantAbilityIndex) !== undefined
+			? { grantAbilityIndex: parentLocator?.grantAbilityIndex ?? item.grantAbilityIndex }
 			: {}),
-		...(parentReflexive?.chosenModes ?? item.chosenModes
-			? { chosenModes: [...(parentReflexive?.chosenModes ?? item.chosenModes)!] }
+		...(parentLocator?.grantedKeyword ?? item.grantedKeyword
+			? { grantedKeyword: parentLocator?.grantedKeyword ?? item.grantedKeyword }
+			: {}),
+		...(parentLocator?.grantedAbilityText ?? item.grantedAbilityText
+			? { grantedAbilityText: parentLocator?.grantedAbilityText ?? item.grantedAbilityText }
+			: {}),
+		...(parentLocator?.chosenModes ?? item.chosenModes
+			? { chosenModes: [...(parentLocator?.chosenModes ?? item.chosenModes)!] }
 			: {}),
 		stepPath,
 		boundRefs,
@@ -1064,6 +1112,7 @@ export function executeDiscover(host: P10EffectHost, step: EffectStep): void {
 					);
 					let paidOk = true;
 					let descriptions: string[] = [];
+					let removedCounterCount: number | undefined;
 					if (pickedSetup.costDefs.length > 0) {
 						const ctx = rHost.costContext(state, actor, hitCard, 0, true, req);
 						const payment = chooseCostPayment(ctx, pickedSetup.costDefs);
@@ -1075,6 +1124,9 @@ export function executeDiscover(host: P10EffectHost, step: EffectStep): void {
 								paidOk = false;
 							} else {
 								const parts = serializeCostPlanParts(ctx, plan);
+								if (hasCounterRemovalSerializedPart(parts)) {
+									removedCounterCount = totalRemovedCountersFromSerializedParts(parts);
+								}
 								payTapAndManaCostParts(ctx, parts, plan.mana, descriptions);
 								const paid = executeCostPaymentParts(ctx, parts, 0, 0, descriptions);
 								descriptions = paid.descriptions;
@@ -1095,7 +1147,8 @@ export function executeDiscover(host: P10EffectHost, step: EffectStep): void {
 							spellMods: { castSummarySuffix: ` (Discover ${n})` },
 							exSourceName: `Discover ${n}`,
 							descriptions,
-							additionalIncomplete: pickedSetup.additionalIncomplete
+							additionalIncomplete: pickedSetup.additionalIncomplete,
+							...(removedCounterCount !== undefined ? { removedCounterCount } : {})
 						});
 						wasCast = true;
 					}
@@ -2234,6 +2287,13 @@ export function executeMultiZoneSearchP10(host: P10EffectHost, step: EffectStep)
 export function isExploitTriggerStackItem(item: StackItem | undefined): boolean {
 	if (!item || item.kind !== 'triggered') return false;
 	if (item.grantedKeyword === 'exploit') return true;
+	if (item.grantedAbilityText) {
+		const qAb = compileQuotedAbilityString(item.grantedAbilityText, item.card.name)[0];
+		if (!qAb || qAb.kind !== 'keyword') return false;
+		const { name: qKwName } = qAb.keyword;
+		return qKwName === 'exploit';
+	}
+	if (item.grantSourceCard) return false;
 	if (item.triggeredAbilityIndex === undefined || item.triggeredAbilityIndex < 0) return false;
 	const defs = activeAbilityDefs(item.card, { zone: 'battlefield', faceIndex: item.faceIndex });
 	const ab = defs[item.triggeredAbilityIndex];

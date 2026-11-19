@@ -23,7 +23,7 @@ import type {
 } from '../types.ts';
 // --- End Track P10 ---
 
-const ALL_MANA_COLORS: ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
+export const ALL_MANA_COLORS: ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
 
 /** Whether mana with `restriction` can be spent for `spendCtx` (CR 106.6). */
 export function canSpendRestrictedMana(
@@ -57,12 +57,17 @@ function equalsIgnoreCase(a: string, b: string): boolean {
 	return a.toLowerCase() === b.toLowerCase();
 }
 
-function matchesPlainManaFilter(
+export function matchesPlainManaFilter(
 	filter: PlainManaObjectFilter | undefined,
 	chars: ManaFilterTargetChars,
 	chosenSubType?: string
 ): boolean {
 	if (!filter) return true;
+	if (filter.anyOf && filter.anyOf.length > 0) {
+		if (!filter.anyOf.some((sub) => matchesPlainManaFilter(sub, chars, chosenSubType))) {
+			return false;
+		}
+	}
 	if (filter.types && filter.types.length > 0) {
 		if (!filter.types.some((t) => chars.types.some((ct) => equalsIgnoreCase(ct, t)))) return false;
 	}
@@ -199,6 +204,9 @@ export function canSpendManaRestrictionSpec(
 ): boolean {
 	if (!spendCtx) return false;
 	const chosenSubType = spec.sourceChosenSubType ?? spendCtx.sourceChosenSubType;
+	if (!spec.allowSpells && !spec.allowAbilities) {
+		return true;
+	}
 	if (spendCtx.isSpell) {
 		const allow = spec.allowSpells;
 		if (!allow) return false;
@@ -352,9 +360,11 @@ export function deductManaForSpendContext(
 	}
 	// --- Track P10 ---
 	const beforeBuckets: Record<string, ManaPool> = {};
+	const beforeBucketSpecs: Record<string, ManaSpendingRestrictionSpec> = {};
 	if (player.restrictedManaBuckets) {
 		for (const bucket of player.restrictedManaBuckets) {
 			beforeBuckets[bucket.key] = { ...bucket.pool };
+			beforeBucketSpecs[bucket.key] = bucket.spec;
 		}
 	}
 	// --- End Track P10 ---
@@ -364,15 +374,24 @@ export function deductManaForSpendContext(
 		onPayLife(resolved.lifePaid);
 	}
 	const eligiblePools: ManaPool[] = [];
+	const genericEligiblePools: ManaPool[] = [];
 	if (player.restrictedMana) {
 		for (const [key, pool] of Object.entries(player.restrictedMana) as Array<[ManaRestriction, ManaPool | undefined]>) {
-			if (pool && canSpendRestrictedMana(key, spendCtx)) eligiblePools.push(pool);
+			if (pool && canSpendRestrictedMana(key, spendCtx)) {
+				eligiblePools.push(pool);
+				genericEligiblePools.push(pool);
+			}
 		}
 	}
 	// --- Track P10 ---
 	if (player.restrictedManaBuckets) {
 		for (const bucket of player.restrictedManaBuckets) {
-			if (canSpendManaRestrictionSpec(bucket.spec, spendCtx)) eligiblePools.push(bucket.pool);
+			if (canSpendManaRestrictionSpec(bucket.spec, spendCtx)) {
+				eligiblePools.push(bucket.pool);
+				if (!bucket.spec.disallowGeneric) {
+					genericEligiblePools.push(bucket.pool);
+				}
+			}
 		}
 	}
 	// --- End Track P10 ---
@@ -389,7 +408,7 @@ export function deductManaForSpendContext(
 		}
 	}
 	let remGeneric = resolved.generic;
-	for (const rp of eligiblePools) {
+	for (const rp of genericEligiblePools) {
 		if (remGeneric <= 0) break;
 		remGeneric = spendGenericFromRestrictedPool(rp, remGeneric);
 	}
@@ -427,6 +446,7 @@ export function deductManaForSpendContext(
 	// --- End Track P13 ---
 	// --- Track P10 ---
 	let totalManaSpent = 0;
+	const spentBucketKeys = new Set<string>();
 	for (const c of ALL_MANA_COLORS) {
 		let spent = Math.max(0, beforePool[c] - player.manaPool[c]);
 		if (player.restrictedMana) {
@@ -438,7 +458,9 @@ export function deductManaForSpendContext(
 		}
 		for (const [key, bBefore] of Object.entries(beforeBuckets)) {
 			const cur = player.restrictedManaBuckets?.find((b) => b.key === key)?.pool;
-			spent += Math.max(0, bBefore[c] - (cur ? cur[c] : 0));
+			const bucketSpent = Math.max(0, bBefore[c] - (cur ? cur[c] : 0));
+			if (bucketSpent > 0) spentBucketKeys.add(key);
+			spent += bucketSpent;
 		}
 		totalManaSpent += spent;
 		if (FIVE_COLORS.includes(c) && spent > 0) {
@@ -446,6 +468,19 @@ export function deductManaForSpendContext(
 			// --- Track P13 ---
 			for (let k = 0; k < spent; k++) spentColorsAll.push(c);
 			// --- End Track P13 ---
+		}
+	}
+	if (spendCtx) {
+		for (const key of spentBucketKeys) {
+			const spec = beforeBucketSpecs[key];
+			if (!spec) continue;
+			if (spec.onSpendCantBeCountered && spendCtx.isSpell) {
+				spendCtx.spentManaGrantsUncounterable = true;
+			}
+			if (spec.onSpendCommanderBonusCounters && spendCtx.isSpell && spendCtx.isCommanderSpell) {
+				spendCtx.spentManaCommanderBonusCounters =
+					(spendCtx.spentManaCommanderBonusCounters ?? 0) + 1;
+			}
 		}
 	}
 	// --- End Track P10 ---

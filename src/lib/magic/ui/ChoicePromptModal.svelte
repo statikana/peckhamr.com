@@ -78,15 +78,15 @@
 		return idx >= 0 ? idx : 7;
 	}
 
-	function typeRank(typeLine: string): number {
-		if (typeLine.includes('Creature')) return 0;
-		if (typeLine.includes('Planeswalker')) return 1;
-		if (typeLine.includes('Instant')) return 2;
-		if (typeLine.includes('Sorcery')) return 3;
-		if (typeLine.includes('Artifact')) return 4;
-		if (typeLine.includes('Enchantment')) return 5;
-		if (typeLine.includes('Battle')) return 6;
-		if (typeLine.includes('Land')) return 7;
+	function typeRank(types: readonly string[]): number {
+		if (types.includes('Creature')) return 0;
+		if (types.includes('Planeswalker')) return 1;
+		if (types.includes('Instant')) return 2;
+		if (types.includes('Sorcery')) return 3;
+		if (types.includes('Artifact')) return 4;
+		if (types.includes('Enchantment')) return 5;
+		if (types.includes('Battle')) return 6;
+		if (types.includes('Land')) return 7;
 		return 8;
 	}
 
@@ -95,8 +95,10 @@
 		const dir = activeSortDir === 'asc' ? 1 : -1;
 		const copy = [...list];
 		copy.sort((a, b) => {
-			const ca = resolveCardInstanceDisplay(a, a.zone, viewer.playerId).displayCard;
-			const cb = resolveCardInstanceDisplay(b, b.zone, viewer.playerId).displayCard;
+			const da = resolveCardInstanceDisplay(a, a.zone, viewer.playerId);
+			const db = resolveCardInstanceDisplay(b, b.zone, viewer.playerId);
+			const ca = da.displayCard;
+			const cb = db.displayCard;
 			let cmp = 0;
 			if (activeSortBy === 'cmc') {
 				cmp = ca.cmc !== cb.cmc ? ca.cmc - cb.cmc : ca.name.localeCompare(cb.name);
@@ -107,8 +109,8 @@
 				const rb = colorRank(cb.colors);
 				cmp = ra !== rb ? ra - rb : ca.cmc !== cb.cmc ? ca.cmc - cb.cmc : ca.name.localeCompare(cb.name);
 			} else if (activeSortBy === 'type') {
-				const ta = typeRank(ca.typeLine);
-				const tb = typeRank(cb.typeLine);
+				const ta = typeRank(da.types);
+				const tb = typeRank(db.types);
 				cmp = ta !== tb ? ta - tb : ca.cmc !== cb.cmc ? ca.cmc - cb.cmc : ca.name.localeCompare(cb.name);
 			}
 			return cmp * dir;

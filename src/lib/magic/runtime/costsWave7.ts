@@ -32,6 +32,7 @@ import { activeAbilityDefs, instanceFaceOptions, resolveObjectFaces } from './fa
 import { noteLayerInputsChanged } from './layerCache.ts';
 import { splitSubtypes } from './layers.ts';
 import {
+	evaluateAmount,
 	evaluateCondition,
 	objectManaValue,
 	type FilterContext
@@ -1299,24 +1300,47 @@ export function serializeP20bCostPart(
 					...forageExtra
 				};
 			}
-			if (counterCount !== undefined) {
-				return {
-					def,
-					counterCount,
-					...(def.from !== 'self' && objects
-						? {
-								objectIds: objects.map((o) => o.instanceId),
-								objectNames: objects.map((o) => o.card.name)
-							}
-						: {}),
-					...forageExtra
-				};
-			}
-			return null;
+			const computedCount =
+				counterCount !== undefined
+					? counterCount
+					: def.removeAll
+						? (def.from === 'self' ? [ctx.source] : (objects ?? [])).reduce(
+								(sum, o) => sum + totalMatchingCountersP20b(o, def.counter),
+								0
+							)
+						: Math.max(
+								0,
+								evaluateAmount(def.count, {
+									state: ctx.state,
+									controllerId: ctx.player.playerId,
+									source: ctx.source,
+									xValue: ctx.xValue
+								})
+							);
+			return {
+				def,
+				counterCount: computedCount,
+				...(def.from !== 'self' && objects
+					? {
+							objectIds: objects.map((o) => o.instanceId),
+							objectNames: objects.map((o) => o.card.name)
+						}
+					: {}),
+				...forageExtra
+			};
 		}
 		default:
 			return null;
 	}
+}
+
+export function hasCounterRemovalSerializedPart(parts: SerializedPlannedCost[]): boolean {
+	return parts.some(
+		(pt) =>
+			pt.def.k === 'removeCounters' ||
+			pt.counterCount !== undefined ||
+			pt.counterDistribution !== undefined
+	);
 }
 
 export function totalRemovedCountersFromSerializedParts(parts: SerializedPlannedCost[]): number {

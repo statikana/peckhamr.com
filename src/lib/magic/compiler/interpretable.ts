@@ -145,8 +145,20 @@ export const INTERPRETED_VERBS: ReadonlySet<Verb> = new Set<Verb>([
 	// --- End Track P19a ---
 	// --- Precon Bragos Spirit ---
 	'skipCombatPhase',
-	'castNameLock'
+	'castNameLock',
 	// --- End Precon Bragos Spirit ---
+	// --- Wave 10 ---
+	'forEachPlayerLoop',
+	'punisherChoice',
+	'partitionKeepByTypes',
+	'reselectAttackTarget',
+	'endCombatPhase',
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	'solveCase',
+	'repeatSequence',
+	'conditionalSequence'
+	// --- End Wave 11 ---
 ]);
 
 export const SUPPORTED_OPTIONAL_COST_KINDS: ReadonlySet<CostDef['k']> = new Set<CostDef['k']>([
@@ -307,7 +319,11 @@ function stepSupported(step: EffectStep): boolean {
 		!step.params?.manaBundles?.length &&
 		!step.params?.manaWithChosenColor?.length &&
 		!step.params?.manaOrChosenColor?.length &&
-		!step.params?.manaCombinationColors
+		!step.params?.manaCombinationColors &&
+		!step.params?.addManaFromExiledColors &&
+		!step.params?.addManaPerColorControlled &&
+		!step.params?.addManaLandProducedTypes &&
+		!step.params?.addManaChosenColorAmount
 	) {
 		return false;
 	}
@@ -397,7 +413,14 @@ function stepSupported(step: EffectStep): boolean {
 	}
 	if (step.verb === 'exileInsteadOfDying' && step.subject.k === 'none') return false;
 	if (step.verb === 'combatRestriction') {
-		if (!step.params?.combatRestriction || step.subject.k === 'none') return false;
+		if (
+			!step.params?.untilYourNextTurnCombatDirective &&
+			!step.params?.chooseOddOrEvenCantBlockThisTurn &&
+			!((step.params?.combatRestriction || step.params?.mustAttackNextCombat || step.params?.mustAttackPlayerRef) &&
+				step.subject.k !== 'none')
+		) {
+			return false;
+		}
 	}
 	if (step.verb === 'becomeCopy') {
 		if (!step.params?.copySource || !selectorSupported(step.params.copySource) || step.subject.k === 'none') {
@@ -419,6 +442,7 @@ function stepSupported(step: EffectStep): boolean {
 	// --- End Track P7 ---
 	if (step.verb === 'copySpell') {
 		if (
+			!step.params?.copyAllControlledSpellsAndOtherAbilities &&
 			step.subject.k !== 'target' &&
 			step.subject.k !== 'eventObject' &&
 			step.subject.k !== 'self' &&
@@ -462,8 +486,18 @@ function stepSupported(step: EffectStep): boolean {
 		!step.params?.chooseColorForAnimate &&
 		// --- End Track P19a ---
 		// --- Track P22d ---
-		!step.params?.grantSuspendIfMissing
+		!step.params?.grantSuspendIfMissing &&
 		// --- End Track P22d ---
+		// --- Wave 11 ---
+		!step.params?.cantBeBlockedByOpponentsCreatures &&
+		!step.params?.exileResolvingSpellToLinked &&
+		!step.params?.grantTriggerSpellSunburst &&
+		!step.params?.payAnyManaForDamage &&
+		!step.params?.payUpToLifeGainedManaToDraw &&
+		// --- End Wave 11 ---
+		// --- Wave 13 ---
+		!step.params?.gambitCombatDirective
+		// --- End Wave 13 ---
 	) {
 		return false;
 	}
@@ -580,7 +614,7 @@ function stepSupported(step: EffectStep): boolean {
 		return true;
 	}
 	// --- End Track P13 ---
-	if (step.verb === 'createToken' && !step.params?.token) return false;
+	if (step.verb === 'createToken' && !step.params?.token && !step.params?.benthicAnomalyClone) return false;
 	if (step.verb === 'delayedTrigger') return delayedSupported(step);
 	if (step.params?.damageSource && (step.verb !== 'damage' || !selectorSupported(step.params.damageSource))) {
 		return false;
@@ -609,12 +643,66 @@ function stepSupported(step: EffectStep): boolean {
 	}
 	// --- End Track P19a ---
 	if ((step.verb === 'destroy' || step.verb === 'exile' || step.verb === 'bounce') && step.subject.k === 'all') {
-		return step.subject.filter.zone === 'battlefield';
+		const z = step.subject.filter.zone;
+		return z === 'battlefield' || z === 'graveyard' || z === 'exile' || Array.isArray(z);
 	}
+	// --- Wave 10 ---
+	if (step.verb === 'forEachPlayerLoop') {
+		if (!step.params?.loopPlayers) return false;
+		if (step.params.loopSteps && step.params.loopSteps.length > 0 && !stepsSupported(step.params.loopSteps)) {
+			return false;
+		}
+		return true;
+	}
+	if (step.verb === 'punisherChoice') {
+		const p = step.params?.punisher;
+		if (!p) return false;
+		if (p.unlessCost && (p.unlessCost.length === 0 || !p.unlessCost.every(isSupportedOptionalCostDef))) {
+			return false;
+		}
+		if (p.unlessEffect && p.unlessEffect.length > 0 && !stepsSupported(p.unlessEffect)) {
+			return false;
+		}
+		if (p.defaultSteps.length > 0 && !stepsSupported(p.defaultSteps)) {
+			return false;
+		}
+		return true;
+	}
+	if (step.verb === 'partitionKeepByTypes') {
+		return Boolean(
+			(step.params?.partitionTypes && step.params.partitionTypes.length > 0) ||
+				step.params?.partitionAllTypes
+		);
+	}
+	if (step.verb === 'reselectAttackTarget') {
+		return step.subject.k !== 'none';
+	}
+	if (step.verb === 'endCombatPhase') {
+		return true;
+	}
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	if (step.verb === 'solveCase') {
+		return true;
+	}
+	if (step.verb === 'repeatSequence') {
+		const rs = step.params?.repeatSequence;
+		return Boolean(rs && rs.steps.length > 0 && stepsSupported(rs.steps));
+	}
+	if (step.verb === 'conditionalSequence') {
+		const cs = step.params?.conditionalSequence;
+		return Boolean(
+			cs &&
+			cs.thenSteps.length > 0 &&
+			stepsSupported(cs.thenSteps) &&
+			(!cs.elseSteps || cs.elseSteps.length === 0 || stepsSupported(cs.elseSteps))
+		);
+	}
+	// --- End Wave 11 ---
 	return true;
 }
 
-const DELAYED_PHASES = new Set<string | undefined>(['end_step', 'upkeep', 'end_combat']);
+const DELAYED_PHASES = new Set<string | undefined>(['end_step', 'upkeep', 'end_combat', 'combat']);
 
 function stepProducesDecision(step: EffectStep | undefined): boolean {
 	if (!step) return false;
@@ -653,6 +741,11 @@ function stepProducesDecision(step: EffectStep | undefined): boolean {
 		return true;
 	}
 	// --- End Track P16a ---
+	// --- Wave 9: upTo target / exile can result in "If you do" (*Blue Mage's Cane*) ---
+	if (step.verb === 'exile' && step.subject.k === 'target') {
+		return true;
+	}
+	// --- End Wave 9 ---
 	// --- Track P19a ---
 	if (
 		Boolean(step.params?.unlessPaysGenericAmount) ||
@@ -662,6 +755,38 @@ function stepProducesDecision(step: EffectStep | undefined): boolean {
 		return true;
 	}
 	// --- End Track P19a ---
+	// --- Wave 10 ---
+	if (
+		step.verb === 'forEachPlayerLoop' ||
+		step.verb === 'punisherChoice' ||
+		step.verb === 'destroy' ||
+		step.verb === 'move'
+	) {
+		return true;
+	}
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	if (
+		step.verb === 'becomeCopy' ||
+		step.verb === 'counterSpell' ||
+		step.verb === 'search' ||
+		step.verb === 'draw' ||
+		step.verb === 'proliferate' ||
+		step.verb === 'reveal' ||
+		(step.verb === 'grant' &&
+			Boolean(step.params?.payAnyManaForDamage || step.params?.payUpToLifeGainedManaToDraw))
+	) {
+		return true;
+	}
+	if (step.verb === 'conditionalSequence') {
+		const cs = step.params?.conditionalSequence;
+		return Boolean(
+			cs &&
+			(cs.thenSteps.some((s) => stepProducesDecision(s)) ||
+				cs.elseSteps?.some((s) => stepProducesDecision(s)))
+		);
+	}
+	// --- End Wave 11 ---
 	return false;
 }
 
@@ -689,6 +814,9 @@ function stepsSupported(steps: EffectStep[]): boolean {
 function delayedSupported(step: EffectStep): boolean {
 	const d = step.delayed;
 	if (!d || d.effect.length === 0) return false;
+	if (step.params?.registerWave9DelayedTrigger) {
+		return stepsSupported(d.effect);
+	}
 	if (d.trigger.event !== 'phaseBegin') return false;
 	if (!DELAYED_PHASES.has(d.trigger.filter.phase)) return false;
 	return stepsSupported(d.effect);

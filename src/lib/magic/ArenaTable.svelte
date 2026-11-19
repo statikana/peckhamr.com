@@ -797,7 +797,14 @@
 				res.modal,
 				modalFallback.kind === 'ability' ? modalFallback.inst.usedModalModesThisTurn : undefined
 			);
-			const modeLabels = describeModalModes(effCard, res.modal, faceIdx);
+			const grAb = modalFallback.kind === 'ability' ? modalFallback.ability : undefined;
+			const modeLabels = grAb?.grantedAbilityText
+				? describeModalModes(effCard, res.modal, faceIdx, grAb.grantedAbilityText)
+				: describeModalModes(
+						grAb?.grantSourceCard ?? effCard,
+						res.modal,
+						grAb?.grantSourceCard ? (grAb.grantFaceIndex ?? 0) : faceIdx
+					);
 			modePickerModal = { ...modalFallback, modal: res.modal, modeLabels, disabledIndices };
 			return;
 		}

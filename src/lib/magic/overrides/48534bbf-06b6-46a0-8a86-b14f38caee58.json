@@ -1,0 +1,146 @@
+{
+  "oracleId": "48534bbf-06b6-46a0-8a86-b14f38caee58",
+  "cardName": "Sin, Unending Cataclysm",
+  "expectedTextHash": "1f52c171",
+  "compiledVersion": 44,
+  "notes": "Wave 13 override: Flying, Trample, ETB remove counters for 2x +1/+1 counters replacement, and dies counter transfer + shuffle.",
+  "faces": [
+    {
+      "name": "Sin, Unending Cataclysm",
+      "characteristics": {
+        "manaCost": "{5}{G}{U}",
+        "types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Leviathan",
+          "Avatar"
+        ],
+        "supertypes": [
+          "Legendary"
+        ],
+        "colors": [
+          "G",
+          "U"
+        ],
+        "power": 5,
+        "toughness": 5
+      },
+      "abilities": [
+        {
+          "kind": "keyword",
+          "keyword": {
+            "name": "flying"
+          },
+          "span": {
+            "start": 0,
+            "end": 6
+          }
+        },
+        {
+          "kind": "keyword",
+          "keyword": {
+            "name": "trample"
+          },
+          "span": {
+            "start": 8,
+            "end": 15
+          }
+        },
+        {
+          "kind": "replacement",
+          "replacement": {
+            "replaces": {
+              "event": "zoneChange",
+              "filter": {
+                "object": "self",
+                "to": "battlefield"
+              }
+            },
+            "with": {
+              "k": "modify",
+              "etbRemoveCountersForPlusCounters": {
+                "multiplier": 2,
+                "filter": {
+                  "types": [
+                    "Artifact",
+                    "Creature",
+                    "Enchantment"
+                  ],
+                  "other": true
+                }
+              }
+            },
+            "selfReplacement": true
+          },
+          "span": {
+            "start": 16,
+            "end": 203
+          }
+        },
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "zoneChange",
+            "filter": {
+              "object": "self",
+              "from": "battlefield",
+              "to": "graveyard"
+            }
+          },
+          "targets": [
+            {
+              "kind": "object",
+              "filter": {
+                "types": [
+                  "Creature"
+                ],
+                "zone": "battlefield",
+                "controller": "you"
+              },
+              "min": 1,
+              "max": 1
+            }
+          ],
+          "effect": [
+            {
+              "verb": "putCounters",
+              "subject": {
+                "k": "target",
+                "index": 0
+              },
+              "params": {
+                "copyCountersFrom": {
+                  "k": "eventObject"
+                }
+              },
+              "span": {
+                "start": 217,
+                "end": 264
+              }
+            },
+            {
+              "verb": "move",
+              "subject": {
+                "k": "self"
+              },
+              "params": {
+                "to": "library",
+                "mayShuffle": true
+              },
+              "span": {
+                "start": 271,
+                "end": 305
+              }
+            }
+          ],
+          "text": "When ~ dies, put its counters on target creature you control, then shuffle ~ into its owner's library.",
+          "span": {
+            "start": 204,
+            "end": 306
+          }
+        }
+      ]
+    }
+  ]
+}

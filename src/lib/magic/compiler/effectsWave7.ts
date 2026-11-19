@@ -1319,7 +1319,7 @@ export function convertDigStepToExileUntil(
 	}
 
 	const condFreeM = t.match(
-		/^you may cast (?:it|that card)(?: this turn)? without paying its mana cost if (?:it|that spell|that card) has mana value (\S+) or less$/i
+		/^you may cast (?:it|that card)(?: this turn)? without paying its mana cost if (?:(?:it|that spell|that card) has mana value|(?:it|that spell|that card)'s mana value is) (\S+) or less$/i
 	);
 	if (condFreeM) {
 		const mv = parseConstOrX(condFreeM[1]);
@@ -1340,17 +1340,19 @@ export function convertDigStepToExileUntil(
 
 	// Impulse exile-until: "You may play that card this turn" / "Until end of turn, you may cast that card..."
 	if (
-		/^(?:you may (play|cast) (?:it|that card) this turn|until (?:the )?end of turn, you may (play|cast) (?:it|that card))(?:,?\s*and you may spend mana as though it were mana of any (?:color|type) to cast (?:it|that spell))?$/i.test(
+		/^(?:you may (play|cast) (?:it|that card) this turn|until (?:the )?end of turn, you may (play|cast) (?:it|that card))(?: without paying its mana cost)?(?:,?\s*and you may spend mana as though it were mana of any (?:color|type) to cast (?:it|that spell))?$/i.test(
 			t
 		)
 	) {
 		const spellsOnly = /\bmay cast\b/i.test(t);
 		const spendAny = /spend mana as though/i.test(t);
+		const freePlay = /without paying its mana cost/i.test(t);
 		return {
 			filter: untilFilter,
 			hitAction: 'playThisTurn',
 			...(spellsOnly ? { spellsOnly: true } : {}),
 			...(spendAny ? { spendManaAsAnyColor: true } : {}),
+			...(freePlay ? { withoutPayingManaCost: true } : {}),
 			restDestination: 'stayExiled'
 		};
 	}

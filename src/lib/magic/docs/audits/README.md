@@ -5,9 +5,39 @@
 
 ---
 
-## Status (updated 2026-11-12, after this audit)
+## Post-Wave-2 Status Snapshot (updated 2026-11-19, `COMPILER_VERSION = 46`)
 
-**Acted on:**
+Wave 2 Stages 1–3 on `teamwork-mtg-wave2` closed the open Stage 1 invariant/modularization items from the `v41` snapshot below and expanded the compiler/runtime across 36 newly imported Archidekt Commander decks:
+
+- **Resolved since `v41`:**
+  - **Stage 1A Modularization & `BigInt` Layer Cache:** `engine.ts` reduced from `26,791` to `3,957` lines; `runtime/` split into `65` non-test modules (all `<= 6,000` lines; max `5,433` in `runtime/effects.ts`); `layerReads` / `READ_*` widened to arbitrary-width `bigint` (`runtime/layersPredicates.ts`, verified with `MAGIC_LAYER_CACHE_CHECK=1`).
+  - **Stage 1B Invariant Ratchets (`10/10` at `0`):** Closed `rawTypeLineRead = 0`, `moveObjectResetOptOut = 0` (`withCr400_7Defaults` + `summoningSick = false` reset in `runtime/zones.ts`), and `scryfallLegacyDeckTables = 0` / `scryfallOracleScan = 0` in `src/lib/magic/architecture.test.ts` + `architecture-allowances.json`.
+  - **Stages 2–3 Archidekt Corpus & 100% Precon Coverage:** Imported `36` new Archidekt Commander decks (`41` total `PRECON_DECKS`: `4` baseline in `precons.ts` + `37` in `precons.archidekt.json`), reaching `2,188 / 2,188 (100.0%)` precon cards and `4,579 / 4,579 (100.0%)` precon abilities supported, `25,417 / 35,062 (72.5%)` Scryfall full-card coverage (`76.6%` ignoring statics, `0` compiler errors), `19` compiler modules, `38` hash-gated JSON overrides (`27` baseline + `11` Wave 2 = `1.74% < 5%`), and 100% Archidekt multi-bot smoke coverage in `runtime/archidekt-smoke.test.ts`.
+- **Remaining open documentation/design items:**
+  - Row-by-row reconciliation of `rules-audit/01`–`10` (`03`) and the scrambled CR 122 / summary arithmetic in `01` and `00-SUMMARY` (`02`).
+  - Architectural non-goals / deferred gaps in [`../ENGINE_INVARIANTS.md`](../ENGINE_INVARIANTS.md): Layer 3 text-changing (`CR 612`), general `CR 613.8` dependency ordering, §2.6 toughness clamping / non-creature `0` P/T, §3.1 `state.stack` direct mutations, §4.1 replacement pipeline unification, and §7.2 wall-clock log timestamps.
+
+---
+
+## Post-Wave-8 Status Snapshot (updated 2026-11-18, `COMPILER_VERSION = 41`, historical)
+
+The 2026-11-12 (`v17`) snapshot below is preserved as historical context for audits `01`–`04`. Since then, Tracks **B4**, **D**, **E**, **F**, **Engine Waves 1–8 (`P1–P22d`)**, **UI Tracks `U1–U9`**, and the Archidekt precon importer (`scripts/magic-add-archidekt-precon.ts`, `precons.archidekt.json`, `precon-oracle.fixture.json`) merged to `master` (`COMPILER_VERSION = 41`):
+
+- **Resolved since `v17`:**
+  - **Layer 2 (`CR 613.1b`) & All-Zone `Devoid` (`CR 702.114a`):** Implemented in Track E (`evaluateLayer2Control` Pass 0 in `runtime/layers.ts`, `CR 613.3` all-zone `Devoid` in `faces.ts`/`layers.ts`/`objectFilter.ts`, `COMPILER_VERSION = 30`).
+  - **Multi-face & Face-down (`CR 707–712, 708, 716`):** Implemented in Track B4 + Waves 5–6 (`runtime/faces.ts` `resolveObjectFaces`, `multiface: 0` in `COVERAGE.md`, `sanitizeGameStateForViewer` face-down scrubbing).
+  - **Keywords & Coverage:** `KEYWORD_REGISTRY` expanded to `218` entries (`214` implemented, `4` unimplemented); `COVERAGE.md` sits at `24,436 / 35,062 (69.7%)` full cards and `201 / 201 (100.0%)` precon cards (`0` compiler errors).
+  - **Overrides & Modular UI:** `src/lib/magic/overrides/` (`27` hash-gated JSON overrides, `overrides/overrides.test.ts`) and modular Svelte 5 UI (`src/lib/magic/ui/`, Tracks `U1–U9`) are live.
+- **Open at `v41` (checked 2026-11-18):**
+  - Row-by-row reconciliation of `rules-audit/01`–`10` (`03`) and the scrambled CR 122 / summary arithmetic in `01` and `00-SUMMARY` (`02`).
+  - Layer 3 text-changing (`CR 612`) and general `CR 613.8` dependency ordering.
+  - The remaining open code-level gaps explicitly marked **Not yet enforced** in [`../ENGINE_INVARIANTS.md`](../ENGINE_INVARIANTS.md) (§1.1 `.typeLine` reads, §1.2 `scryfall.ts` copy-limit/commander text tables, §2.6 toughness clamping / non-creature `0` P/T, §3.1 `state.stack` direct mutations, §3.2 `moveObject` opt-in flags / `summoningSick`, §4.1 replacement pipeline unification, §7.2 wall-clock log timestamps, and §7.3 32-bit `READ_*` bitmask widening — the practical enforcement gaps targeted and closed by Wave 2 Stage 1).
+
+---
+
+## Historical Status (2026-11-12, `COMPILER_VERSION = 17`, superseded above)
+
+**Acted on (through 2026-11-12):**
 - `COMPILER_VERSION` bumped to 8 and `COVERAGE.md` regenerated. The coverage script no longer cites `isAbilityAutomated` or "legacy-claimed upper bound".
 - `ENGINE_INVARIANTS.md`: identifiers and the 7 CR numbers corrected. Each invariant that the code doesn't meet now carries a **Not yet enforced** note naming the gap (§1 items 1–2, §2 items 2–3 and 5–6, §3 items 1–2, §4.1, §6.3, §7.2 and §7.4).
 - `ENGINE_ARCHITECTURE_PLAN.md` §2:
@@ -15,7 +45,7 @@
   - the layer cache is described as built;
   - the two deployment modes, `ENGINE_VERSION` and bot pacing are documented;
   - the post-Phase-10 mechanisms that the move to `deprecated/` orphaned (loop detection, deferred zone moves, hidden information, ability words) are restored as §2.9;
-  - the overrides escape hatch and the CI coverage ratchet are marked not built.
+  - the overrides escape hatch and the CI coverage ratchet are marked not built. *(Superseded: overrides built in Track P21, `COVERAGE.md` / `precon-assurance.test.ts` updated in `v41`.)*
 - `FULL_COVERAGE_STRUCTURE.md`: §0 points at `COVERAGE.md` instead of copying numbers, and the Overload paragraph is in the past tense.
 - `rules-audit/`: every section has a staleness banner, `00-SUMMARY` has a miscount banner, and the rows the 2026-11-12 keyword fixes touched are updated (702.21a–b, 702.26a, 702.26h, 702.62a, 702.62c, 702.96a, 702.124f, 702.124h–j, 704.5p, 903.5b, plus 611.2c, 613.1f, and 613.7b in `04`).
 - Granted activated abilities (*Goldspan Dragon*, *Chromatic Lantern*, basic-land subtype grants) now compile and flow through `runtime/layers.ts` and `ruleTree.ts` as full `ActivatedAbility` IR (`COMPILER_VERSION = 9`), deleting the `/Add \{([WUBRGC])\}/` display-label regex.
@@ -36,10 +66,10 @@
 
 **Disputed:** [`04`](./04-in-flight-keyword-and-test-impact.md) §3 item 5 (infect or wither plus deathtouch). The code is correct.
 
-**Open:**
+**Open (as of 2026-11-12; see Post-Wave-8 Status Snapshot above for current open items):**
 - reconciling `rules-audit/01`–`10` row by row (`03`);
 - the scrambled CR 122 table in `01-game-concepts.md` and the summary arithmetic (`02`);
-- the code-level gaps now listed as "Not yet enforced" in `ENGINE_INVARIANTS.md`.
+- the code-level gaps listed as "Not yet enforced" in `ENGINE_INVARIANTS.md`.
 
 ---
 
@@ -74,7 +104,7 @@
 7. **7 Cross-Document Contradictions Exist Across the 5 Top-Level Files ([Matrix Below](#cross-document-contradiction-matrix))**
    - Direct contradictions on mid-ability pause-and-resume, `CR 613.8` dependency ordering, layer caching, `runtime/{stack,turn,combat,sba}.ts`, `oracleText` read permissions, deployment architecture, and `COMPILER_VERSION`.
 8. **Dual-Runtime Homelab Backend (`8be920a`) & Bot Pacing (`8e6580d`) Are Undocumented in `src/lib/magic/docs/` ([`01` §4.2](./01-top-level-docs-audit.md))**
-   - `ENGINE_ARCHITECTURE_PLAN.md` still describes Cloudflare Workers + D1 as the sole execution/storage model and never links to [`ops/magic-backend/README.md`](../../../../ops/magic-backend/README.md) (`MAGIC_MODE = "cloudflare" | "homelab"`, Node 24 + `node:sqlite`, `KeyedMutex`) or `botSpeed` / `advance_bots`.
+   - `ENGINE_ARCHITECTURE_PLAN.md` still describes Cloudflare Workers + D1 as the sole execution/storage model and never links to [`ops/magic-backend/README.md`](../../../../../ops/magic-backend/README.md) (`MAGIC_MODE = "cloudflare" | "homelab"`, Node 24 + `node:sqlite`, `KeyedMutex`) or `botSpeed` / `advance_bots`.
 9. **Active Working-Tree Keyword Fixes Immediately Affect `06`, `07`, `08`, `10`, `FULL_COVERAGE_STRUCTURE.md` & `COVERAGE.md` ([`04` §1–§2](./04-in-flight-keyword-and-test-impact.md))**
    - Once the concurrent agent's changes commit, `FULL_COVERAGE_STRUCTURE.md:39–47` (uncommitted Overload warning), `07:89` (`702.96a`), `06:192–193` (`702.21a–b` Ward), `06:412–414` (`702.62a,c` Suspend), `08:73` (`704.5p` Equipment SBA), and `COVERAGE.md` (expanded `GRANTABLE_KEYWORDS`) must be updated together, and `COMPILER_VERSION` in `compiler/index.ts` will need a `7 → 8` bump.
 10. **Five Keyword Truthfulness / Consistency Gaps Uncovered in Active Code ([`04` §3](./04-in-flight-keyword-and-test-impact.md))**

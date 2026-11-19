@@ -10,6 +10,7 @@ import { runtimeTriggers } from '../compiler/triggers.ts';
 import { compileCard } from '../compiler/index.ts';
 import type { Compare, Condition, ObjectFilter } from '../ir.ts';
 import { evaluatePermanent, permanentHasLostAllAbilities } from '../ruleTree.ts';
+import { getCardFaces } from '../scryfall.ts';
 import type {
 	CardInstance,
 	CounterType,
@@ -123,8 +124,11 @@ export function isPermanentModified(
 /** CR 715: True iff `card` has an Adventure face. */
 export function cardHasAdventure(card: ScryfallCard): boolean {
 	if (card.layout === 'adventure') return true;
-	if (card.faces && card.faces.length >= 2) {
-		return card.faces.some((f) => /\bAdventure\b/.test(f.typeLine));
+	const faces = getCardFaces(card);
+	if (faces.length >= 2) {
+		return faces.some((_, idx) =>
+			resolveObjectFaces(card, { zone: 'stack', faceIndex: idx }).subtypes.includes('Adventure')
+		);
 	}
 	return false;
 }

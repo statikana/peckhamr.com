@@ -443,9 +443,17 @@ export function evaluateP22bCondition(
 				for (const attId of attachedIds) {
 					const att = findBattlefieldPerm(state, attId) ?? findObjectInAnyZone(state, attId);
 					if (att) {
-						const card = 'obj' in att ? effectiveCardForObject(att.obj) : effectiveCardForObject(att);
-						const subs = splitSubtypes(card.typeLine ?? '');
-						if (subs.includes('Aura') || subs.includes('Equipment')) return true;
+						const inst = 'obj' in att ? att.obj : att;
+						if (inst.zone === 'battlefield') {
+							const ev = evaluatePermanent(state, inst);
+							if (ev.hasSubType('Aura') || ev.hasSubType('Equipment')) return true;
+						} else {
+							const view = resolveObjectFaces(
+								effectiveCardForObject(inst),
+								instanceFaceOptions(inst, inst.zone)
+							);
+							if (view.subtypes.includes('Aura') || view.subtypes.includes('Equipment')) return true;
+						}
 					}
 				}
 			}
@@ -522,9 +530,13 @@ export function evaluateP22bCondition(
 		case 'eventSharesCardTypeWithLinkedExile': {
 			if (!srcObj || !ctx.eventObject) return false;
 			const evTypes = effectiveCardFacesTypes(ctx.eventObject, ctx.eventLki?.card);
+			const expectedSrcVer = ctx.stackItem?.sourceObjectVersion ?? srcObj.objectVersion ?? 1;
 			for (const p of state.players) {
 				for (const ex of p.exile) {
-					if (ex.exiledBy?.sourceInstanceId === srcObj.instanceId) {
+					if (
+						ex.exiledBy?.sourceInstanceId === srcObj.instanceId &&
+						(ex.exiledBy.sourceObjectVersion ?? 1) === expectedSrcVer
+					) {
 						const exTypes = effectiveCardFacesTypes(ex);
 						if (evTypes.some((t) => exTypes.includes(t))) return true;
 					}
@@ -847,6 +859,10 @@ export function dispatchP22bTriggerEvent(
 								return false;
 							}
 						}
+						if (f.abilitySourceControlledByEventPlayer) {
+							const srcCtrl = perm ? perm.controllerId : ev.source.controllerId;
+							if (srcCtrl !== ev.playerId) return false;
+						}
 						if (f.object && !d.objectMatches(f, subj, source)) return false;
 						return true;
 					});
@@ -919,17 +935,33 @@ export function dispatchP22bTriggerEvent(
 			return true;
 		}
 		case 'SpellCountered': {
+			const counteredView = resolveObjectFaces(ev.counteredCard, {
+				zone: 'stack',
+				faceIndex: ev.faceIndex ?? 0,
+				fused: ev.fused,
+				isFaceDown: ev.isFaceDown,
+				faceDownSpec: ev.faceDownSpec
+			});
+			const counteredInst = syntheticInstance(ev.counteredCard, ev.byControllerId, 'stack');
+			if (ev.faceIndex !== undefined) counteredInst.activeFaceIndex = ev.faceIndex;
+			if (ev.isFaceDown) counteredInst.isFaceDown = true;
+			if (ev.faceDownSpec) counteredInst.faceDownSpec = ev.faceDownSpec;
 			const subj = d.printedSubject(
-				syntheticInstance(ev.counteredCard, ev.byControllerId, 'stack'),
+				counteredInst,
 				ev.counteredCard,
 				ev.byControllerId,
 				false,
-				ev.counteredCard.typeLine,
+				ev.typeLine ?? counteredView.typeLine,
 				false,
-				ev.counteredCard.colors ?? [],
+				ev.colors ?? counteredView.colors,
 				false,
 				false,
-				{ state }
+				{
+					state,
+					power: counteredView.power,
+					toughness: counteredView.toughness,
+					manaValue: counteredView.manaValue
+				}
 			);
 			for (const source of d.sources(state, 'spellCountered')) {
 				for (const { ability, alts } of d.abilitiesFor(state, source, 'spellCountered')) {

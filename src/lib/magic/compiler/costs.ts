@@ -208,7 +208,9 @@ export const COUNTERS: Record<string, CounterType> = {
 	plague: 'plague',
 	blight: 'blight',
 	stash: 'stash',
-	vitality: 'vitality'
+	vitality: 'vitality',
+	eon: 'eon',
+	soul: 'soul'
 };
 
 const COST_VERBS =
@@ -833,13 +835,20 @@ export function parseObjectPhrase(
 				if (b && Object.keys(b).length > 0) return b;
 				return hadTrailingCard ? parseObjectPhrase(`${a} card`, { ...opts, depth: 1 }) : null;
 			});
-			if (branchFilters.every((b): b is ObjectFilter => b !== null && Object.keys(b).length > 0)) {
-				filter.anyOf = branchFilters;
-				return filter;
-			}
-			// --- Track P20b: Shared trailing head noun across modifier disjunction ("black or artifact creature") ---
 			const lastAltWords = alts[alts.length - 1].split(/\s+/).filter(Boolean);
-			if (lastAltWords.length >= 2) {
+			const hasMissingHeadNoun =
+				lastAltWords.length >= 2 &&
+				branchFilters.every((b): b is ObjectFilter => b !== null && Object.keys(b).length > 0) &&
+				Boolean(
+					branchFilters[branchFilters.length - 1].types?.length ||
+						branchFilters[branchFilters.length - 1].subtypes?.length ||
+						branchFilters[branchFilters.length - 1].supertypes?.length
+				) &&
+				branchFilters.some(
+					(b) => !b.types?.length && !b.subtypes?.length && !b.supertypes?.length
+				);
+			// --- Track P20b: Shared trailing head noun across modifier disjunction ("black or artifact creature", "red or white instant") ---
+			if (lastAltWords.length >= 2 && (hasMissingHeadNoun || !branchFilters.every((b) => b && Object.keys(b).length > 0))) {
 				const sharedHead = lastAltWords[lastAltWords.length - 1];
 				const headExpanded = alts.map((a, idx) => {
 					const phraseWithHead =
@@ -856,6 +865,10 @@ export function parseObjectPhrase(
 				}
 			}
 			// --- End Track P20b ---
+			if (branchFilters.every((b): b is ObjectFilter => b !== null && Object.keys(b).length > 0)) {
+				filter.anyOf = branchFilters;
+				return filter;
+			}
 		}
 		return null;
 	}
@@ -2522,7 +2535,7 @@ function buildSelfAltCastStatic(costBodyRaw: string, condition?: Condition): Sta
 export function parseCostMetricAmount(metricRaw: string): Amount | null {
 	const metric = metricRaw.trim().replace(/^(?:a|an)\s+/i, '');
 	// --- Track P22b ---
-	if (/^(?:total )?life your opponents lost this turn$/i.test(metric)) {
+	if (/^(?:(?:total|1)\s+)?life your opponents (?:have )?lost this turn$/i.test(metric)) {
 		return { k: 'opponentsLifeLostThisTurn' };
 	}
 	if (/^the total mana value of (?:its targets|the permanents it targets|target permanents)$/i.test(metric)) {

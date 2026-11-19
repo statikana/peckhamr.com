@@ -22,5 +22,19 @@
 	},
 	"abilityTextScan": {
 		"runtime/layers.ts": 0
+	},
+	"rawTypeLineRead": {
+		"engine.ts": 0,
+		"ui/PermanentCard.svelte": 0
+	},
+	"moveObjectResetOptOut": {
+		"runtime/zones.ts": 0,
+		"runtime/keywordsWave4.ts": 0
+	},
+	"scryfallLegacyDeckTables": {
+		"scryfall.ts": 0
+	},
+	"scryfallOracleScan": {
+		"scryfall.ts": 0
 	}
 }

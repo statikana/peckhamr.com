@@ -4,9 +4,16 @@
  * Resolves which face(s) and copiable characteristics apply for an object given its layout, zone,
  * active face index, unlocked designations, copy state (Layer 1a), and face-down status (Layer 1b).
  */
-import { compileCard } from '../compiler/index.ts';
+import {
+	abilityById,
+	compileCard,
+	grantedAbilityById,
+	isGrantedOrBackupAbilityId,
+	localAbilityIdFromPrefixed
+} from '../compiler/index.ts';
+import { compileQuotedAbilityString } from '../compiler/effects.ts';
 import { getKeywordSpec } from '../keywords.ts';
-import type { AbilityDef, Characteristics, FaceDefinition } from '../ir.ts';
+import type { AbilityDef, ActivatedAbility, Characteristics, FaceDefinition } from '../ir.ts';
 import { parseManaCost } from '../oracle.ts';
 import { activeFaceIndexForObject, getCardFaces } from '../scryfall.ts';
 import { getFacePrototypeSpec, parseManaValueFromCostString } from './striatedFrames.ts';
@@ -144,10 +151,14 @@ function parseTypeLineParts(typeLine: string): {
 } {
 	const [left, right = ''] = typeLine.split(/\s+—\s+/);
 	const words = left.split(/\s+/).filter(Boolean);
+	const subtypes: string[] = [];
+	for (const m of right.matchAll(/Time\s+Lord|\S+/gi)) {
+		subtypes.push(/^time\s+lord$/i.test(m[0]) ? 'Time Lord' : m[0]);
+	}
 	return {
 		supertypes: words.filter((w) => SUPERTYPES.has(w)),
 		types: words.filter((w) => !SUPERTYPES.has(w)),
-		subtypes: right.split(/\s+/).filter(Boolean)
+		subtypes
 	};
 }
 
@@ -810,4 +821,56 @@ export function effectiveManaValue(
 	opts?: ResolveObjectFacesOptions
 ): number {
 	return resolveObjectFaces(card, opts).manaValue;
+}
+
+/**
+ * Resolves the compiled `ActivatedAbility` IR for an `EffectiveActivatedAbility` (or stub),
+ * handling `grantedAbilityText`, `granted:` / `backup_act:` (`grantSourceCard` + `grantFaceIndex`),
+ * multi-face `f<idx>:` disambiguation, and `mana_tap`.
+ */
+export function resolveEffectiveActivatedAbilityDef(
+	card: ScryfallCard,
+	faceOpts: ResolveObjectFacesOptions | undefined,
+	ab:
+		| {
+				id?: string;
+				faceIndex?: number;
+				grantSourceCard?: ScryfallCard;
+				grantFaceIndex?: number;
+				grantedAbilityText?: string;
+		  }
+		| undefined
+): ActivatedAbility | undefined {
+	if (ab?.grantedAbilityText) {
+		return compileQuotedAbilityString(ab.grantedAbilityText, card.name).find(
+			(d): d is ActivatedAbility => d.kind === 'activated'
+		);
+	}
+	if (ab?.id && ab.grantSourceCard && isGrantedOrBackupAbilityId(ab.id)) {
+		const localId = localAbilityIdFromPrefixed(ab.id);
+		const granted = grantedAbilityById(ab.grantSourceCard, localId, ab.grantFaceIndex);
+		if (granted?.kind === 'activated') return granted;
+		return activeAbilityDefs(ab.grantSourceCard, {
+			zone: 'battlefield',
+			faceIndex: ab.grantFaceIndex ?? 0
+		}).find((a): a is ActivatedAbility => a.kind === 'activated' && a.id === localId);
+	}
+	const prefixed = ab?.id ? /^f(\d+):(.+)$/.exec(ab.id) : null;
+	const rawId = prefixed ? prefixed[2] : ab?.id;
+	const resolvedFace = prefixed ? Number(prefixed[1]) : (faceOpts?.faceIndex ?? ab?.faceIndex);
+	const effectiveOpts: ResolveObjectFacesOptions = {
+		...(faceOpts ?? {}),
+		zone: faceOpts?.zone ?? 'battlefield',
+		...(resolvedFace !== undefined ? { faceIndex: resolvedFace } : {})
+	};
+	const defs = activeAbilityDefs(card, effectiveOpts);
+	if (rawId) {
+		return (
+			defs.find((a): a is ActivatedAbility => a.kind === 'activated' && a.id === rawId) ??
+			(rawId === 'mana_tap'
+				? defs.find((a): a is ActivatedAbility => a.kind === 'activated' && a.isMana && !a.intrinsic)
+				: undefined)
+		);
+	}
+	return defs.find((a): a is ActivatedAbility => a.kind === 'activated' && a.isMana);
 }

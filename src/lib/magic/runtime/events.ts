@@ -1,6 +1,7 @@
 import type {
 	CardInstance,
 	CounterType,
+	FaceDownSpec,
 	GamePhase,
 	GameState,
 	ManaColor,
@@ -523,8 +524,38 @@ export type GameEvent =
 	| LibraryShuffledEvent
 	| SpellCounteredEvent
 	| SagaChapterResolvedEvent
-	| SaddledMountEvent;
+	| SaddledMountEvent
+	// --- Track Wave 9 ---
+	| TokenCreatedEvent
+	| GiftGivenEvent
+	| AttackTriggeredEvent;
+	// --- End Track Wave 9 ---
 	// --- End Track P22b ---
+
+// --- Track Wave 9 ---
+export interface TokenCreatedEvent extends EventBase {
+	kind: 'TokenCreated';
+	playerId: string;
+	objectId: string;
+	object: CardInstance;
+}
+
+export interface GiftGivenEvent extends EventBase {
+	kind: 'GiftGiven';
+	playerId: string;
+	recipientId: string;
+	giftKind: 'card' | 'food' | 'treasure' | 'tappedFish' | 'octopus' | 'extraTurn';
+}
+
+export interface AttackTriggeredEvent extends EventBase {
+	kind: 'AttackTriggered';
+	sourceId: string;
+	source: CardInstance;
+	controllerId: string;
+	triggerStackItemIndex?: number;
+	eventPlayerId?: string;
+}
+// --- End Track Wave 9 ---
 
 // --- Track P10 ---
 export interface UnblockedAttackersEvent extends EventBase {
@@ -830,6 +861,12 @@ export interface SpellCounteredEvent extends EventBase {
 	kind: 'SpellCountered';
 	counteredStackItemId: string;
 	counteredCard: ScryfallCard;
+	faceIndex?: number;
+	fused?: boolean;
+	isFaceDown?: boolean;
+	faceDownSpec?: FaceDownSpec;
+	typeLine?: string;
+	colors?: ManaColor[];
 	byControllerId: string;
 	bySourceId?: string;
 	bySpellOrAbility: boolean;

@@ -1,0 +1,129 @@
+{
+  "oracleId": "85ccae95-92c4-41ff-96fd-dcb515dc568e",
+  "cardName": "Path of the Animist",
+  "expectedTextHash": "f4542288",
+  "compiledVersion": 44,
+  "notes": "Wave 13 override: Search up to two basic lands tapped then shuffle, followed by Will of the Planeswalkers vote for planeswalk or chaos.",
+  "faces": [
+    {
+      "name": "Path of the Animist",
+      "characteristics": {
+        "manaCost": "{3}{G}",
+        "types": [
+          "Sorcery"
+        ],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": [
+          "G"
+        ]
+      },
+      "abilities": [
+        {
+          "kind": "spell",
+          "id": "cast",
+          "additionalCosts": [],
+          "targets": [],
+          "effect": [
+            {
+              "verb": "search",
+              "subject": {
+                "k": "none"
+              },
+              "amount": {
+                "k": "const",
+                "n": 2
+              },
+              "params": {
+                "search": {
+                  "filter": {
+                    "types": [
+                      "Land"
+                    ],
+                    "supertypes": [
+                      "Basic"
+                    ]
+                  },
+                  "count": 2,
+                  "upTo": true,
+                  "statedQuality": true,
+                  "destinations": [
+                    {
+                      "zone": "battlefield",
+                      "tapped": true
+                    },
+                    {
+                      "zone": "battlefield",
+                      "tapped": true
+                    }
+                  ],
+                  "description": "up to two basic land cards"
+                },
+                "tapped": true
+              },
+              "span": {
+                "start": 0,
+                "end": 102
+              }
+            },
+            {
+              "verb": "vote",
+              "subject": {
+                "k": "none"
+              },
+              "params": {
+                "voteSpec": {
+                  "options": [
+                    "Planeswalk",
+                    "Chaos"
+                  ],
+                  "tieWinnerIndex": 1,
+                  "perWinningEffect": [
+                    [
+                      {
+                        "verb": "grantPlayer",
+                        "subject": {
+                          "k": "none"
+                        },
+                        "params": {
+                          "planarAction": "Planeswalk"
+                        },
+                        "span": {
+                          "start": 225,
+                          "end": 236
+                        }
+                      }
+                    ],
+                    [
+                      {
+                        "verb": "grantPlayer",
+                        "subject": {
+                          "k": "none"
+                        },
+                        "params": {
+                          "planarAction": "Chaos ensues"
+                        },
+                        "span": {
+                          "start": 283,
+                          "end": 296
+                        }
+                      }
+                    ]
+                  ]
+                }
+              },
+              "span": {
+                "start": 104,
+                "end": 296
+              }
+            }
+          ],
+          "span": {
+            "start": 0,
+            "end": 296
+          }
+        }
+      ]
+    }
+  ]
+}

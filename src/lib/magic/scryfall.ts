@@ -1,7 +1,7 @@
 import { cardAbilities } from './compiler/index.ts';
 import { parseManaCost } from './oracle.ts';
 import { STAPLE_CARDS } from './precons.ts';
-import { splitSubtypes } from './runtime/layers.ts';
+import { resolveObjectFaces } from './runtime/faces.ts';
 // --- Track P14 ---
 import {
 	cardHasCommanderDesignation,
@@ -60,37 +60,6 @@ export interface ParsedDeckLine {
 	name: string;
 	isCommander: boolean;
 }
-
-const BASIC_LAND_NAMES = new Set([
-	'plains',
-	'island',
-	'swamp',
-	'mountain',
-	'forest',
-	'wastes',
-	'snow-covered plains',
-	'snow-covered island',
-	'snow-covered swamp',
-	'snow-covered mountain',
-	'snow-covered forest'
-]);
-
-const MULTI_COPY_CARDS = new Set([
-	'relentless rats',
-	'rat colony',
-	'shadowborn apostle',
-	'persistent petitioners',
-	"dragon's approach",
-	'slime against humanity',
-	'hare apparent',
-	'templar knight'
-]);
-
-const CAPPED_COPY_CARDS: Record<string, number> = {
-	'seven dwarves': 7,
-	'nazgûl': 9,
-	'nazgul': 9
-};
 
 export function parseDecklistText(rawText: string): {
 	commanderLines: ParsedDeckLine[];
@@ -228,22 +197,6 @@ export function normalizeScryfallCard(raw: Record<string, any>): ScryfallCard {
 		raw.legalities.commander === 'legal' ||
 		raw.legalities.commander === 'restricted';
 
-	const isLegendary = typeLine.includes('Legendary');
-	const isCreatureOrVehicle =
-		typeLine.includes('Creature') ||
-		typeLine.includes('Vehicle') ||
-		typeLine.includes('Spacecraft');
-	const canBeCommander =
-		(isLegendary && isCreatureOrVehicle) ||
-		oracleText.toLowerCase().includes('can be your commander');
-
-	const hasPartner =
-		keywords.includes('Partner') ||
-		keywords.includes('Friends forever') ||
-		keywords.includes("Doctor's companion") ||
-		oracleText.includes('Partner');
-	const hasChooseBackground = oracleText.includes('Choose a Background');
-	const isBackground = typeLine.includes('Background');
 	const layout: CardLayout | undefined =
 		typeof raw.layout === 'string' && VALID_CARD_LAYOUTS.has(raw.layout as CardLayout)
 			? (raw.layout as CardLayout)
@@ -285,7 +238,7 @@ export function normalizeScryfallCard(raw: Record<string, any>): ScryfallCard {
 				})
 			: undefined;
 
-	return {
+	const card: ScryfallCard = {
 		id: String(raw.id || `scry_${name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`),
 		oracleId: raw.oracle_id ? String(raw.oracle_id) : undefined,
 		...(layout ? { layout } : {}),
@@ -327,10 +280,10 @@ export function normalizeScryfallCard(raw: Record<string, any>): ScryfallCard {
 		setCode: raw.set ? String(raw.set) : undefined,
 		collectorNumber: raw.collector_number ? String(raw.collector_number) : undefined,
 		legalCommander,
-		canBeCommander,
-		hasPartner,
-		hasChooseBackground,
-		isBackground,
+		canBeCommander: false,
+		hasPartner: false,
+		hasChooseBackground: false,
+		isBackground: false,
 		...(normalizedFaces ? { faces: normalizedFaces } : {}),
 		backFace: back
 			? {
@@ -348,6 +301,28 @@ export function normalizeScryfallCard(raw: Record<string, any>): ScryfallCard {
 			  }
 			: undefined
 	};
+
+	const frontView = resolveObjectFaces(card, { faceIndex: 0 });
+	const abilities = cardAbilities(card);
+	card.canBeCommander =
+		(frontView.supertypes.includes('Legendary') &&
+			(frontView.types.includes('Creature') ||
+				frontView.subtypes.includes('Vehicle') ||
+				frontView.subtypes.includes('Spacecraft'))) ||
+		cardHasCommanderDesignation(card);
+	card.hasPartner = abilities.some(
+		(ab) =>
+			ab.kind === 'keyword' &&
+			(ab.keyword.name === 'partner' ||
+				ab.keyword.name === 'friends forever' ||
+				ab.keyword.name === "doctor's companion")
+	);
+	card.hasChooseBackground = abilities.some(
+		(ab) => ab.kind === 'keyword' && ab.keyword.name === 'choose a background'
+	);
+	card.isBackground = frontView.subtypes.includes('Background');
+
+	return card;
 }
 
 /**
@@ -683,14 +658,13 @@ export async function searchScryfallCards(
 }
 
 function partnerWithTarget(card: ScryfallCard): string | null {
-	// --- Track P15: Prefer compiled IR partner keyword ---
+	// --- Track P15: Read compiled IR partner keyword ---
 	for (const ab of cardAbilities(card)) {
 		if (ab.kind === 'keyword' && ab.keyword.name === 'partner' && ab.keyword.param && /^with\s+/i.test(ab.keyword.param)) {
 			return ab.keyword.param.replace(/^with\s+/i, '').trim().toLowerCase();
 		}
 	}
-	const m = card.oracleText.match(/(?:^|\n)Partner with ([^\n(.]+)/i);
-	return m ? m[1].trim().toLowerCase() : null;
+	return null;
 }
 
 function hasFriendsForever(card: ScryfallCard): boolean {
@@ -708,10 +682,9 @@ function hasDoctorsCompanion(card: ScryfallCard): boolean {
 }
 
 function isTimeLordDoctor(card: ScryfallCard): boolean {
-	if (!card.typeLine.includes('Legendary') || !card.typeLine.includes('Creature')) return false;
-	const dashIdx = card.typeLine.indexOf('—');
-	if (dashIdx === -1) return false;
-	const subs = splitSubtypes(card.typeLine.slice(dashIdx + 1).trim()).map((s) => s.toLowerCase());
+	const view = resolveObjectFaces(card);
+	if (!view.supertypes.includes('Legendary') || !view.types.includes('Creature')) return false;
+	const subs = view.subtypes.map((s) => s.toLowerCase());
 	if (subs.length !== 2 || !subs.includes('time lord') || !subs.includes('doctor')) return false;
 	// CR 702.124m: "if the other is the Doctor" means Time Lord Doctor with no other creature types (including Changeling).
 	const hasChangeling = cardAbilities(card).some(
@@ -727,10 +700,7 @@ function hasGenericPartner(card: ScryfallCard): boolean {
 	if (abilities.some((ab) => ab.kind === 'keyword' && ab.keyword.name === 'partner' && !ab.keyword.param)) {
 		return true;
 	}
-	if (abilities.some((ab) => ab.kind === 'keyword' && ab.keyword.name === 'partner' && Boolean(ab.keyword.param))) {
-		return false;
-	}
-	return card.keywords.some((k) => k.toLowerCase() === 'partner') && !/\bpartner\s*[—-]/i.test(card.oracleText);
+	return false;
 }
 
 /** "Partner—Survivors" and the other partner—[text] abilities (CR 702.124i): the text, lower-cased. */
@@ -755,22 +725,23 @@ function hasChooseABackground(card: ScryfallCard): boolean {
 }
 
 function isLegendaryBackground(card: ScryfallCard): boolean {
+	const view = resolveObjectFaces(card);
 	return (
-		(Boolean(card.isBackground) || /\bBackground\b/.test(card.typeLine)) &&
-		card.typeLine.includes('Legendary') &&
-		card.typeLine.includes('Enchantment')
+		(Boolean(card.isBackground) || view.subtypes.includes('Background')) &&
+		view.supertypes.includes('Legendary') &&
+		view.types.includes('Enchantment')
 	);
 }
 
 // --- Track P14 ---
 export function canCardBeCommander(card: ScryfallCard): boolean {
 	if (card.canBeCommander) return true;
-	const frontType = card.typeLine.includes(' // ') ? card.typeLine.split(' // ')[0] : card.typeLine;
+	const view = resolveObjectFaces(card, { faceIndex: 0 });
 	if (
-		frontType.includes('Legendary') &&
-		(frontType.includes('Creature') ||
-			frontType.includes('Vehicle') ||
-			frontType.includes('Spacecraft'))
+		view.supertypes.includes('Legendary') &&
+		(view.types.includes('Creature') ||
+			view.subtypes.includes('Vehicle') ||
+			view.subtypes.includes('Spacecraft'))
 	) {
 		return true;
 	}
@@ -890,16 +861,13 @@ export function validateCommanderDeck(
 		const totalForCard = (nameCounts.get(cNameLow) || 0) + entry.quantity;
 		nameCounts.set(cNameLow, totalForCard);
 
+		const entryView = resolveObjectFaces(entry.card);
 		const isBasic =
-			BASIC_LAND_NAMES.has(cNameLow) || entry.card.typeLine.includes('Basic Land');
+			entryView.supertypes.includes('Basic') && entryView.types.includes('Land');
 		// --- Track P14: IR-first deckCopyLimit (CR 903.5b, 100.2a) ---
 		const irCopyLimit = getCardDeckCopyLimit(entry.card);
-		const copyCap =
-			typeof irCopyLimit === 'number' ? irCopyLimit : CAPPED_COPY_CARDS[cNameLow];
-		const allowsMulti =
-			irCopyLimit === 'any' ||
-			MULTI_COPY_CARDS.has(cNameLow) ||
-			entry.card.oracleText.toLowerCase().includes('a deck can have any number of cards named');
+		const copyCap = typeof irCopyLimit === 'number' ? irCopyLimit : undefined;
+		const allowsMulti = irCopyLimit === 'any';
 		// --- End Track P14 ---
 
 		if (copyCap !== undefined) {

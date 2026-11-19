@@ -6,17 +6,13 @@
  * layer order (1, 4, 5, 6, 7a, 7b, 7c, 7d) and memoised on the `BoardSnapshot` from `layerCache.ts`.
  */
 import { compileCard } from '../compiler/index.ts';
-import { getKeywordSpec, KEYWORD_LABELS } from '../keywords.ts';
+import { formatGrantedKeywordDef, getKeywordSpec } from '../keywords.ts';
 import type {
-	AbilityDef,
 	ActivatedAbility,
-	Amount,
 	CardDefinition,
-	Condition,
 	ObjectFilter,
 	PlayerRef,
 	ReplacementDef,
-	Span,
 	StaticDef,
 	TriggeredAbility
 } from '../ir.ts';
@@ -25,6 +21,7 @@ import type {
 	CardInstance,
 	GameState,
 	ManaColor,
+	ManaPool,
 	PlayerGameState,
 	ScryfallCard,
 	TimedContinuousEffect,
@@ -32,16 +29,12 @@ import type {
 } from '../types.ts';
 import {
 	activeAbilityDefs,
-	activeCharacteristics,
 	instanceFaceOptions,
-	matchesColorFilter,
 	resolveObjectFaces,
 	type ResolveObjectFacesOptions
 } from './faces.ts';
 import {
-	// --- Track P7 ---
 	activeTimedLayer1aForPermanent,
-	// --- End Track P7 ---
 	boardSnapshotMatches,
 	buildBoardSnapshot,
 	crossCheckLayerResult,
@@ -51,2939 +44,155 @@ import {
 	verifyScopeTrust,
 	type BoardSnapshot
 } from './layerCache.ts';
-import { evaluateKickedCountAmount, evaluateKickerCondition } from './kicker.ts';
 import { evaluateAmount, matchesObjectFilter, playerCommanderCastCount } from './objectFilter.ts';
-// --- Track P8 ---
-import { compareNumbers, countDistinctCardTypesInZone } from './staticsLayersAndRestrictions.ts';
-// --- Track P10 ---
-import { evaluateP10Condition, resolveQuotedAbilityDefs } from './reflexiveManaAndActions.ts';
-// --- End Track P10 ---
+import { resolveQuotedAbilityDefs } from './reflexiveManaAndActions.ts';
 import { PROTECTION_KEYWORD_BY_COLOR } from './tuckFreezeChosen.ts';
-// --- Track P12 ---
 import { collectBackupGrantedAbilityDefs } from './keywordsWave4.ts';
-// --- End Track P12 ---
-// --- Track P11 ---
 import {
 	KEYWORD_COUNTER_TYPES,
-	PARTY_ROLE_SUBTYPES,
-	computeKeywordCounterMask,
-	computePartyCountFromRoleMasks
+	computeKeywordCounterMask
 } from './staticsDynamicAndCosts.ts';
-// --- End Track P11 ---
-// --- Track P13 ---
-import { evaluateP13Condition } from './effectsWave5.ts';
-// --- End Track P13 ---
-// --- Track P20b ---
-import { evaluateP20bAmount, evaluateP20bCondition } from './costsWave7.ts';
-// --- End Track P20b ---
-// --- Track P16b ---
-import {
-	OUTLAW_SUBTYPES,
-	cardHasAdventure,
-	evaluateP16bCondition,
-	objectHasXInManaCost
-} from './triggersWave6.ts';
-// --- End Track P16b ---
-// --- Track P14 ---
 import {
 	cardHasGraveyardContinuousStatic,
-	collectGraveyardContinuousStaticsForPlayer,
-	computeWorkListDevotionToColors,
-	evaluateWave5Amount,
-	evaluateWave5Condition,
-	type ProtectionAttachmentExemptionInfo
+	collectGraveyardContinuousStaticsForPlayer
 } from './staticsAndCostsWave5.ts';
-// --- End Track P14 ---
-// --- Track P17b ---
-import { evaluateP17bAmount, evaluateP17bCondition } from './costsWave6.ts';
-// --- End Track P17b ---
-// --- Track P16a ---
-const P16A_EXTRA_KEYWORD_COUNTERS = ['shadow', 'exalted', 'decayed'] as const;
-const P16A_ARBITRARY_PT_COUNTER_RE = /^([+-]\d+)\/([+-]\d+)$/;
-
-function collectP16aArbitraryPtCounters(
-	counters: Record<string, number>
-): Array<{ key: string; count: number; dp: number; dt: number }> | null {
-	let items: Array<{ key: string; count: number; dp: number; dt: number }> | null = null;
-	for (const key in counters) {
-		if (key === '+1/+1' || key === '-1/-1') continue;
-		const count = counters[key];
-		if (!count || count <= 0) continue;
-		if (key.charCodeAt(0) !== 43 && key.charCodeAt(0) !== 45) continue;
-		const m = P16A_ARBITRARY_PT_COUNTER_RE.exec(key);
-		if (!m) continue;
-		const cp = parseInt(m[1], 10);
-		const ct = parseInt(m[2], 10);
-		(items ??= []).push({ key, count, dp: cp * count, dt: ct * count });
-	}
-	if (items && items.length > 1) {
-		items.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-	}
-	return items;
-}
-// --- End Track P16a ---
-// --- Track P20a ---
 import {
-	countOpponentsWithLifeLessThanHalfStarting,
-	evaluateChosenPlayerZoneCount,
-	evaluateLifeCompareHalfStarting,
-	evaluateMostCommonColorFromCounts,
-	matchesManaValueParity
-} from './staticsWave7.ts';
-// --- End Track P20a ---
-// --- Track P22a ---
-import {
-	evaluateCreaturesDiedThisTurnWave8,
-	evaluateDistinctNamesFilterCountWave8,
-	evaluatePlayerCountersAmountWave8,
-	evaluateSpellsCastThisTurnWave8,
-	evaluateWave8Condition,
-	matchesChosenCardType,
 	pluralizeCardTypeForProtection
 } from './staticsWave8.ts';
-// --- End Track P22a ---
+import {
+	applyLayer3Wave9,
+	applyLayer4CopyLastExiledWave9,
+	applyLayer6Wave9Mod,
+	applyLayer7bCopyLastExiledWave9
+} from './staticsWave9.ts';
+import {
+	BASIC_LAND_MANA_BY_SUBTYPE,
+	BASIC_LAND_SUBTYPES,
+	LAND_SUBTYPES,
+	NON_CREATURE_SUBTYPES,
+	P16A_EXTRA_KEYWORD_COUNTERS,
+	READ_ACTIVE_PLAYER,
+	READ_ALL_COUNTERS,
+	READ_CHOSEN_CARD_NAME,
+	READ_COMBAT,
+	READ_COMMANDER_CAST_COUNT,
+	READ_ENERGY,
+	READ_EXILE,
+	READ_GRAVEYARDS,
+	READ_HIDDEN_ZONES,
+	READ_KEYWORD_COUNTERS,
+	READ_LIFE,
+	READ_MONARCH,
+	READ_P10_SUSPECT,
+	READ_P12,
+	READ_P13,
+	READ_P14,
+	READ_P15,
+	READ_P16A,
+	READ_P16B,
+	READ_P17A,
+	READ_P17B,
+	READ_P18A,
+	READ_P18B,
+	READ_P19A,
+	READ_P20A,
+	READ_P20B,
+	READ_P22A,
+	READ_P22B,
+	READ_P22C,
+	READ_TAPPED,
+	READ_TURN_HISTORY,
+	READ_WAVE9_ATTACKS,
+	READ_WAVE9_DYNAMIC,
+	READ_WAVE9_MANA,
+	READ_ZONE_SIZES,
+	addCardTypeToTypeLine,
+	addSubtypeToTypeLine,
+	applyRemovalsUpTo,
+	collectP16aArbitraryPtCounters,
+	describeGrantedActivatedAbility,
+	evaluateLayerAmount,
+	evaluateLayerCondition,
+	formatKeywordLabel,
+	formatSignedDelta,
+	getAttachedAbilityStrippingAuraSources,
+	getExtraLayerReadHook,
+	getLayerReads,
+	grantItem,
+	grantKeywordString,
+	grantNonActivatedAbility,
+	hasSubtypeInWork,
+	innateKeywordsAndAbilitiesOf,
+	lookupStaticLocator,
+	lowerSubtypesOf,
+	makeIntrinsicBasicManaAbility,
+	matchesLayerFilter,
+	normalizeLayerCardType,
+	normalizeSubtypes,
+	noteLayerRead,
+	offBattlefieldFilterNeedsExtendedMatch,
+	recordAbilityRemoval,
+	removeMatchingKeywordsUpTo,
+	resetLayerReads,
+	resolveLayerPlayerRef,
+	sortGrantedKeywords,
+	sumNonStandardPtCountersInLayer,
+	workHasActiveKeyword,
+	type AttributedKeywordOrEffect,
+	type CardContinuousBreakdown,
+	type EvaluatedPermanent,
+	type GrantedAbilityMeta,
+	type PermWorkState
+} from './layersPredicates.ts';
 
-export interface AttributedKeywordOrEffect {
-	id: string;
-	canonicalKey: string;
-	name: string;
-	kind: 'keyword' | 'ability' | 'stat_mod' | 'type_mod';
-	isInnate: boolean;
-	sources: string[];
-	/** Number of non-innate grants of this item (CR 702.108b: multiple instances of prowess each trigger separately, even from same-named sources). */
-	grantCount?: number;
-	/** Granted activated ability IR and granting source metadata (derived/cached only, never stored in GameState). */
-	grantedAbility?: ActivatedAbility;
-	// --- Track P11 ---
-	grantedTriggeredAbility?: TriggeredAbility;
-	grantedStaticAbility?: StaticDef;
-	grantedReplacementAbility?: ReplacementDef;
-	grantFaceIndex?: number;
-	grantAbilityIndex?: number;
-	// --- End Track P11 ---
-	// --- Track P14 ---
-	protectionExemption?: ProtectionAttachmentExemptionInfo;
-	// --- End Track P14 ---
-	// --- Track P20a ---
-	protectedFromPlayerId?: string;
-	// --- End Track P20a ---
-	grantSourceCard?: ScryfallCard;
-	grantSourceId?: string;
-	removed: boolean;
-	removedBy: string[];
-}
-
-export interface CardContinuousBreakdown {
-	baseTypeLine: string;
-	effectiveTypeLine: string;
-	typeModified: boolean;
-	typeModifiedBy: string[];
-	basePower: number | null;
-	baseToughness: number | null;
-	effectivePower: number | null;
-	effectiveToughness: number | null;
-	ptModifiedBy: string[];
-	items: AttributedKeywordOrEffect[];
-}
-
-export interface EvaluatedPermanent {
-	instanceId: string;
-	controllerId: string;
-	effectiveName: string;
-	effectiveTypeLine: string;
-	typeLine: string;
-	isCreature: boolean;
-	isArtifact: boolean;
-	isEnchantment: boolean;
-	isLand: boolean;
-	isPlaneswalker: boolean;
-	isLegendary: boolean;
-	hasAllCreatureTypes: boolean;
-	losesAllAbilities: boolean;
-	hasLostAllAbilities: boolean;
-	lostAllAbilitiesBy: string[];
-	power: number;
-	toughness: number;
-	unclampedToughness?: number | null;
-	colors: ManaColor[];
-	activeKeywords: string[];
-	keywords: string[];
-	breakdown: CardContinuousBreakdown;
-	hasSubType: (subType: string) => boolean;
-	// --- Track P20a ---
-	protectionFromPlayerIds?: string[];
-	// --- End Track P20a ---
-}
-
-/**
- * CR 205.3m: Split the right-hand subtype list of a type line, preserving the
- * two-word creature subtype "Time Lord" as a single subtype token.
- */
-export function splitSubtypes(right: string): string[] {
-	const out: string[] = [];
-	for (const m of right.matchAll(/Time\s+Lord|\S+/gi)) {
-		out.push(/^time\s+lord$/i.test(m[0]) ? 'Time Lord' : m[0]);
-	}
-	return out;
-}
-
-const LOWER_SUBTYPES = new Map<string, Set<string> | null>();
-
-/**
- * The lowercased subtypes after the type line's dash, or null when it has no dash. A pure memo
- * keyed by the type line string, so it can't go stale; `hasSubType` asks it on every call (SBAs ask
- * every permanent each pass), and splitting the line each time was a hot spot (Phase 6d).
- */
-function lowerSubtypesOf(typeLine: string): Set<string> | null {
-	let subs = LOWER_SUBTYPES.get(typeLine);
-	if (subs === undefined) {
-		const dashIdx = typeLine.indexOf('—');
-		subs =
-			dashIdx === -1
-				? null
-				: new Set(splitSubtypes(typeLine.slice(dashIdx + 1).trim()).map((s) => s.toLowerCase()));
-		if (LOWER_SUBTYPES.size > 10_000) LOWER_SUBTYPES.clear();
-		LOWER_SUBTYPES.set(typeLine, subs);
-	}
-	return subs;
-}
-
-function normalizeSubtypes(subs: readonly string[]): string[] {
-	const out: string[] = [];
-	for (let i = 0; i < subs.length; i++) {
-		if (
-			subs[i].toLowerCase() === 'time' &&
-			i + 1 < subs.length &&
-			subs[i + 1].toLowerCase() === 'lord'
-		) {
-			out.push('Time Lord');
-			i++;
-		} else {
-			out.push(subs[i]);
-		}
-	}
-	return out;
-}
-
-// ---- Constants & Formatting -----------------------------------------------------------------
-
-const BASIC_LAND_MANA_BY_SUBTYPE: Record<string, { subtype: string; sym: string }> = {
-	plains: { subtype: 'Plains', sym: 'W' },
-	island: { subtype: 'Island', sym: 'U' },
-	swamp: { subtype: 'Swamp', sym: 'B' },
-	mountain: { subtype: 'Mountain', sym: 'R' },
-	forest: { subtype: 'Forest', sym: 'G' }
-};
-
-const BASIC_LAND_SUBTYPES = new Set(['Plains', 'Island', 'Swamp', 'Mountain', 'Forest']);
-
-const LAND_SUBTYPES = new Set([
-	'Plains',
-	'Island',
-	'Swamp',
-	'Mountain',
-	'Forest',
-	'Gate',
-	'Locus',
-	'Cave',
-	'Desert',
-	'Lair',
-	'Sphere',
-	'Tower',
-	'Mine',
-	'Power-Plant',
-	'Town',
-	"Urza's"
-]);
-
-const NON_CREATURE_SUBTYPES = new Set([
-	'Plains',
-	'Island',
-	'Swamp',
-	'Mountain',
-	'Forest',
-	'Gate',
-	'Locus',
-	'Cave',
-	'Desert',
-	'Sphere',
-	'Tower',
-	'Mine',
-	'Power-Plant',
-	"Urza's",
-	'Equipment',
-	'Treasure',
-	'Clue',
-	'Food',
-	'Blood',
-	'Map',
-	'Powerstone',
-	'Gold',
-	'Shard',
-	'Lander',
-	'Mutagen',
-	'Heartwood',
-	'Junk',
-	'Vibranium',
-	'Vehicle',
-	'Fortification',
-	'Contraption',
-	'Attraction',
-	'Aura',
-	'Saga',
-	'Class',
-	'Case',
-	'Room',
-	'Background',
-	'Shrine',
-	'Role',
-	'Cartouche',
-	'Curse',
-	'Rune',
-	'Arcane',
-	'Adventure',
-	'Lesson',
-	'Trap',
-	'Chorus',
-	// --- Track P15 ---
-	'Siege',
-	'Omen',
-	'Spacecraft'
-	// --- End Track P15 ---
-]);
-
-export { KEYWORD_LABELS };
-
-const KEYWORD_ORDER = new Map<string, number>(
-	Object.keys(KEYWORD_LABELS).map((k, idx) => [k, idx])
-);
-
-function sortGrantedKeywords(keywords: readonly string[]): string[] {
-	return [...keywords].sort((a, b) => {
-		const idxA = KEYWORD_ORDER.get(a.toLowerCase()) ?? 999;
-		const idxB = KEYWORD_ORDER.get(b.toLowerCase()) ?? 999;
-		return idxA - idxB;
-	});
-}
-
-function formatKeywordLabel(kw: string): string {
-	const low = kw.trim().toLowerCase();
-	if (KEYWORD_LABELS[low]) return KEYWORD_LABELS[low];
-	if (low.startsWith('protection from ')) {
-		return `Protection from ${kw.trim().slice('protection from '.length)}`;
-	}
-	if (low.startsWith('hexproof from ')) {
-		return `Hexproof from ${kw.trim().slice('hexproof from '.length)}`;
-	}
-	if (low.startsWith('ward ')) {
-		return `Ward ${kw.trim().slice(5).trim()}`;
-	}
-	// --- Track P9 ---
-	if (low.startsWith('toxic ')) {
-		return `Toxic ${kw.trim().slice(6).trim()}`;
-	}
-	return kw.charAt(0).toUpperCase() + kw.slice(1);
-}
-
-function addSubtypeToTypeLine(typeLine: string, subtype: string): string {
-	if (new RegExp(`\\b${subtype}\\b`, 'i').test(typeLine)) return typeLine;
-	if (typeLine.includes('—')) {
-		return `${typeLine} ${subtype}`;
-	}
-	return `${typeLine} — ${subtype}`;
-}
-
-function addCardTypeToTypeLine(typeLine: string, cardType: string): string {
-	if (new RegExp(`\\b${cardType}\\b`, 'i').test(typeLine)) return typeLine;
-	if (typeLine.includes('—')) {
-		const [left, right] = typeLine.split('—');
-		return `${left.trim()} ${cardType} — ${right.trim()}`;
-	}
-	return `${typeLine.trim()} ${cardType}`;
-}
-
-function formatSignedDelta(dp: number, dt: number): string {
-	const sp = dp >= 0 ? `+${dp}` : `${dp}`;
-	const st = dt >= 0 ? `+${dt}` : `${dt}`;
-	return `${sp}/${st}`;
-}
-
-// ---- Innate Keywords & Abilities from IR ----------------------------------------------------
-
-type InnateEntry = { canonicalKey: string; name: string; kind: 'keyword' | 'ability' };
-
-const INNATE_MEMO = new WeakMap<
-	ScryfallCard,
-	{
-		typeLine: string;
-		keywords: string[];
-		keywordsKey: string;
-		result: ReadonlyArray<InnateEntry>;
-	}
->();
-
-function formatManaProductionFromIR(ab: ActivatedAbility): string {
-	const step = ab.effect.find((e) => e.verb === 'addMana');
-	if (!step) return 'Mana';
-	if (step.params?.manaChoice === 'commanderIdentity') {
-		return "one mana of any color in your commander's color identity";
-	}
-	if (step.params?.manaChoice === 'any') {
-		return 'one mana of any color';
-	}
-	const syms = Array.isArray(step.params?.mana)
-		? (step.params.mana as string[]).map((c) => `{${c}}`).join('')
-		: '{C}';
-	if (step.amount?.k === 'count' && step.amount.of.subtypes?.length) {
-		const sub = step.amount.of.subtypes[0];
-		const who = step.amount.of.controller === 'you' ? ' you control' : ' on the battlefield';
-		return `${syms} for each ${sub}${who}`;
-	}
-	return syms;
-}
-
-function extractInnateFromIR(
-	card: ScryfallCard,
-	faceOpts?: ResolveObjectFacesOptions
-): InnateEntry[] {
-	const results: InnateEntry[] = [];
-	const seenKeys = new Set<string>();
-	const addResult = (canonicalKey: string, name: string, kind: 'keyword' | 'ability') => {
-		const k = canonicalKey.toLowerCase();
-		const dedupKey =
-			// --- Track P18a: Absorb, Frenzy, and Poisonous stack across multiple instances (CR 702.64c, 702.68b, 702.70b) ---
-			k === 'toxic' || k === 'absorb' || k === 'frenzy' || k === 'poisonous'
-				? `${k}::${results.length}`
-				: // --- End Track P18a ---
-					k === 'protection' ||
-					  k === 'ward' ||
-					  k === 'afterlife' ||
-					  k === 'bushido' ||
-					  k === 'annihilator' ||
-					  k === 'affinity' ||
-					  k === 'modular' ||
-					  k === 'soulshift' ||
-					  k === 'fabricate' ||
-					  k === 'bloodthirst' ||
-					  // --- Track P18a ---
-					  k === 'tribute' ||
-					  k === 'hideaway' ||
-					  k === 'fortify' ||
-					  k === 'mutate' ||
-					  k === 'teamwork'
-					  // --- End Track P18a ---
-					? `${k}::${name.toLowerCase()}`
-					: k;
-		if (seenKeys.has(dedupKey)) return;
-		seenKeys.add(dedupKey);
-		results.push({ canonicalKey: k, name, kind });
-	};
-
-	const view = resolveObjectFaces(card, faceOpts);
-	if (view.isFaceDown) {
-		if (view.wardCost) {
-			addResult('ward', `Ward ${view.wardCost}`, 'keyword');
-		}
-		return results;
-	}
-	const chars = activeCharacteristics(card, faceOpts);
-	const abilities = activeAbilityDefs(card, faceOpts);
-	const isEquipment = chars.subtypes.includes('Equipment');
-	const isAura = chars.subtypes.includes('Aura');
-
-	const grantedToOthersKeywords = new Set<string>();
-	const selfGrantedKeywords = new Set<string>();
-
-	for (const ab of abilities) {
-		if (ab.kind === 'keyword') {
-			const kwName = ab.keyword.name.toLowerCase();
-			if (kwName === 'enchant') {
-				if (isAura) addResult('enchant', `Enchant ${ab.keyword.param ?? 'permanent'}`, 'keyword');
-			} else if (kwName === 'equip') {
-				const costStr =
-					ab.keyword.cost ?? (ab.keyword.n !== undefined ? `${ab.keyword.n}` : '{0}');
-				addResult('equip', `Equip ${costStr}`, 'keyword');
-			} else if (kwName === 'ward') {
-				const costStr = ab.keyword.cost
-					? ` ${ab.keyword.cost}`
-					: ab.keyword.param
-						? `—${ab.keyword.param}`
-						: ab.keyword.n !== undefined
-							? ` ${ab.keyword.n}`
-							: '';
-				addResult('ward', `Ward${costStr}`, 'keyword');
-			} else if (kwName === 'protection') {
-				addResult('protection', `Protection from ${ab.keyword.param ?? ''}`.trim(), 'keyword');
-			} else if (kwName === 'hexproof' && ab.keyword.param) {
-				const full = `hexproof from ${ab.keyword.param}`.toLowerCase();
-				addResult(full, formatKeywordLabel(full), 'keyword');
-			} else if (kwName === 'afterlife') {
-				addResult('afterlife', `Afterlife ${ab.keyword.n ?? 0}`, 'keyword');
-			} else if (kwName === 'bushido') {
-				addResult('bushido', `Bushido ${ab.keyword.n ?? 0}`, 'keyword');
-			} else if (kwName === 'annihilator') {
-				addResult('annihilator', `Annihilator ${ab.keyword.n ?? 0}`, 'keyword');
-			} else if (kwName === 'affinity') {
-				addResult('affinity', `Affinity ${ab.keyword.param ?? ''}`.trim(), 'keyword');
-			} else if (kwName === 'toxic') {
-				addResult('toxic', `Toxic ${ab.keyword.n ?? 0}`, 'keyword');
-			} else if (kwName === 'modular') {
-				addResult('modular', `Modular ${ab.keyword.n ?? 0}`, 'keyword');
-			} else if (kwName === 'soulshift') {
-				addResult('soulshift', `Soulshift ${ab.keyword.n ?? 0}`, 'keyword');
-			} else if (kwName === 'fabricate') {
-				addResult('fabricate', `Fabricate ${ab.keyword.n ?? 0}`, 'keyword');
-			} else if (kwName === 'bloodthirst') {
-				addResult(
-					'bloodthirst',
-					`Bloodthirst ${ab.keyword.param === 'X' ? 'X' : (ab.keyword.n ?? 0)}`,
-					'keyword'
-				);
-			// --- Track P15 ---
-			} else if (kwName === 'reconfigure') {
-				const costStr = ab.keyword.cost ?? (ab.keyword.n !== undefined ? `${ab.keyword.n}` : '');
-				addResult('reconfigure', `Reconfigure ${costStr}`.trim(), 'keyword');
-				selfGrantedKeywords.add('reconfigure');
-			} else if (kwName === 'impending') {
-				const nStr = ab.keyword.impendingN ?? ab.keyword.n ?? 1;
-				const costStr = ab.keyword.cost ? `—${ab.keyword.cost}` : '';
-				addResult('impending', `Impending ${nStr}${costStr}`, 'keyword');
-				selfGrantedKeywords.add('impending');
-			} else if (kwName === 'amplify') {
-				addResult('amplify', `Amplify ${ab.keyword.n ?? 1}`, 'keyword');
-				selfGrantedKeywords.add('amplify');
-			} else if (kwName === 'ripple') {
-				addResult('ripple', `Ripple ${ab.keyword.n ?? 1}`, 'keyword');
-				selfGrantedKeywords.add('ripple');
-			// --- End Track P15 ---
-			// --- Track P18a ---
-			} else if (kwName === 'absorb') {
-				addResult('absorb', `Absorb ${ab.keyword.n ?? 1}`, 'keyword');
-				selfGrantedKeywords.add('absorb');
-			} else if (kwName === 'frenzy') {
-				addResult('frenzy', `Frenzy ${ab.keyword.n ?? 1}`, 'keyword');
-				selfGrantedKeywords.add('frenzy');
-			} else if (kwName === 'poisonous') {
-				addResult('poisonous', `Poisonous ${ab.keyword.n ?? 1}`, 'keyword');
-				selfGrantedKeywords.add('poisonous');
-			} else if (kwName === 'tribute') {
-				addResult('tribute', `Tribute ${ab.keyword.n ?? 1}`, 'keyword');
-				selfGrantedKeywords.add('tribute');
-			} else if (kwName === 'hideaway') {
-				addResult('hideaway', `Hideaway ${ab.keyword.n ?? 4}`, 'keyword');
-				selfGrantedKeywords.add('hideaway');
-			} else if (kwName === 'fortify') {
-				const costStr = ab.keyword.cost ?? (ab.keyword.n !== undefined ? `${ab.keyword.n}` : '{0}');
-				addResult('fortify', `Fortify ${costStr}`, 'keyword');
-				selfGrantedKeywords.add('fortify');
-			} else if (kwName === 'mutate') {
-				const costStr = ab.keyword.cost ?? ab.keyword.param ?? '';
-				addResult('mutate', `Mutate ${costStr}`.trim(), 'keyword');
-				selfGrantedKeywords.add('mutate');
-			} else if (kwName === 'teamwork') {
-				addResult('teamwork', `Teamwork ${ab.keyword.n ?? 1}`, 'keyword');
-				selfGrantedKeywords.add('teamwork');
-			// --- End Track P18a ---
-			} else {
-				addResult(kwName, formatKeywordLabel(kwName), 'keyword');
-				selfGrantedKeywords.add(kwName);
-			}
-		} else if (ab.kind === 'static') {
-			const st = ab.static;
-			if (st.k === 'restriction' && st.affected === 'self' && !st.condition) {
-				if (st.restriction === 'cantBeCountered') {
-					addResult("can't be countered", "Can't be countered", 'keyword');
-				} else if (st.restriction === 'cantBeBlocked') {
-					addResult('unblockable', 'Unblockable', 'keyword');
-				}
-			} else if (st.k === 'continuous') {
-				if (st.mod.k === 'addKeywords') {
-					const isSelfInclusiveSubtypeLord =
-						chars.types.includes('Creature') &&
-						!st.condition &&
-						typeof st.affected === 'object' &&
-						!st.affected.other &&
-						st.affected.controller === 'you' &&
-						Boolean(st.affected.subtypes?.some((sub) => chars.subtypes.includes(sub)));
-					for (const kw of st.mod.keywords) {
-						const kwLow = kw.toLowerCase();
-						if ((st.affected === 'self' && !st.condition) || isSelfInclusiveSubtypeLord) {
-							selfGrantedKeywords.add(kwLow);
-							if (kwLow.startsWith('protection from ')) {
-								addResult('protection', formatKeywordLabel(kwLow), 'keyword');
-							} else if (kwLow.startsWith('toxic ')) {
-								addResult('toxic', formatKeywordLabel(kwLow), 'keyword');
-							} else {
-								addResult(kwLow, formatKeywordLabel(kwLow), 'keyword');
-							}
-						} else {
-							grantedToOthersKeywords.add(kwLow);
-							if (kwLow.startsWith('protection from ')) {
-								grantedToOthersKeywords.add('protection');
-							} else if (kwLow.startsWith('toxic ')) {
-								grantedToOthersKeywords.add('toxic');
-							}
-						}
-					}
-				} else if (st.mod.k === 'removeKeywords') {
-					for (const kw of st.mod.keywords) {
-						grantedToOthersKeywords.add(kw.toLowerCase());
-					}
-				}
-			}
-		} else if (ab.kind === 'activated' || ab.kind === 'triggered') {
-			for (const step of ab.effect) {
-				if (step.verb === 'grant') {
-					for (const kw of step.params?.keywords ?? []) {
-						grantedToOthersKeywords.add(kw.toLowerCase());
-					}
-					for (const kw of step.params?.removeKeywords ?? []) {
-						grantedToOthersKeywords.add(kw.toLowerCase());
-					}
-				}
-			}
-		}
-	}
-
-	// Check card/face keywords for innate keywords not exclusively granted to others
-	for (const rawKw of view.keywords.length > 0 ? view.keywords : card.keywords || []) {
-		const kwLow = rawKw.toLowerCase();
-		const isSupportedKeywordBadge =
-			Boolean(KEYWORD_LABELS[kwLow]) ||
-			kwLow.startsWith('protection from ') ||
-			kwLow.startsWith('hexproof from ') ||
-			kwLow.startsWith('ward ');
-		if (
-			!isSupportedKeywordBadge ||
-			seenKeys.has(kwLow) ||
-			kwLow === 'equip' ||
-			kwLow === 'enchant' ||
-			kwLow === 'protection' ||
-			kwLow === 'ward' ||
-			(kwLow === 'hexproof' && [...seenKeys].some((k) => k.startsWith('hexproof from ')))
-		) {
-			continue;
-		}
-		if (
-			(isEquipment || isAura) &&
-			!chars.types.includes('Creature') &&
-			kwLow !== 'flash' &&
-			kwLow !== 'indestructible' &&
-			kwLow !== 'phasing' &&
-			// --- Track P15 ---
-			kwLow !== 'reconfigure' &&
-			kwLow !== 'job select' &&
-			kwLow !== 'living metal' &&
-			kwLow !== 'aura swap'
-			// --- End Track P15 ---
-		) {
-			continue;
-		}
-		if (grantedToOthersKeywords.has(kwLow) && !selfGrantedKeywords.has(kwLow)) {
-			continue;
-		}
-		addResult(kwLow, formatKeywordLabel(kwLow), 'keyword');
-	}
-
-	// 2. Summarize innate abilities from compiled abilities in order
-	for (const ab of abilities) {
-		if (ab.kind === 'triggered') {
-			const trig = ab.trigger;
-			if (trig.event === 'zoneChange' && trig.filter?.to === 'battlefield') {
-				if (trig.filter.object === 'self') {
-					addResult('ability_etb', 'Enters Battlefield Trigger', 'ability');
-				} else if (
-					typeof trig.filter.object === 'object' &&
-					trig.filter.object.types?.includes('Land')
-				) {
-					addResult('ability_landfall', 'Landfall Trigger', 'ability');
-				}
-			} else if (trig.event === 'attacks') {
-				addResult('ability_attack', 'Attack Trigger', 'ability');
-			} else if (trig.event === 'dealsDamage' && trig.filter?.combat) {
-				addResult('ability_combat_dmg', 'Combat Damage Trigger', 'ability');
-			} else if (trig.event === 'cast') {
-				addResult('ability_cast_trig', 'Spell Cast Trigger', 'ability');
-			} else if (
-				trig.event === 'phaseBegin' &&
-				trig.filter?.phase === 'end_step' &&
-				ab.effect.some((s) => s.verb === 'proliferate')
-			) {
-				addResult('ability_endstep_proliferate', 'End Step: Proliferate', 'ability');
-			}
-		} else if (ab.kind === 'activated') {
-			if (ab.intrinsic) {
-				addResult('ability_activated', 'Activated Ability', 'ability');
-			} else if (ab.isMana && ab.cost.length === 1 && ab.cost[0].k === 'tapSelf') {
-				addResult('ability_mana', `Mana Ability: Add ${formatManaProductionFromIR(ab)}`, 'ability');
-			} else if (
-				ab.effect.some(
-					(s) =>
-						s.verb === 'grant' &&
-						Boolean(s.params?.removeKeywords?.length) &&
-						s.subject.k === 'all' &&
-						s.subject.filter.controller === 'opponent'
-				)
-			) {
-				addResult('ability_strip_kw', 'Removes Opponent Keywords', 'ability');
-			} else {
-				addResult('ability_activated', 'Activated Ability', 'ability');
-			}
-		} else if (ab.kind === 'static') {
-			const st = ab.static;
-			if (st.k === 'costModifier' && st.activeZones?.includes('command')) {
-				addResult('ability_eminence', 'Eminence Ability', 'ability');
-			} else if (
-				st.k === 'costModifier' &&
-				st.affects.k === 'spell' &&
-				st.who.relation === 'you' &&
-				st.delta.mode === 'reduce'
-			) {
-				addResult('ability_cost_mod', 'Spell Cost Reduction', 'ability');
-			} else if (st.k === 'ruleModifier') {
-				if (st.rule === 'noMaxHandSize') {
-					addResult('ability_no_max_hand', 'No Maximum Hand Size', 'ability');
-				} else if (st.rule === 'searchControl') {
-					addResult(
-						'ability_search_control',
-						'Control Opponents Searching Libraries',
-						'ability'
-					);
-				}
-			} else if (st.k === 'multiplier') {
-				if (st.what === 'counters' && st.counter === '+1/+1') {
-					addResult('ability_counter_doubler', 'Doubles +1/+1 Counters', 'ability');
-				} else if (st.what === 'triggers') {
-					addResult('ability_trigger_doubler', 'Doubles Triggered Abilities', 'ability');
-				}
-			} else if (st.k === 'continuous') {
-				if (st.affected === 'attachedTo') {
-					if (isEquipment) {
-						addResult('ability_equip_buff', 'Grants Equipped Creature Buff', 'ability');
-					} else {
-						addResult('ability_enchant_mod', 'Modifies Enchanted Permanent', 'ability');
-					}
-				} else if (st.mod.k === 'grantAbility') {
-					addResult('ability_activated', 'Activated Ability', 'ability');
-				} else if (
-					st.mod.k === 'removeKeywords' &&
-					typeof st.affected === 'object' &&
-					st.affected.controller === 'opponent'
-				) {
-					addResult('ability_strip_kw', 'Removes Opponent Keywords', 'ability');
-				} else if (
-					typeof st.affected === 'object' &&
-					st.affected.controller === 'you' &&
-					st.affected.types?.includes('Creature') &&
-					(st.mod.k === 'pt' || st.mod.k === 'addKeywords')
-				) {
-					addResult('ability_lord', 'Anthem / Lord Effect', 'ability');
-				}
-			}
-		} else if (ab.kind === 'unsupported' && ab.id?.startsWith('act_')) {
-			addResult('ability_activated', 'Activated Ability', 'ability');
-		}
-	}
-
-	return results;
-}
-
-function innateKeywordsAndAbilitiesOf(
-	card: ScryfallCard,
-	faceOpts?: ResolveObjectFacesOptions
-): ReadonlyArray<InnateEntry> {
-	const canUseDefaultMemo =
-		!faceOpts ||
-		(!faceOpts.isFaceDown &&
-			(faceOpts.faceIndex ?? 0) === 0 &&
-			!faceOpts.unlockedFaces?.length &&
-			!faceOpts.copiableState &&
-			!faceOpts.fused &&
-			// --- Track P18a ---
-			!faceOpts.mergedComponents?.length &&
-			// --- End Track P18a ---
-			(card.layout === undefined || card.layout === 'normal'));
-	if (!canUseDefaultMemo) {
-		return extractInnateFromIR(card, faceOpts);
-	}
-	const keywordsKey = (card.keywords || []).join('\u0000');
-	const hit = INNATE_MEMO.get(card);
-	if (
-		hit &&
-		hit.typeLine === card.typeLine &&
-		hit.keywords === card.keywords &&
-		hit.keywordsKey === keywordsKey
-	) {
-		return hit.result;
-	}
-	const result = extractInnateFromIR(card, faceOpts);
-	INNATE_MEMO.set(card, {
-		typeLine: card.typeLine,
-		keywords: card.keywords,
-		keywordsKey,
-		result
-	});
-	return result;
-}
-
-// ---- Board-Wide Layer Evaluation ------------------------------------------------------------
-
-interface PermWorkState {
-	inst: CardInstance;
-	controllerId: string;
-	baseCard: ScryfallCard;
-	timestamp: number;
-	name: string;
-	// --- Track P14 ---
-	manaCost: string;
-	// --- End Track P14 ---
-	manaValue: number;
-	isFaceDown: boolean;
-	baseTypeLine: string;
-	effectiveTypeLine: string;
-	supertypes: string[];
-	types: string[];
-	subtypes: string[];
-	colors: ManaColor[];
-	isLegendary: boolean;
-	prefixLegendary: string;
-	hasAllCreatureTypes: boolean;
-	basePower: number | null;
-	baseToughness: number | null;
-	workingPower: number | null;
-	workingToughness: number | null;
-	typeModifiedBy: string[];
-	ptModifiedBy: string[];
-	allAbilityRemovalSources: string[];
-	abilityRemovalEvents: Array<{
-		sourceName: string;
-		timestamp: number;
-		// --- Track P17a ---
-		keepManaAbilities?: boolean;
-		// --- End Track P17a ---
-	}>;
-	// --- Track P17a ---
-	latestSetLandSubtypesTs?: number;
-	// --- End Track P17a ---
-	layer7bSetters: Array<{
-		sourceName: string;
-		power?: number | null;
-		toughness?: number | null;
-		timestamp: number;
-	}>;
-	items: AttributedKeywordOrEffect[];
-	itemTimestamps: Map<string, number>;
-	statics: StaticDef[];
-	grantsKeywordViaAbility: Set<string>;
-	strippedByAttachment: boolean;
-}
-
-function recordAbilityRemoval(
-	work: PermWorkState,
-	sourceName: string,
-	timestamp: number,
-	// --- Track P17a ---
-	keepManaAbilities = false
-	// --- End Track P17a ---
-): void {
-	if (!work.allAbilityRemovalSources.includes(sourceName)) {
-		work.allAbilityRemovalSources.push(sourceName);
-	}
-	if (
-		!work.abilityRemovalEvents.some(
-			(e) =>
-				e.sourceName === sourceName &&
-				e.timestamp === timestamp &&
-				Boolean(e.keepManaAbilities) === keepManaAbilities
-		)
-	) {
-		work.abilityRemovalEvents.push({
-			sourceName,
-			timestamp,
-			...(keepManaAbilities ? { keepManaAbilities: true } : {})
-		});
-	}
-}
-
-interface GrantedAbilityMeta {
-	grantedAbility?: ActivatedAbility;
-	// --- Track P11 ---
-	grantedTriggeredAbility?: TriggeredAbility;
-	grantedStaticAbility?: StaticDef;
-	grantedReplacementAbility?: ReplacementDef;
-	grantFaceIndex?: number;
-	grantAbilityIndex?: number;
-	// --- End Track P11 ---
-	// --- Track P14 ---
-	protectionExemption?: ProtectionAttachmentExemptionInfo;
-	// --- End Track P14 ---
-	// --- Track P20a ---
-	protectedFromPlayerId?: string;
-	// --- End Track P20a ---
-	grantSourceCard?: ScryfallCard;
-	grantSourceId?: string;
-}
-
-const ZERO_SPAN: Span = { start: 0, end: 0 };
-
-function makeIntrinsicBasicManaAbility(sym: ManaColor): ActivatedAbility {
-	return {
-		kind: 'activated',
-		id: `granted_mana_${sym.toLowerCase()}`,
-		cost: [{ k: 'tapSelf' }],
-		targets: [],
-		effect: [
-			{
-				verb: 'addMana',
-				subject: { k: 'none' },
-				amount: { k: 'const', n: 1 },
-				params: { mana: [sym] },
-				span: ZERO_SPAN
-			}
-		],
-		timing: 'mana',
-		isMana: true,
-		intrinsic: true,
-		text: `{T}: Add {${sym}}.`,
-		span: ZERO_SPAN
-	};
-}
-
-function describeGrantedActivatedAbility(
-	ab: ActivatedAbility,
-	sourceInstanceId: string
-): { key: string; name: string } {
-	if (
-		ab.isMana &&
-		ab.cost.length === 1 &&
-		ab.cost[0].k === 'tapSelf' &&
-		ab.effect.length === 1 &&
-		ab.effect[0].verb === 'addMana' &&
-		ab.effect[0].amount?.k === 'const' &&
-		ab.effect[0].amount.n === 1
-	) {
-		const manaArr = ab.effect[0].params?.mana;
-		if (Array.isArray(manaArr) && manaArr.length === 1) {
-			const sym = manaArr[0] as ManaColor;
-			return { key: `mana_${sym.toLowerCase()}`, name: `Mana Ability: Add {${sym}}` };
-		}
-		if (ab.effect[0].params?.manaChoice === 'any') {
-			return { key: 'mana_any', name: 'Mana Ability: Add Any Color' };
-		}
-	}
-	const key = `granted_ab_${sourceInstanceId}_${ab.id}`;
-	const text = ab.text ?? 'Granted';
-	const name = ab.isMana ? `Mana Ability: ${text}` : `Activated Ability: ${text}`;
-	return { key, name };
-}
-
-function grantItem(
-	work: PermWorkState,
-	canonicalKey: string,
-	name: string,
-	kind: 'keyword' | 'ability' | 'stat_mod' | 'type_mod',
-	sourceName: string,
-	grantTimestamp = 0,
-	grantMeta?: GrantedAbilityMeta
-): void {
-	const keyLow = canonicalKey.toLowerCase();
-	const existingActive =
-		keyLow === 'toxic' ||
-		// --- Track P14 (CR 702.16n): Keep attachment-exempt protection grants distinct ---
-		(keyLow === 'protection' && Boolean(grantMeta?.protectionExemption)) ||
-		// --- End Track P14 ---
-		// --- Track P20a ---
-		(keyLow === 'protection' && Boolean(grantMeta?.protectedFromPlayerId))
-		// --- End Track P20a ---
-			? undefined
-			: work.items.find(
-					(it) =>
-						it.canonicalKey === keyLow &&
-						!it.removed &&
-						it.kind === kind &&
-						// --- Track P14 ---
-						!it.protectionExemption &&
-						// --- End Track P14 ---
-						(keyLow !== 'protection' && keyLow !== 'ward'
-							? true
-							: it.name.toLowerCase() === name.toLowerCase())
-				);
-	if (existingActive) {
-		if (!existingActive.sources.includes(sourceName)) {
-			existingActive.sources.push(sourceName);
-		}
-		existingActive.grantCount = (existingActive.grantCount ?? 0) + 1;
-		const prevTs = work.itemTimestamps.get(existingActive.id) ?? -Infinity;
-		if (grantTimestamp >= prevTs) {
-			if (grantTimestamp > prevTs) {
-				work.itemTimestamps.set(existingActive.id, grantTimestamp);
-			}
-			if (grantMeta) {
-				if (grantMeta.grantedAbility) existingActive.grantedAbility = grantMeta.grantedAbility;
-				// --- Track P11 ---
-				if (grantMeta.grantedTriggeredAbility) {
-					existingActive.grantedTriggeredAbility = grantMeta.grantedTriggeredAbility;
-				}
-				if (grantMeta.grantedStaticAbility) {
-					existingActive.grantedStaticAbility = grantMeta.grantedStaticAbility;
-				}
-				if (grantMeta.grantedReplacementAbility) {
-					existingActive.grantedReplacementAbility = grantMeta.grantedReplacementAbility;
-				}
-				if (grantMeta.grantFaceIndex !== undefined) {
-					existingActive.grantFaceIndex = grantMeta.grantFaceIndex;
-				}
-				if (grantMeta.grantAbilityIndex !== undefined) {
-					existingActive.grantAbilityIndex = grantMeta.grantAbilityIndex;
-				}
-				// --- End Track P11 ---
-				if (grantMeta.grantSourceCard) existingActive.grantSourceCard = grantMeta.grantSourceCard;
-				if (grantMeta.grantSourceId) existingActive.grantSourceId = grantMeta.grantSourceId;
-			}
-		}
-		return;
-	}
-	const id = `granted_${work.items.length}_${keyLow}`;
-	work.itemTimestamps.set(id, grantTimestamp);
-	work.items.push({
-		id,
-		canonicalKey: keyLow,
-		name,
-		kind,
-		isInnate: false,
-		sources: [sourceName],
-		grantCount: 1,
-		...(grantMeta
-			? {
-					...(grantMeta.grantedAbility ? { grantedAbility: grantMeta.grantedAbility } : {}),
-					// --- Track P11 ---
-					...(grantMeta.grantedTriggeredAbility
-						? { grantedTriggeredAbility: grantMeta.grantedTriggeredAbility }
-						: {}),
-					...(grantMeta.grantedStaticAbility
-						? { grantedStaticAbility: grantMeta.grantedStaticAbility }
-						: {}),
-					...(grantMeta.grantedReplacementAbility
-						? { grantedReplacementAbility: grantMeta.grantedReplacementAbility }
-						: {}),
-					...(grantMeta.grantFaceIndex !== undefined
-						? { grantFaceIndex: grantMeta.grantFaceIndex }
-						: {}),
-					...(grantMeta.grantAbilityIndex !== undefined
-						? { grantAbilityIndex: grantMeta.grantAbilityIndex }
-						: {}),
-					// --- End Track P11 ---
-					// --- Track P14 ---
-					...(grantMeta.protectionExemption
-						? { protectionExemption: grantMeta.protectionExemption }
-						: {}),
-					// --- End Track P14 ---
-					// --- Track P20a ---
-					...(grantMeta.protectedFromPlayerId
-						? { protectedFromPlayerId: grantMeta.protectedFromPlayerId }
-						: {}),
-					// --- End Track P20a ---
-					...(grantMeta.grantSourceCard ? { grantSourceCard: grantMeta.grantSourceCard } : {}),
-					...(grantMeta.grantSourceId ? { grantSourceId: grantMeta.grantSourceId } : {})
-				}
-			: {}),
-		removed: false,
-		removedBy: []
-	});
-}
-
-// --- Track P11 ---
-const STATIC_LOCATORS_BY_DEF = new WeakMap<
-	CardDefinition,
-	ReadonlyMap<StaticDef, { faceIndex: number; abilityIndex: number }>
->();
-
-function lookupStaticLocator(
-	card: ScryfallCard,
-	st: StaticDef
-): { faceIndex: number; abilityIndex: number } | undefined {
-	const def = compileCard(card);
-	let map = STATIC_LOCATORS_BY_DEF.get(def);
-	if (!map) {
-		const built = new Map<StaticDef, { faceIndex: number; abilityIndex: number }>();
-		for (let fi = 0; fi < def.faces.length; fi++) {
-			const faceAbs = def.faces[fi]?.abilities ?? [];
-			for (let ai = 0; ai < faceAbs.length; ai++) {
-				const fab = faceAbs[ai];
-				if (fab.kind === 'static') {
-					built.set(fab.static, { faceIndex: fi, abilityIndex: ai });
-				}
-			}
-		}
-		map = built;
-		STATIC_LOCATORS_BY_DEF.set(def, map);
-	}
-	return map.get(st);
-}
-
-function grantNonActivatedAbility(
-	target: PermWorkState,
-	source: PermWorkState,
-	st: StaticDef,
-	ab: AbilityDef
-): boolean {
-	const loc = lookupStaticLocator(source.baseCard, st);
-	const faceIndex = loc?.faceIndex ?? 0;
-	const abilityIndex = loc?.abilityIndex ?? 0;
-	const srcId = source.inst.instanceId;
-	if (ab.kind === 'triggered') {
-		const key = `granted_trig_${srcId}_${faceIndex}_${abilityIndex}`;
-		const name = `Triggered Ability: ${ab.text || 'Granted'}`;
-		grantItem(target, key, name, 'ability', source.name, source.timestamp, {
-			grantedTriggeredAbility: ab,
-			grantSourceCard: source.baseCard,
-			grantSourceId: srcId,
-			grantFaceIndex: faceIndex,
-			grantAbilityIndex: abilityIndex
-		});
-		return false;
-	} else if (ab.kind === 'static') {
-		const key = `granted_static_${srcId}_${faceIndex}_${abilityIndex}`;
-		const name = 'Granted Static Ability';
-		grantItem(target, key, name, 'ability', source.name, source.timestamp, {
-			grantedStaticAbility: ab.static,
-			grantSourceCard: source.baseCard,
-			grantSourceId: srcId,
-			grantFaceIndex: faceIndex,
-			grantAbilityIndex: abilityIndex
-		});
-		return true;
-	} else if (ab.kind === 'replacement') {
-		const key = `granted_repl_${srcId}_${faceIndex}_${abilityIndex}`;
-		const name = 'Granted Replacement Effect';
-		grantItem(target, key, name, 'ability', source.name, source.timestamp, {
-			grantedReplacementAbility: ab.replacement,
-			grantSourceCard: source.baseCard,
-			grantSourceId: srcId,
-			grantFaceIndex: faceIndex,
-			grantAbilityIndex: abilityIndex
-		});
-		return false;
-	}
-	return false;
-}
-// --- End Track P11 ---
-
-function applyRemovalsUpTo(work: PermWorkState, cutoffTimestamp: number): void {
-	for (const ev of work.abilityRemovalEvents) {
-		if (ev.timestamp > cutoffTimestamp) continue;
-		for (const item of work.items) {
-			if (item.kind !== 'keyword' && item.kind !== 'ability' && !item.isInnate) continue;
-			// --- Track P17a ---
-			if (ev.keepManaAbilities && item.grantedAbility?.timing === 'mana') continue;
-			// --- End Track P17a ---
-			const itemTs = work.itemTimestamps.get(item.id) ?? -Infinity;
-			if (itemTs < ev.timestamp) {
-				item.removed = true;
-				if (!item.removedBy.includes(ev.sourceName)) {
-					item.removedBy.push(ev.sourceName);
-				}
-			}
-		}
-	}
-}
-
-function grantKeywordString(
-	work: PermWorkState,
-	rawKw: string,
-	sourceLabel: string,
-	grantTimestamp: number
-): void {
-	const gLow = rawKw.toLowerCase();
-	const gKey = gLow.startsWith('protection from ')
-		? 'protection'
-		: gLow.startsWith('ward ') || gLow.startsWith('ward—')
-			? 'ward'
-			: gLow.startsWith('toxic ')
-				? 'toxic'
-				: gLow;
-	const formattedLabel = formatKeywordLabel(gLow);
-	grantItem(work, gKey, formattedLabel, 'keyword', sourceLabel, grantTimestamp);
-}
-
-function removeMatchingKeywordsUpTo(
-	work: PermWorkState,
-	keywords: readonly string[],
-	sourceName: string,
-	cutoffTimestamp: number
-): void {
-	for (const kw of keywords) {
-		const kwLow = kw.toLowerCase();
-		for (const item of work.items) {
-			if (item.kind !== 'keyword') continue;
-			const itemTs = work.itemTimestamps.get(item.id) ?? -Infinity;
-			if (itemTs > cutoffTimestamp) continue;
-			// --- Track P18a ---
-			const { name: itemLabel } = item;
-			const itemLabelLow = itemLabel.toLowerCase();
-			// --- End Track P18a ---
-			if (
-				item.canonicalKey === kwLow ||
-				(kwLow === 'hexproof' && item.canonicalKey.startsWith('hexproof from ')) ||
-				(kwLow === 'protection' && item.canonicalKey.startsWith('protection')) ||
-				(kwLow === 'ward' && item.canonicalKey.startsWith('ward')) ||
-				(kwLow === 'toxic' && item.canonicalKey === 'toxic') ||
-				(kwLow.startsWith('toxic ') && item.name.toLowerCase() === kwLow) ||
-				// --- Track P18a ---
-				(kwLow === 'absorb' &&
-					(item.canonicalKey === 'absorb' || item.canonicalKey.startsWith('absorb '))) ||
-				(kwLow.startsWith('absorb ') && itemLabelLow === kwLow) ||
-				(kwLow === 'frenzy' &&
-					(item.canonicalKey === 'frenzy' || item.canonicalKey.startsWith('frenzy '))) ||
-				(kwLow.startsWith('frenzy ') && itemLabelLow === kwLow) ||
-				(kwLow === 'poisonous' &&
-					(item.canonicalKey === 'poisonous' || item.canonicalKey.startsWith('poisonous '))) ||
-				(kwLow.startsWith('poisonous ') && itemLabelLow === kwLow)
-				// --- End Track P18a ---
-			) {
-				item.removed = true;
-				if (!item.removedBy.includes(sourceName)) {
-					item.removedBy.push(sourceName);
-				}
-			}
-		}
-	}
-}
-
-function hasSubtypeInWork(work: PermWorkState, sub: string): boolean {
-	const low = sub.toLowerCase();
-	if (work.subtypes.some((s) => s.toLowerCase() === low)) return true;
-	// --- Track P11 (CR 702.73a, CR 700.8b): normalizeLayerCardType returns lowercase ('creature' | 'kindred') ---
-	if (
-		work.types.some(
-			(t) => normalizeLayerCardType(t) === 'creature' || normalizeLayerCardType(t) === 'kindred'
-		) &&
-		work.hasAllCreatureTypes &&
-		!NON_CREATURE_SUBTYPES.has(sub)
-	) {
-		return true;
-	}
-	// --- End Track P11 ---
-	return false;
-}
-
-// --- Track P8 ---
-function normalizeLayerCardType(t: string): string {
-	const low = t.toLowerCase();
-	return low === 'tribal' ? 'kindred' : low;
-}
-
-function workHasActiveKeyword(work: PermWorkState, kw: string): boolean {
-	const kwLow = kw.toLowerCase();
-	for (const it of work.items) {
-		if (it.removed || it.kind !== 'keyword') continue;
-		const nameLow = it.name.toLowerCase();
-		const keyLow = it.canonicalKey.toLowerCase();
-		if (
-			keyLow === kwLow ||
-			nameLow === kwLow ||
-			nameLow.startsWith(`${kwLow} `) ||
-			nameLow.startsWith(`${kwLow}—`)
-		) {
-			return true;
-		}
-	}
-	return false;
-}
-
-function offBattlefieldFilterNeedsExtendedMatch(f: ObjectFilter): boolean {
-	return Boolean(
-		f.allTypes?.length ||
-			f.notTypes?.length ||
-			f.notSubtypes?.length ||
-			f.supertypes?.length ||
-			f.notSupertypes?.length ||
-			f.colors?.length ||
-			f.notColors?.length ||
-			f.multicolored !== undefined ||
-			f.monocolored !== undefined ||
-			f.hasKeywords?.length ||
-			f.lacksKeywords?.length ||
-			f.manaValue !== undefined ||
-			f.power !== undefined ||
-			f.toughness !== undefined ||
-			// --- Track P11 ---
-			f.ofChosenName ||
-			f.attachedToRef !== undefined ||
-			f.historic !== undefined ||
-			// --- End Track P11 ---
-			// --- Track P13 ---
-			f.anyOf?.length ||
-			f.controllerRef !== undefined ||
-			f.faceDown !== undefined ||
-			f.kickedSpell !== undefined ||
-			f.castNotFromHand !== undefined ||
-			f.castFromZoneFilter !== undefined ||
-			f.enteredThisTurn !== undefined ||
-			f.dealtDamageThisTurn !== undefined ||
-			f.attackingOrBlocking !== undefined ||
-			// --- End Track P13 ---
-			// --- Track P14 ---
-			f.sameNameAsSource ||
-			f.sharesColorWithSelf ||
-			f.hasAnyCounter !== undefined ||
-			f.equipped !== undefined ||
-			f.enchanted !== undefined ||
-			// --- End Track P14 ---
-			// --- Track P15 ---
-			f.isPrepared !== undefined ||
-			Boolean(f.sharesCreatureTypeWithSelf) ||
-			// --- End Track P15 ---
-			// --- Track P16b & P17b ---
-			Boolean(f.allSubtypes?.length) ||
-			f.modified !== undefined ||
-			f.outlaw !== undefined ||
-			f.hasAdventure !== undefined ||
-			f.hasXInManaCost !== undefined ||
-			f.powerEqualsToughness !== undefined ||
-			f.manaValueEqualsSourcePower !== undefined ||
-			// --- End Track P16b & P17b ---
-			// --- Track P20a ---
-			f.pairedWithSource !== undefined ||
-			f.toughnessGreaterThanPower !== undefined ||
-			f.manaValueParity !== undefined ||
-			f.controlledByChosenPlayer !== undefined
-			// --- End Track P20a ---
-	);
-}
-
-function matchesLayerFilter(
-	filter: ObjectFilter,
-	target: PermWorkState,
-	source: PermWorkState,
-	state: GameState,
-	workList: PermWorkState[] = []
-): boolean {
-	if (filter.other && target.inst.instanceId === source.inst.instanceId) return false;
-	if (filter.controller === 'you' && target.controllerId !== source.controllerId) {
-		return false;
-	}
-	if (filter.controller === 'opponent' && target.controllerId === source.controllerId) {
-		return false;
-	}
-	// --- Track P13 ---
-	if (filter.controllerRef) {
-		const wantPid = resolveLayerPlayerRef(filter.controllerRef, state, source, target);
-		if (target.controllerId !== wantPid) return false;
-	}
-	// --- End Track P13 ---
-	if (filter.owner === 'you' && target.inst.ownerId !== source.controllerId) {
-		return false;
-	}
-	if (filter.owner === 'opponent' && target.inst.ownerId === source.controllerId) {
-		return false;
-	}
-	if (filter.isCommander !== undefined && Boolean(target.inst.isCommander) !== filter.isCommander) {
-		return false;
-	}
-	if (filter.supertypes?.length) {
-		if (
-			!filter.supertypes.some((st) =>
-				target.supertypes.some((ts) => ts.toLowerCase() === st.toLowerCase())
-			)
-		) {
-			return false;
-		}
-	}
-	if (filter.notSupertypes?.length) {
-		if (
-			filter.notSupertypes.some((st) =>
-				target.supertypes.some((ts) => ts.toLowerCase() === st.toLowerCase())
-			)
-		) {
-			return false;
-		}
-	}
-	if (filter.types?.length) {
-		if (
-			!filter.types.some((t) => {
-				const want = normalizeLayerCardType(t);
-				return target.types.some((tt) => normalizeLayerCardType(tt) === want);
-			})
-		) {
-			return false;
-		}
-	}
-	// --- Track P8 ---
-	if (filter.allTypes?.length) {
-		if (
-			!filter.allTypes.every((t) => {
-				const want = normalizeLayerCardType(t);
-				return target.types.some((tt) => normalizeLayerCardType(tt) === want);
-			})
-		) {
-			return false;
-		}
-	}
-	// --- Track P9 ---
-	if (filter.allTypes?.length) {
-		if (
-			!filter.allTypes.every((t) => target.types.some((tt) => tt.toLowerCase() === t.toLowerCase()))
-		) {
-			return false;
-		}
-	}
-	if (filter.notTypes?.length) {
-		if (
-			filter.notTypes.some((t) => {
-				const want = normalizeLayerCardType(t);
-				return target.types.some((tt) => normalizeLayerCardType(tt) === want);
-			})
-		) {
-			return false;
-		}
-	}
-	if (filter.subtypes?.length) {
-		if (!filter.subtypes.some((sub) => hasSubtypeInWork(target, sub))) {
-			return false;
-		}
-	}
-	if (filter.notSubtypes?.length) {
-		if (
-			filter.notSubtypes.some((sub) =>
-				target.subtypes.some((ts) => ts.toLowerCase() === sub.toLowerCase())
-			)
-		) {
-			return false;
-		}
-	}
-	if (filter.ofChosenType) {
-		// --- Track P22a: Support both chosenSubType and chosenCardType (CR 614.12 / 300.1) ---
-		const chosenSub = source.inst.chosenSubType;
-		const chosenCardType = source.inst.chosenCardType;
-		if (chosenSub) {
-			if (!hasSubtypeInWork(target, chosenSub)) return false;
-		} else if (chosenCardType) {
-			layerReads |= READ_P22A;
-			if (!matchesChosenCardType(target.types, chosenCardType)) return false;
-		} else {
-			return false;
-		}
-		// --- End Track P22a ---
-	}
-	if (filter.ofChosenColor) {
-		const chosenCol = source.inst.chosenColor;
-		if (!chosenCol || !target.colors.includes(chosenCol)) return false;
-	}
-	// --- Track P11 ---
-	if (filter.ofChosenName) {
-		layerReads |= READ_CHOSEN_CARD_NAME;
-		const chosen = source.inst.chosenCardName;
-		if (!chosen || target.isFaceDown || target.name.toLowerCase() !== chosen.toLowerCase()) {
-			return false;
-		}
-	}
-	if (filter.attachedToRef !== undefined) {
-		// --- Track P21 ---
-		if (filter.attachedToRef === 'hostOfSelf') {
-			const hostId = source.inst.attachedToId;
-			if (!hostId || target.inst.instanceId !== hostId) return false;
-		} else if (filter.attachedToRef === 'reanimatedBySelf') {
-			const link = target.inst.reanimatedByAura;
-			if (
-				!link ||
-				link.sourceInstanceId !== source.inst.instanceId ||
-				link.sourceObjectVersion !== (source.inst.objectVersion ?? 1)
-			) {
-				return false;
-			}
-		} else {
-			// --- End Track P21 ---
-			const wantHostId =
-				filter.attachedToRef === 'self' ? source.inst.instanceId : source.inst.attachedToId;
-			if (!wantHostId || target.inst.attachedToId !== wantHostId) return false;
-			// --- Track P21 ---
-		}
-		// --- End Track P21 ---
-	}
-	if (filter.historic !== undefined) {
-		const isHist =
-			!target.isFaceDown &&
-			(target.isLegendary ||
-				target.types.some((t) => normalizeLayerCardType(t) === 'artifact') ||
-				hasSubtypeInWork(target, 'Saga'));
-		if (isHist !== filter.historic) return false;
-	}
-	// --- End Track P11 ---
-	if (filter.colors?.length) {
-		if (!matchesColorFilter(target.colors, filter.colors)) return false;
-	}
-	// --- Track P8 ---
-	if (filter.notColors?.length) {
-		if (filter.notColors.some((c) => target.colors.includes(c))) return false;
-	}
-	if (filter.multicolored !== undefined) {
-		if ((target.colors.length >= 2) !== filter.multicolored) return false;
-	}
-	if (filter.monocolored !== undefined) {
-		if ((target.colors.length === 1) !== filter.monocolored) return false;
-	}
-	if (filter.hasKeywords?.length) {
-		if (!filter.hasKeywords.every((kw) => workHasActiveKeyword(target, kw))) return false;
-	}
-	if (filter.lacksKeywords?.length) {
-		if (filter.lacksKeywords.some((kw) => workHasActiveKeyword(target, kw))) return false;
-	}
-	if (filter.hasCounters !== undefined) {
-		layerReads |= READ_ALL_COUNTERS;
-		if (filter.hasCounters === 'any') {
-			const hasAny = Object.values(target.inst.counters).some((v) => v > 0);
-			if (!hasAny) return false;
-		} else {
-			if (((target.inst.counters as Record<string, number>)[filter.hasCounters] ?? 0) <= 0) {
-				return false;
-			}
-		}
-	}
-	if (filter.manaValue) {
-		const expected = evaluateLayerAmount(filter.manaValue.value, state, workList, source, target);
-		if (!compareNumbers(target.manaValue, filter.manaValue.op, expected)) return false;
-	}
-	if (filter.power) {
-		if (!target.types.includes('Creature')) return false;
-		const expected = evaluateLayerAmount(filter.power.value, state, workList, source, target);
-		if (!compareNumbers(target.workingPower ?? 0, filter.power.op, expected)) return false;
-	}
-	if (filter.toughness) {
-		if (!target.types.includes('Creature')) return false;
-		const expected = evaluateLayerAmount(filter.toughness.value, state, workList, source, target);
-		if (!compareNumbers(target.workingToughness ?? 0, filter.toughness.op, expected)) {
-			return false;
-		}
-	}
-	if (filter.attacking !== undefined) {
-		layerReads |= READ_COMBAT;
-		const isAtk = state.combat.attackers.some((a) => a.attackerInstanceId === target.inst.instanceId);
-		if (isAtk !== filter.attacking) return false;
-	}
-	if (filter.blocking !== undefined) {
-		layerReads |= READ_COMBAT;
-		const isBlk = state.combat.attackers.some((a) =>
-			a.blockerInstanceIds.includes(target.inst.instanceId)
-		);
-		if (isBlk !== filter.blocking) return false;
-	}
-	if (filter.tapped !== undefined) {
-		layerReads |= READ_TAPPED;
-		if (Boolean(target.inst.tapped) !== filter.tapped) return false;
-	}
-	if (filter.saddled !== undefined && Boolean(target.inst.saddledThisTurn) !== filter.saddled) {
-		return false;
-	}
-	// --- Track P5 ---
-	if (filter.monstrous !== undefined && Boolean(target.inst.isMonstrous) !== filter.monstrous) {
-		return false;
-	}
-	// --- Track P10 ---
-	if (filter.suspected !== undefined) {
-		layerReads |= READ_P10_SUSPECT;
-		if (Boolean(target.inst.isSuspected) !== filter.suspected) return false;
-	}
-	// --- End Track P10 ---
-	// --- Track P15 ---
-	if (filter.isPrepared !== undefined) {
-		if (Boolean(target.inst.isPrepared) !== filter.isPrepared) return false;
-	}
-	if (filter.sharesCreatureTypeWithSelf) {
-		const srcHasCreatSub =
-			source.types.some(
-				(t) => normalizeLayerCardType(t) === 'creature' || normalizeLayerCardType(t) === 'kindred'
-			) &&
-			(source.hasAllCreatureTypes || source.subtypes.some((s) => !NON_CREATURE_SUBTYPES.has(s)));
-		const tgtHasCreatSub =
-			target.types.some(
-				(t) => normalizeLayerCardType(t) === 'creature' || normalizeLayerCardType(t) === 'kindred'
-			) &&
-			(target.hasAllCreatureTypes || target.subtypes.some((s) => !NON_CREATURE_SUBTYPES.has(s)));
-		if (!srcHasCreatSub || !tgtHasCreatSub) return false;
-		if (!source.hasAllCreatureTypes && !target.hasAllCreatureTypes) {
-			const srcSubs = new Set(
-				source.subtypes.filter((s) => !NON_CREATURE_SUBTYPES.has(s)).map((s) => s.toLowerCase())
-			);
-			const shared = target.subtypes.some(
-				(s) => !NON_CREATURE_SUBTYPES.has(s) && srcSubs.has(s.toLowerCase())
-			);
-			if (!shared) return false;
-		}
-	}
-	// --- End Track P15 ---
-	if (filter.token !== undefined && Boolean(target.inst.isToken) !== filter.token) return false;
-	// --- Track P13 + Track P14 ---
-	if (filter.anyOf?.length) {
-		if (!filter.anyOf.some((sub) => matchesLayerFilter(sub, target, source, state, workList))) {
-			return false;
-		}
-	}
-	if (filter.attackingOrBlocking !== undefined) {
-		layerReads |= READ_COMBAT;
-		const isAtkOrBlk = state.combat.attackers.some(
-			(a) =>
-				a.attackerInstanceId === target.inst.instanceId ||
-				a.blockerInstanceIds.includes(target.inst.instanceId)
-		);
-		if (isAtkOrBlk !== filter.attackingOrBlocking) return false;
-	}
-	if (filter.dealtDamageThisTurn !== undefined) {
-		layerReads |= READ_P13;
-		if (Boolean(target.inst.dealtDamageThisTurn) !== filter.dealtDamageThisTurn) return false;
-	}
-	if (filter.enteredThisTurn !== undefined) {
-		layerReads |= READ_P13;
-		if (Boolean(target.inst.enteredThisTurn) !== filter.enteredThisTurn) return false;
-	}
-	if (filter.faceDown !== undefined && target.isFaceDown !== filter.faceDown) {
-		return false;
-	}
-	if (filter.kickedSpell !== undefined) {
-		if (((target.inst.kickedCount ?? 0) > 0) !== filter.kickedSpell) return false;
-	}
-	if (filter.castNotFromHand !== undefined) {
-		const isNotHand = Boolean(target.inst.wasCast) && target.inst.castFromZone !== 'hand';
-		if (isNotHand !== filter.castNotFromHand) return false;
-	}
-	if (filter.castFromZoneFilter !== undefined) {
-		const zones = Array.isArray(filter.castFromZoneFilter)
-			? filter.castFromZoneFilter
-			: [filter.castFromZoneFilter];
-		const ok =
-			Boolean(target.inst.wasCast) &&
-			Boolean(target.inst.castFromZone && zones.includes(target.inst.castFromZone));
-		if (!ok) return false;
-	}
-	if (filter.sameNameAsSource) {
-		if (
-			target.isFaceDown ||
-			source.isFaceDown ||
-			!target.name ||
-			!source.name ||
-			target.name !== source.name
-		) {
-			return false;
-		}
-	}
-	if (filter.sharesColorWithSelf) {
-		if (
-			target.colors.length === 0 ||
-			source.colors.length === 0 ||
-			!target.colors.some((c) => source.colors.includes(c))
-		) {
-			return false;
-		}
-	}
-	if (filter.hasAnyCounter !== undefined) {
-		layerReads |= READ_ALL_COUNTERS;
-		const hasAny = Object.values(target.inst.counters).some((v) => v > 0);
-		if (hasAny !== filter.hasAnyCounter) return false;
-	}
-	if (filter.equipped !== undefined) {
-		const isEq = workList.some(
-			(w) =>
-				w.inst.attachedToId === target.inst.instanceId &&
-				w.types.includes('Artifact') &&
-				w.subtypes.includes('Equipment')
-		);
-		if (isEq !== filter.equipped) return false;
-	}
-	if (filter.enchanted !== undefined) {
-		const isEnch = workList.some(
-			(w) =>
-				w.inst.attachedToId === target.inst.instanceId &&
-				w.types.includes('Enchantment') &&
-				w.subtypes.includes('Aura')
-		);
-		if (isEnch !== filter.enchanted) return false;
-	}
-	// --- End Track P13 + Track P14 ---
-	// --- Track P16b & P17b ---
-	if (filter.allSubtypes?.length) {
-		if (!filter.allSubtypes.every((sub) => hasSubtypeInWork(target, sub))) {
-			return false;
-		}
-	}
-	if (filter.modified !== undefined) {
-		layerReads |= READ_ALL_COUNTERS;
-		const hasCtr = Object.values(target.inst.counters).some((v) => v > 0);
-		const isEq = workList.some(
-			(w) =>
-				w.inst.attachedToId === target.inst.instanceId &&
-				w.types.includes('Artifact') &&
-				w.subtypes.includes('Equipment')
-		);
-		const isAuraControlledByYou = workList.some(
-			(w) =>
-				w.inst.attachedToId === target.inst.instanceId &&
-				w.controllerId === source.controllerId &&
-				w.types.includes('Enchantment') &&
-				w.subtypes.includes('Aura')
-		);
-		const isMod = target.types.includes('Creature') && (hasCtr || isEq || isAuraControlledByYou);
-		if (isMod !== filter.modified) return false;
-	}
-	if (filter.outlaw !== undefined) {
-		const isOutlaw =
-			target.hasAllCreatureTypes ||
-			target.subtypes.some((st) => (OUTLAW_SUBTYPES as readonly string[]).includes(st));
-		if (isOutlaw !== filter.outlaw) return false;
-	}
-	if (filter.hasAdventure !== undefined) {
-		const hasAdv =
-			!target.isFaceDown && cardHasAdventure(target.inst.copiableCard ?? target.inst.card);
-		if (hasAdv !== filter.hasAdventure) return false;
-	}
-	if (filter.hasXInManaCost !== undefined) {
-		const hasX = objectHasXInManaCost(target.inst, 'battlefield');
-		if (hasX !== filter.hasXInManaCost) return false;
-	}
-	if (filter.powerGreaterThanBase !== undefined) {
-		const gt =
-			target.types.includes('Creature') &&
-			(target.workingPower ?? 0) > (target.basePower ?? 0);
-		if (gt !== filter.powerGreaterThanBase) return false;
-	}
-	if (filter.powerEqualsToughness !== undefined) {
-		const eq =
-			target.types.includes('Creature') &&
-			target.workingPower !== null &&
-			target.workingToughness !== null &&
-			target.workingPower === target.workingToughness;
-		if (eq !== filter.powerEqualsToughness) return false;
-	}
-	if (filter.controlledByEnchantedPlayer !== undefined) {
-		const enchPid = source.inst.attachedToId ?? null;
-		const ok = Boolean(enchPid && target.controllerId === enchPid);
-		if (ok !== filter.controlledByEnchantedPlayer) return false;
-	}
-	if (filter.renowned !== undefined) {
-		layerReads |= READ_P16B;
-		if (Boolean(target.inst.isRenowned) !== filter.renowned) return false;
-	}
-	if (filter.goaded !== undefined) {
-		layerReads |= READ_P16B;
-		const isGoaded = (target.inst.goadedByPlayerIds?.length ?? 0) > 0;
-		if (isGoaded !== filter.goaded) return false;
-	}
-	// --- End Track P16b & P17b ---
-	// --- Track P16a ---
-	if (filter.assimilatedWithSelf) {
-		layerReads |= READ_P16A;
-		const aBy = target.inst.assimilatedBy;
-		const srcVer = source.inst.objectVersion ?? 1;
-		if (
-			!aBy ||
-			aBy.sourceInstanceId !== source.inst.instanceId ||
-			aBy.sourceObjectVersion !== srcVer
-		) {
-			return false;
-		}
-	}
-	// --- End Track P16a ---
-	// --- Track P20a ---
-	if (filter.pairedWithSource) {
-		layerReads |= READ_P20A;
-		const pairedId = source.inst.pairedWithId;
-		if (!pairedId) return false;
-		if (target.inst.instanceId !== source.inst.instanceId && target.inst.instanceId !== pairedId) {
-			return false;
-		}
-	}
-	if (filter.controlledByChosenPlayer) {
-		layerReads |= READ_P20A;
-		const chosenPid = source.inst.chosenPlayerId;
-		if (!chosenPid || target.controllerId !== chosenPid) return false;
-	}
-	if (filter.toughnessGreaterThanPower) {
-		if (!target.types.includes('Creature')) return false;
-		if (
-			target.workingPower === null ||
-			target.workingToughness === null ||
-			target.workingToughness <= target.workingPower
-		) {
-			return false;
-		}
-	}
-	if (filter.manaValueParity !== undefined) {
-		layerReads |= READ_P20A;
-		if (!matchesManaValueParity(target.manaValue, filter.manaValueParity, source.inst)) {
-			return false;
-		}
-	}
-	// --- End Track P20a ---
-	// --- Track P21 ---
-	if (filter.hasAnotherAuraAttached !== undefined) {
-		const foundOtherAura = workList.some(
-			(w) =>
-				w.inst.instanceId !== source.inst.instanceId &&
-				w.inst.attachedToId === target.inst.instanceId &&
-				w.types.includes('Enchantment') &&
-				w.subtypes.includes('Aura')
-		);
-		if (foundOtherAura !== filter.hasAnotherAuraAttached) return false;
-	}
-	// --- End Track P21 ---
-	// --- Track P22a ---
-	if (filter.manaValueEqualsChosenNumber) {
-		layerReads |= READ_P22A;
-		const chosenNum = source.inst.chosenNumber;
-		if (chosenNum === undefined || target.manaValue !== chosenNum) return false;
-	}
-	if (filter.chosenObject) {
-		layerReads |= READ_P22A;
-		const chosenObjId = source.inst.chosenObjectId;
-		if (!chosenObjId || target.inst.instanceId !== chosenObjId) return false;
-	}
-	// --- End Track P22a ---
-	return true;
-}
-
-function evaluateLayerAmount(
-	amount: Amount,
-	state: GameState,
-	workList: PermWorkState[],
-	source: PermWorkState,
-	affected: PermWorkState
-): number {
-	switch (amount.k) {
-		case 'const':
-			return amount.n;
-		case 'x':
-			return 0;
-		case 'stat': {
-			const refPerm = amount.of.k === 'affected' ? affected : source;
-			if (amount.stat === 'manaValue') return refPerm.manaValue;
-			if (amount.stat === 'power') return refPerm.workingPower ?? 0;
-			if (amount.stat === 'toughness') return refPerm.workingToughness ?? 0;
-			return 0;
-		}
-		case 'life': {
-			layerReads |= READ_LIFE;
-			const p = state.players.find((pl) => pl.playerId === source.controllerId);
-			return p?.life ?? 0;
-		}
-		case 'energyCount': {
-			layerReads |= READ_ENERGY;
-			if (amount.player.k === 'you') {
-				const p = state.players.find((pl) => pl.playerId === source.controllerId);
-				return p?.energyCounters ?? 0;
-			}
-			if (amount.player.k === 'activePlayer') {
-				layerReads |= READ_ACTIVE_PLAYER;
-				return state.players[state.activePlayerIndex]?.energyCounters ?? 0;
-			}
-			return 0;
-		}
-		case 'cardsIn': {
-			layerReads |= READ_ZONE_SIZES;
-			const p = state.players.find((pl) => pl.playerId === source.controllerId);
-			if (!p) return 0;
-			if (amount.zone === 'hand') return p.hand.length;
-			if (amount.zone === 'graveyard') return p.graveyard.length;
-			if (amount.zone === 'library') return p.library.length;
-			if (amount.zone === 'exile') return p.exile.length;
-			if (amount.zone === 'command') return p.command.length;
-			return 0;
-		}
-		case 'commanderCastCount': {
-			layerReads |= READ_COMMANDER_CAST_COUNT;
-			return playerCommanderCastCount(state, source.controllerId);
-		}
-		case 'stormCount':
-			return 0;
-		case 'tappedCostPower':
-			return 0;
-		case 'countersOn': {
-			const refPerm = amount.of.k === 'affected' ? affected : source;
-			// --- Track P8 ---
-			if (amount.counter === 'any') {
-				layerReads |= READ_ALL_COUNTERS;
-				let total = 0;
-				for (const v of Object.values(refPerm.inst.counters)) {
-					if (v > 0) total += v;
-				}
-				return total;
-			}
-			if (
-				amount.counter !== '+1/+1' &&
-				amount.counter !== '-1/-1' &&
-				amount.counter !== 'charge' &&
-				amount.counter !== 'level'
-			) {
-				layerReads |= READ_ALL_COUNTERS;
-			}
-			return refPerm.inst.counters[amount.counter] || 0;
-		}
-		case 'kickedCount':
-			return evaluateKickedCountAmount(amount, {
-				count: source.inst.kickedCount ?? 0,
-				tags: source.inst.kickedTags ?? [],
-				...(source.inst.kickedTagCounts ? { tagCounts: source.inst.kickedTagCounts } : {})
-			});
-		case 'negate':
-			return -evaluateLayerAmount(amount.of, state, workList, source, affected);
-		case 'sum':
-			return amount.args.reduce(
-				(s, a) => s + evaluateLayerAmount(a, state, workList, source, affected),
-				0
-			);
-		case 'min':
-			return Math.min(
-				...amount.args.map((a) => evaluateLayerAmount(a, state, workList, source, affected))
-			);
-		case 'max':
-			return Math.max(
-				...amount.args.map((a) => evaluateLayerAmount(a, state, workList, source, affected))
-			);
-		// --- Track P11 ---
-		case 'mul':
-			return amount.factor * evaluateLayerAmount(amount.of, state, workList, source, affected);
-		case 'domain': {
-			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
-			const pid =
-				amount.player.k === 'you'
-					? source.controllerId
-					: (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId);
-			let domainCount = 0;
-			for (const basicSub of BASIC_LAND_SUBTYPES) {
-				let foundSub = false;
-				for (const w of workList) {
-					if (w.controllerId !== pid) continue;
-					if (!w.types.some((t) => normalizeLayerCardType(t) === 'land')) continue;
-					if (hasSubtypeInWork(w, basicSub)) {
-						foundSub = true;
-						break;
-					}
-				}
-				if (foundSub) domainCount += 1;
-			}
-			return domainCount;
-		}
-		case 'partyCount': {
-			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
-			const pid =
-				amount.player.k === 'you'
-					? source.controllerId
-					: (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId);
-			const roleMasks: number[] = [];
-			for (const w of workList) {
-				if (w.controllerId !== pid) continue;
-				if (!w.types.some((t) => normalizeLayerCardType(t) === 'creature')) continue;
-				let mask = 0;
-				for (let r = 0; r < PARTY_ROLE_SUBTYPES.length; r++) {
-					if (hasSubtypeInWork(w, PARTY_ROLE_SUBTYPES[r])) {
-						mask |= 1 << r;
-					}
-				}
-				if (mask !== 0) roleMasks.push(mask);
-			}
-			return computePartyCountFromRoleMasks(roleMasks);
-		}
-		case 'attachmentsOn': {
-			const hostWork = amount.target === 'self' ? source : affected;
-			const hostId = hostWork.inst.instanceId;
-			let total = 0;
-			for (const w of workList) {
-				if (w.inst.attachedToId !== hostId) continue;
-				if (amount.filter && !matchesLayerFilter(amount.filter, w, source, state, workList)) {
-					continue;
-				}
-				total += 1;
-			}
-			return total;
-		}
-		// --- End Track P11 ---
-		// --- Track P8 ---
-		case 'distinctCardTypesInZone': {
-			const zones = Array.isArray(amount.zone) ? amount.zone : [amount.zone];
-			for (const z of zones) {
-				if (z === 'graveyard') layerReads |= READ_GRAVEYARDS;
-				else if (z === 'exile') layerReads |= READ_EXILE;
-				else if (z === 'hand' || z === 'library' || z === 'command') layerReads |= READ_HIDDEN_ZONES;
-			}
-			if (zones.length === 1 && zones[0] === 'battlefield') {
-				const seen = new Set<string>();
-				for (const w of workList) {
-					if (amount.whose === 'you' && w.controllerId !== source.controllerId) continue;
-					if (amount.whose === 'opponents' && w.controllerId === source.controllerId) continue;
-					for (const t of w.types) {
-						const norm = t === 'Tribal' ? 'Kindred' : t;
-						if (
-							norm === 'Artifact' ||
-							norm === 'Battle' ||
-							norm === 'Creature' ||
-							norm === 'Dungeon' ||
-							norm === 'Enchantment' ||
-							norm === 'Instant' ||
-							norm === 'Kindred' ||
-							norm === 'Land' ||
-							norm === 'Planeswalker' ||
-							norm === 'Sorcery'
-						) {
-							seen.add(norm);
-						}
-					}
-				}
-				return seen.size;
-			}
-			return countDistinctCardTypesInZone(state, source.controllerId, amount.zone, amount.whose);
-		}
-		case 'count': {
-			const f = amount.of;
-			const zone = f.zone ?? 'battlefield';
-			if (zone === 'battlefield') {
-				let total = 0;
-				for (const w of workList) {
-					if (matchesLayerFilter(f, w, source, state, workList)) total += 1;
-				}
-				return total;
-			}
-			if (zone === 'graveyard') {
-				layerReads |= READ_GRAVEYARDS;
-				const needsExt = offBattlefieldFilterNeedsExtendedMatch(f);
-				let total = 0;
-				for (const pl of state.players) {
-					if (f.controller === 'you' && pl.playerId !== source.controllerId) continue;
-					if (f.controller === 'opponent' && pl.playerId === source.controllerId) continue;
-					for (const g of pl.graveyard) {
-						if (needsExt) {
-							if (
-								matchesObjectFilter(g, f, {
-									state,
-									controllerId: source.controllerId,
-									source: source.inst,
-									zone: 'graveyard'
-								})
-							) {
-								total += 1;
-							}
-							continue;
-						}
-						const gChars = activeCharacteristics(
-							effectiveCardForObject(g),
-							instanceFaceOptions(g, 'graveyard')
-						);
-						if (
-							f.types?.length &&
-							!f.types.some((t) => gChars.types.some((gt) => gt.toLowerCase() === t.toLowerCase()))
-						) {
-							continue;
-						}
-						if (
-							f.subtypes?.length &&
-							!f.subtypes.some((s) =>
-								gChars.subtypes.some((gs) => gs.toLowerCase() === s.toLowerCase())
-							)
-						) {
-							continue;
-						}
-						if (f.ofChosenType) {
-							const chosenSub = source.inst.chosenSubType;
-							if (
-								!chosenSub ||
-								!gChars.subtypes.some((gs) => gs.toLowerCase() === chosenSub.toLowerCase())
-							) {
-								continue;
-							}
-						}
-						if (f.ofChosenColor) {
-							const chosenCol = source.inst.chosenColor;
-							if (!chosenCol || !gChars.colors.includes(chosenCol)) continue;
-						}
-						total += 1;
-					}
-				}
-				return total;
-			}
-			if (zone === 'exile') {
-				layerReads |= READ_EXILE;
-				const needsExt = offBattlefieldFilterNeedsExtendedMatch(f);
-				const srcVer = source.inst.objectVersion ?? 1;
-				let total = 0;
-				for (const pl of state.players) {
-					if (f.controller === 'you' && pl.playerId !== source.controllerId) continue;
-					if (f.controller === 'opponent' && pl.playerId === source.controllerId) continue;
-					for (const ex of pl.exile) {
-						if (f.owner === 'you' && ex.ownerId !== source.controllerId) continue;
-						if (f.owner === 'opponent' && ex.ownerId === source.controllerId) continue;
-						if (f.exiledWithSelf) {
-							if (
-								!ex.exiledBy ||
-								ex.exiledBy.sourceInstanceId !== source.inst.instanceId ||
-								ex.exiledBy.sourceObjectVersion !== srcVer
-							) {
-								continue;
-							}
-						}
-						if (needsExt) {
-							if (
-								matchesObjectFilter(ex, f, {
-									state,
-									controllerId: source.controllerId,
-									source: source.inst,
-									zone: 'exile'
-								})
-							) {
-								total += 1;
-							}
-							continue;
-						}
-						if (f.types?.length || f.notTypes?.length || f.subtypes?.length) {
-							const eChars = activeCharacteristics(
-								effectiveCardForObject(ex),
-								instanceFaceOptions(ex, 'exile')
-							);
-							if (
-								f.types?.length &&
-								!f.types.some((t) => eChars.types.some((et) => et.toLowerCase() === t.toLowerCase()))
-							) {
-								continue;
-							}
-							if (
-								f.notTypes?.length &&
-								f.notTypes.some((t) => eChars.types.some((et) => et.toLowerCase() === t.toLowerCase()))
-							) {
-								continue;
-							}
-							if (
-								f.subtypes?.length &&
-								!f.subtypes.some((s) =>
-									eChars.subtypes.some((es) => es.toLowerCase() === s.toLowerCase())
-								)
-							) {
-								continue;
-							}
-						}
-						total += 1;
-					}
-				}
-				return total;
-			}
-			// --- Track P17a ---
-			if (zone === 'hand') {
-				layerReads |= READ_ZONE_SIZES | READ_HIDDEN_ZONES;
-				let total = 0;
-				for (const pl of state.players) {
-					if (pl.lost) continue;
-					if (f.controller === 'you' && pl.playerId !== source.controllerId) continue;
-					if (f.controller === 'opponent' && pl.playerId === source.controllerId) continue;
-					for (const h of pl.hand) {
-						if (
-							matchesObjectFilter(h, f, {
-								state,
-								controllerId: source.controllerId,
-								source: source.inst,
-								zone: 'hand'
-							})
-						) {
-							total += 1;
-						}
-					}
-				}
-				return total;
-			}
-			// --- End Track P17a ---
-			return 0;
-		}
-		// --- Track P12 ---
-		case 'devouredCount':
-			return source.inst.devouredCount ?? 0;
-		// --- End Track P12 ---
-		// --- Track P13 + Track P14 ---
-		case 'devotion': {
-			let pid = source.controllerId;
-			if (amount.player) {
-				if (amount.player.k === 'activePlayer') {
-					layerReads |= READ_ACTIVE_PLAYER;
-					pid = state.players[state.activePlayerIndex]?.playerId ?? '';
-				} else if (
-					amount.player.k === 'controllerOf' &&
-					amount.player.of.k === 'attachedTo' &&
-					source.inst.attachedToId
-				) {
-					const host = workList.find((w) => w.inst.instanceId === source.inst.attachedToId);
-					pid = host?.controllerId ?? '';
-				} else if (amount.player.k === 'ownerOf' && amount.player.of.k === 'self') {
-					pid = source.inst.ownerId;
-				}
-			}
-			return computeWorkListDevotionToColors(workList, pid, amount.colors);
-		}
-		case 'unlockedDoorsCount': {
-			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
-			const pid =
-				amount.player.k === 'activePlayer'
-					? (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId)
-					: source.controllerId;
-			let total = 0;
-			for (const w of workList) {
-				if (w.controllerId !== pid || !hasSubtypeInWork(w, 'Room')) continue;
-				total += w.inst.unlockedFaces?.length ?? 0;
-			}
-			return total;
-		}
-		case 'colorsAmongPermanents': {
-			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
-			const pid =
-				amount.player.k === 'activePlayer'
-					? (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId)
-					: source.controllerId;
-			const seen = new Set<ManaColor>();
-			for (const w of workList) {
-				if (w.controllerId !== pid) continue;
-				if (amount.filter && !matchesLayerFilter(amount.filter, w, source, state, workList)) {
-					continue;
-				}
-				for (const c of w.colors) seen.add(c);
-			}
-			return seen.size;
-		}
-		case 'half': {
-			const inner = evaluateLayerAmount(amount.of, state, workList, source, affected);
-			return amount.round === 'up' ? Math.ceil(inner / 2) : Math.floor(inner / 2);
-		}
-		case 'dungeonsCompleted': {
-			layerReads |= READ_P13;
-			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
-			const pid =
-				amount.player.k === 'activePlayer'
-					? (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId)
-					: source.controllerId;
-			const pl = state.players.find((p) => p.playerId === pid);
-			return pl?.dungeonsCompletedCount ?? 0;
-		}
-		case 'colorsOfObject': {
-			if (amount.of === 'affected') {
-				return affected.colors.length;
-			}
-			if (amount.of === 'attachedTo') {
-				if (source.inst.attachedToId === affected.inst.instanceId) {
-					return affected.colors.length;
-				}
-				const host = workList.find((w) => w.inst.instanceId === source.inst.attachedToId);
-				return host?.colors.length ?? 0;
-			}
-			return source.colors.length;
-		}
-		case 'greatestStatAmong':
-		case 'totalStatAmong':
-		case 'totalStatOf': {
-			const z = amount.filter.zone ?? 'battlefield';
-			if (z === 'battlefield') {
-				let best = 0;
-				let found = false;
-				let sum = 0;
-				for (let i = 0; i < workList.length; i++) {
-					const w = workList[i];
-					if (!matchesLayerFilter(amount.filter, w, source, state, workList)) continue;
-					let val: number | null = null;
-					if (amount.stat === 'manaValue') {
-						val = w.manaValue;
-					} else if (amount.stat === 'power') {
-						val = w.types.includes('Creature') ? (w.workingPower ?? 0) : null;
-					} else if (amount.stat === 'toughness') {
-						val = w.types.includes('Creature') ? (w.workingToughness ?? 0) : null;
-					}
-					if (val === null) continue;
-					if (!found || val > best) {
-						best = val;
-						found = true;
-					}
-					if (val > 0) sum += val;
-				}
-				if (amount.k === 'greatestStatAmong') return found ? Math.max(0, best) : 0;
-				return sum;
-			}
-			if (z === 'graveyard') layerReads |= READ_GRAVEYARDS;
-			else if (z === 'exile') layerReads |= READ_EXILE;
-			else layerReads |= READ_HIDDEN_ZONES;
-			return (
-				evaluateWave5Amount(
-					amount.k === 'totalStatAmong'
-						? { k: 'totalStatOf', stat: amount.stat, filter: amount.filter }
-						: amount,
-					{
-						state,
-						controllerId: source.controllerId,
-						source: source.inst
-					}
-				) ?? 0
-			);
-		}
-		// --- End Track P13 + Track P14 ---
-		// --- Track P15 ---
-		case 'playerSpeed': {
-			layerReads |= READ_P15;
-			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
-			const pid =
-				amount.player.k === 'you'
-					? source.controllerId
-					: (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId);
-			const p = state.players.find((pl) => pl.playerId === pid);
-			return p?.speed ?? 0;
-		}
-		case 'gravestormCount':
-			layerReads |= READ_P15;
-			return state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0;
-		// --- End Track P15 ---
-		// --- Track P17b ---
-		case 'p17bMetric':
-			layerReads |=
-				READ_P17B |
-				READ_ALL_COUNTERS |
-				READ_GRAVEYARDS |
-				READ_HIDDEN_ZONES |
-				READ_COMBAT |
-				READ_LIFE |
-				READ_ACTIVE_PLAYER;
-			return evaluateP17bAmount(
-				amount,
-				{ state, controllerId: source.controllerId, source: source.inst },
-				matchesObjectFilter
-			);
-		// --- End Track P17b ---
-		// --- Track P16a ---
-		case 'playerCounters': {
-			layerReads |= READ_P16A;
-			if (amount.player.k === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
-			// --- Track P22a ---
-			if (amount.players) {
-				layerReads |= READ_P22A;
-				if (amount.players === 'defendingPlayer') layerReads |= READ_COMBAT;
-				return evaluatePlayerCountersAmountWave8(
-					state,
-					source.controllerId,
-					amount.counter,
-					amount.player.k,
-					amount.players,
-					source.inst
-				);
-			}
-			// --- End Track P22a ---
-			const pid =
-				amount.player.k === 'activePlayer'
-					? (state.players[state.activePlayerIndex]?.playerId ?? source.controllerId)
-					: source.controllerId;
-			const p = state.players.find((pl) => pl.playerId === pid);
-			if (!p) return 0;
-			if (amount.counter === 'poison') return p.poison ?? 0;
-			if (amount.counter === 'experience') return p.experienceCounters ?? 0;
-			if (amount.counter === 'energy') return p.energyCounters ?? 0;
-			if (amount.counter === 'rad') return p.radCounters ?? 0;
-			if (amount.counter === 'ticket') return p.ticketCounters ?? 0;
-			return 0;
-		}
-		// --- End Track P16a ---
-		// --- Track P20a ---
-		case 'manaSpentToCast':
-			layerReads |= READ_P20A;
-			return source.inst.manaSpentCount ?? 0;
-		case 'chosenPlayerZoneCount': {
-			layerReads |= READ_P20A | READ_ZONE_SIZES;
-			if (amount.zone === 'graveyard') layerReads |= READ_GRAVEYARDS;
-			else if (amount.zone === 'exile') layerReads |= READ_EXILE;
-			else if (amount.zone !== 'battlefield') layerReads |= READ_HIDDEN_ZONES;
-			if (amount.zone === 'battlefield') {
-				const chosenPid = source.inst.chosenPlayerId;
-				if (!chosenPid) return 0;
-				let count = 0;
-				for (const w of workList) {
-					if (w.controllerId !== chosenPid) continue;
-					if (amount.filter && !matchesLayerFilter(amount.filter, w, source, state, workList)) {
-						continue;
-					}
-					count++;
-				}
-				return count;
-			}
-			return evaluateChosenPlayerZoneCount(
-				state,
-				source.inst,
-				source.controllerId,
-				amount.zone,
-				amount.filter
-			);
-		}
-		case 'opponentsWithLifeLessThanHalfStarting':
-			layerReads |= READ_P20A | READ_LIFE;
-			return countOpponentsWithLifeLessThanHalfStarting(state, source.controllerId);
-		// --- End Track P20a ---
-		// --- Track P20b ---
-		case 'p20bCostPaidCount':
-			layerReads |= READ_P20B;
-			return evaluateP20bAmount(amount, {
-				state,
-				controllerId: source.controllerId,
-				source: source.inst
-			});
-		// --- End Track P20b ---
-		// --- Track P22a ---
-		case 'distinctNamesCount': {
-			const zone = amount.of.zone ?? 'battlefield';
-			if (zone === 'battlefield') {
-				const names = new Set<string>();
-				for (const w of workList) {
-					if (w.isFaceDown) continue;
-					if (!matchesLayerFilter(amount.of, w, source, state, workList)) continue;
-					const nm = w.name.trim();
-					if (nm) names.add(nm);
-				}
-				return names.size;
-			}
-			layerReads |= READ_P22A | READ_ZONE_SIZES;
-			if (zone === 'graveyard') layerReads |= READ_GRAVEYARDS;
-			else if (zone === 'exile') layerReads |= READ_EXILE;
-			else layerReads |= READ_HIDDEN_ZONES;
-			return evaluateDistinctNamesFilterCountWave8(
-				state,
-				source.controllerId,
-				amount.of,
-				source.inst
-			);
-		}
-		case 'creaturesDiedThisTurn':
-			layerReads |= READ_P22A;
-			return evaluateCreaturesDiedThisTurnWave8(state, source.controllerId, amount.controller);
-		case 'spellsCastThisTurnCount':
-			layerReads |= READ_P22A | READ_P12;
-			if (amount.who === 'activePlayer') layerReads |= READ_ACTIVE_PLAYER;
-			return evaluateSpellsCastThisTurnWave8(
-				state,
-				source.controllerId,
-				amount.filter,
-				amount.who
-			);
-		// --- End Track P22a ---
-		default:
-			return 0;
-	}
-}
-
-function evaluateLayerCondition(
-	cond: Condition,
-	state: GameState,
-	workList: PermWorkState[],
-	source: PermWorkState,
-	affected: PermWorkState,
-	workMap?: Map<string, PermWorkState>
-): boolean {
-	switch (cond.k) {
-		case 'and':
-			return cond.of.every((c) =>
-				evaluateLayerCondition(c, state, workList, source, affected, workMap)
-			);
-		case 'or':
-			return cond.of.some((c) =>
-				evaluateLayerCondition(c, state, workList, source, affected, workMap)
-			);
-		case 'not':
-			return !evaluateLayerCondition(cond.of, state, workList, source, affected, workMap);
-		case 'isTurnOf': {
-			layerReads |= READ_ACTIVE_PLAYER;
-			const activePlayer = state.players[state.activePlayerIndex];
-			return activePlayer?.playerId === source.controllerId;
-		}
-		case 'compare': {
-			const left = evaluateLayerAmount(cond.left, state, workList, source, affected);
-			const right = evaluateLayerAmount(cond.right, state, workList, source, affected);
-			switch (cond.op) {
-				case '=':
-					return left === right;
-				case '>=':
-					return left >= right;
-				case '<=':
-					return left <= right;
-				case '>':
-					return left > right;
-				case '<':
-					return left < right;
-			}
-			return false;
-		}
-		case 'graveyardAbove':
-			return false;
-		case 'controlCommander':
-			return workList.some(
-				(w) => w.controllerId === source.controllerId && Boolean(w.inst.isCommander)
-			);
-		case 'kicked':
-			return evaluateKickerCondition(cond, {
-				count: source.inst.kickedCount ?? 0,
-				tags: source.inst.kickedTags ?? [],
-				...(source.inst.kickedTagCounts ? { tagCounts: source.inst.kickedTagCounts } : {})
-			});
-		case 'evoked':
-			return Boolean(source.inst.evoked);
-		case 'escaped':
-			return Boolean(source.inst.escaped);
-		case 'isMonarch': {
-			layerReads |= READ_MONARCH;
-			const monarchId = state.monarchPlayerId ?? null;
-			if (!monarchId) return false;
-			if (cond.player) {
-				if (cond.player.k === 'you') return monarchId === source.controllerId;
-				if (cond.player.k === 'activePlayer') {
-					layerReads |= READ_ACTIVE_PLAYER;
-					return monarchId === state.players[state.activePlayerIndex]?.playerId;
-				}
-				return false;
-			}
-			const rel = cond.relation ?? 'you';
-			if (rel === 'you') return monarchId === source.controllerId;
-			if (rel === 'opponent') return monarchId !== source.controllerId;
-			return true;
-		}
-		case 'foretold':
-			return Boolean(source.inst.foretold);
-		case 'blitzed':
-			return Boolean(source.inst.blitzed);
-		case 'saddled':
-			return Boolean(source.inst.saddledThisTurn);
-		// --- Track P4 ---
-		case 'exertedThisTurn':
-			return Boolean(source.inst.exertedThisTurn);
-		// --- Track P5 ---
-		case 'monstrous':
-			return Boolean(source.inst.isMonstrous);
-		// --- Track P7 ---
-		case 'creatureDiedThisTurn':
-			layerReads |= READ_TURN_HISTORY;
-			return Boolean(state.creatureDiedThisTurn);
-		case 'attackedThisTurn': {
-			layerReads |= READ_TURN_HISTORY;
-			const ctrl = state.players.find((p) => p.playerId === source.controllerId);
-			return Boolean(ctrl?.attackedThisTurn);
-		}
-		case 'permanentLeftBattlefieldThisTurn': {
-			layerReads |= READ_TURN_HISTORY;
-			const ctrl = state.players.find((p) => p.playerId === source.controllerId);
-			return Boolean(ctrl?.permanentLeftBattlefieldThisTurn);
-		}
-		case 'gainedLifeThisTurn': {
-			layerReads |= READ_TURN_HISTORY;
-			const ctrl = state.players.find((p) => p.playerId === source.controllerId);
-			const min = cond.min ? evaluateLayerAmount(cond.min, state, workList, source, affected) : 1;
-			return (ctrl?.lifeGainedThisTurn ?? 0) >= min;
-		}
-		case 'wasCast': {
-			if (!source.inst.wasCast) return false;
-			if (cond.fromHand) return source.inst.castFromZone === 'hand';
-			return true;
-		}
-		// --- Track P8 ---
-		case 'opponentCount': {
-			const oppCount = state.players.filter(
-				(p) => !p.lost && p.playerId !== source.controllerId
-			).length;
-			return compareNumbers(oppCount, cond.op, cond.count);
-		}
-		case 'anyPlayerLife': {
-			layerReads |= READ_LIFE;
-			return state.players.some((p) => !p.lost && compareNumbers(p.life, cond.op, cond.count));
-		}
-		case 'distinctControlledCreaturePowers': {
-			const powers = new Set<number>();
-			for (const w of workList) {
-				if (w.controllerId !== source.controllerId) continue;
-				if (!w.types.includes('Creature')) continue;
-				powers.add(w.workingPower ?? 0);
-			}
-			return powers.size >= cond.count;
-		}
-		case 'objectState': {
-			const subj =
-				cond.of === 'self'
-					? source
-					: source.inst.attachedToId
-						? (workMap?.get(source.inst.attachedToId) ??
-							workList.find((w) => w.inst.instanceId === source.inst.attachedToId))
-						: undefined;
-			if (!subj) return false;
-			if (cond.tapped !== undefined) {
-				layerReads |= READ_TAPPED;
-				if (Boolean(subj.inst.tapped) !== cond.tapped) return false;
-			}
-			if (cond.attacking !== undefined) {
-				layerReads |= READ_COMBAT;
-				const isAtk = state.combat.attackers.some((a) => a.attackerInstanceId === subj.inst.instanceId);
-				if (isAtk !== cond.attacking) return false;
-			}
-			if (cond.blocking !== undefined) {
-				layerReads |= READ_COMBAT;
-				const isBlk = state.combat.attackers.some((a) =>
-					a.blockerInstanceIds.includes(subj.inst.instanceId)
-				);
-				if (isBlk !== cond.blocking) return false;
-			}
-			if (cond.monstrous !== undefined && Boolean(subj.inst.isMonstrous) !== cond.monstrous) {
-				return false;
-			}
-			if (cond.saddled !== undefined && Boolean(subj.inst.saddledThisTurn) !== cond.saddled) {
-				return false;
-			}
-			if (cond.equipped !== undefined) {
-				const isEq = workList.some(
-					(w) =>
-						w.inst.attachedToId === subj.inst.instanceId &&
-						w.types.includes('Artifact') &&
-						w.subtypes.includes('Equipment')
-				);
-				if (isEq !== cond.equipped) return false;
-			}
-			if (cond.enchanted !== undefined) {
-				const isEnch = workList.some(
-					(w) =>
-						w.inst.attachedToId === subj.inst.instanceId &&
-						w.types.includes('Enchantment') &&
-						w.subtypes.includes('Aura')
-				);
-				if (isEnch !== cond.enchanted) return false;
-			}
-			if (cond.filter && !matchesLayerFilter(cond.filter, subj, source, state, workList)) {
-				return false;
-			}
-			return true;
-		}
-		// --- Track P10 ---
-		case 'opponentLostLifeThisTurn':
-		case 'descendedThisTurn':
-		case 'hadCounterOnIt':
-		case 'manaColorSpentToCast':
-		case 'opponentComparison':
-			layerReads |= READ_P10_SUSPECT;
-			if (cond.k === 'opponentComparison' && cond.metric === 'life') {
-				layerReads |= READ_LIFE;
-			}
-			return evaluateP10Condition(cond, {
-				state,
-				controllerId: source.controllerId,
-				source: source.inst
-			});
-		// --- End Track P10 ---
-		// --- Track P9 ---
-		// --- Track P12 ---
-		case 'classLevelIs':
-			return (source.inst.classLevel ?? 1) === cond.level;
-		case 'classLevelAtLeast':
-			return (source.inst.classLevel ?? 1) >= cond.level;
-		case 'caseSolved':
-			return Boolean(source.inst.isSolved);
-		case 'caseUnsolved':
-			return !source.inst.isSolved;
-		case 'isRenowned':
-			return Boolean(source.inst.isRenowned);
-		case 'boastAttackedThisTurn':
-			return Boolean(source.inst.creatureAttackedThisTurn);
-		case 'exhaustUnused':
-			return !source.inst.exhaustedAbilityIds?.includes(cond.abilityId);
-		case 'creaturesAttackedCountThisTurn':
-			layerReads |= READ_P12;
-			return (state.creaturesAttackedCountThisTurn ?? 0) >= cond.min;
-		case 'totalPowerControlled': {
-			let sum = 0;
-			for (const w of workList) {
-				if (w.controllerId === source.controllerId && w.types.includes('Creature')) {
-					sum += Math.max(0, w.workingPower ?? 0);
-				}
-			}
-			return sum >= cond.min;
-		}
-		case 'colorsAmongControlledPermanents': {
-			const cSet = new Set<ManaColor>();
-			for (const w of workList) {
-				if (w.controllerId === source.controllerId) {
-					for (const c of w.colors) cSet.add(c);
-				}
-			}
-			return cSet.size >= cond.min;
-		}
-		case 'sourcesDealtDamageThisTurn': {
-			layerReads |= READ_P12;
-			const p = state.players.find((pl) => pl.playerId === source.controllerId);
-			return (p?.sourcesDealtDamageIdsThisTurn?.length ?? 0) >= cond.min;
-		}
-		case 'cardsPutIntoGraveyardFromAnywhereThisTurn':
-			layerReads |= READ_P12;
-			return (state.cardsPutIntoGraveyardThisTurn ?? 0) >= cond.min;
-		case 'spellsCastThisTurnCount': {
-			layerReads |= READ_P12;
-			const p = state.players.find((pl) => pl.playerId === source.controllerId);
-			if (!p) return false;
-			if (!cond.filter) return (p.spellsCastThisTurn ?? 0) >= cond.min;
-			const cards = p.spellsCastThisTurnCards ?? [];
-			let count = 0;
-			for (const card of cards) {
-				const stub: CardInstance = {
-					instanceId: 'cast-hist',
-					card,
-					ownerId: p.playerId,
-					controllerId: p.playerId,
-					zone: 'stack',
-					tapped: false,
-					summoningSick: false,
-					damageMarked: 0,
-					deathtouchDamageMarked: false,
-					counters: {} as CardInstance['counters'],
-					tempPowerMod: 0,
-					tempToughnessMod: 0,
-					grantedKeywords: [],
-					attachedToId: null,
-					isToken: false,
-					isCommander: false,
-					commanderCastCount: 0,
-					usedLoyaltyThisTurn: false,
-					transformed: false
-				};
-				if (matchesObjectFilter(stub, cond.filter, { state, controllerId: source.controllerId, source: source.inst })) {
-					count++;
-				}
-			}
-			return count >= cond.min;
-		}
-		// --- End Track P12 ---
-		// --- Track P13 ---
-		case 'selfInZone':
-		case 'spellsCastLastTurn':
-		case 'hasCompletedDungeon':
-		case 'hasInitiative':
-		case 'hasCitysBlessing':
-		case 'hasMaxSpeed':
-		case 'opponentPoisonAtLeast':
-		case 'nonlandEnteredThisTurn':
-		case 'voidThisTurn':
-		case 'sameColorManaSpentAtLeast':
-			layerReads |= READ_P13;
-			return (
-				evaluateP13Condition(cond, {
-					state,
-					controllerId: source.controllerId,
-					source: source.inst,
-					zone: source.inst.zone
-				}) ?? false
-			);
-		// --- End Track P13 ---
-		// --- Track P14 ---
-		case 'anyOpponentMetric': {
-			if (cond.metric === 'life') layerReads |= READ_LIFE;
-			else layerReads |= READ_ZONE_SIZES;
-			return (
-				evaluateWave5Condition(cond, {
-					state,
-					controllerId: source.controllerId,
-					source: source.inst
-				}) ?? false
-			);
-		}
-		case 'cardsDrawnThisTurnAtLeast':
-		case 'nthMatchingSpellThisTurn': {
-			layerReads |= READ_P14;
-			return (
-				evaluateWave5Condition(cond, {
-					state,
-					controllerId: source.controllerId,
-					source: source.inst
-				}) ?? false
-			);
-		}
-		// --- End Track P14 ---
-		// --- Track P15 ---
-		case 'maxSpeed': {
-			layerReads |= READ_P15;
-			const p = state.players.find((pl) => pl.playerId === source.controllerId);
-			return (p?.speed ?? 0) >= 4;
-		}
-		case 'citysBlessing': {
-			layerReads |= READ_P15;
-			const p = state.players.find((pl) => pl.playerId === source.controllerId);
-			return Boolean(p?.hasCitysBlessing);
-		}
-		case 'giftPromised':
-			return Boolean(source.inst.giftPromised);
-		case 'isDay':
-			layerReads |= READ_P15;
-			return state.dayNight === 'day';
-		case 'isNight':
-			layerReads |= READ_P15;
-			return state.dayNight === 'night';
-		case 'isYourTurn': {
-			layerReads |= READ_ACTIVE_PLAYER;
-			return state.players[state.activePlayerIndex]?.playerId === source.controllerId;
-		}
-		case 'selfPrepared':
-			return Boolean(source.inst.isPrepared);
-		case 'isImpending':
-			return Boolean(source.inst.castWithImpending) && (source.inst.counters.time || 0) > 0;
-		case 'enteredWithXAtLeast':
-			return (source.inst.enteredWithX ?? 0) >= cond.n;
-		// --- End Track P15 ---
-		// --- Wave 6 Shared ---
-		case 'isPaired':
-			return Boolean(source.inst.pairedWithId);
-		case 'tributePaid':
-			return Boolean(source.inst.tributePaid);
-		case 'hasEnduringStory':
-			// --- Track P18a ---
-			layerReads |= READ_P18A;
-			return Boolean(
-				source.inst.hasEnduringStory ||
-					state.players.find((pl) => pl.playerId === source.controllerId)?.hasEnduringStory
-			);
-		// --- End Track P18a ---
-		case 'isHarnessed':
-			return Boolean(source.inst.isHarnessed);
-		// --- End Wave 6 Shared ---
-		// --- Track P16b ---
-		case 'attackingTotalPowerAtLeast':
-			layerReads |= READ_COMBAT | READ_P16B;
-			return (
-				evaluateP16bCondition(
-					cond,
-					{ state, controllerId: source.controllerId, source: source.inst },
-					matchesObjectFilter
-				) ?? false
-			);
-		case 'firstCombatPhaseOfTurn':
-		case 'eventPlayerHandCount':
-		case 'notEventPlayerTurn':
-		case 'cardLeftYourGraveyardThisTurn':
-		case 'committedCrimeThisTurn':
-		case 'controlledByOtherThanOwner':
-		case 'youLostLifeThisTurn':
-		case 'playerLostLifeAtLeastThisTurn':
-		case 'moreCardsInHandThanEachOpponent':
-		case 'eventObjectMatchedLki':
-			layerReads |= READ_P16B | READ_ACTIVE_PLAYER;
-			return (
-				evaluateP16bCondition(
-					cond,
-					{ state, controllerId: source.controllerId, source: source.inst },
-					matchesObjectFilter
-				) ?? false
-			);
-		// --- End Track P16b ---
-		// --- Track P17b ---
-		case 'p17bCondition':
-			layerReads |=
-				READ_P17B |
-				READ_ALL_COUNTERS |
-				READ_GRAVEYARDS |
-				READ_HIDDEN_ZONES |
-				READ_COMBAT |
-				READ_LIFE |
-				READ_ACTIVE_PLAYER;
-			return evaluateP17bCondition(
-				cond,
-				{ state, controllerId: source.controllerId, source: source.inst },
-				matchesObjectFilter
-			);
-		// --- End Track P17b ---
-		// --- Track P18b ---
-		case 'anchorWordChosen':
-			layerReads |= READ_P18B;
-			return (source.inst.chosenAnchorWord ?? '').trim().toLowerCase() === cond.word.trim().toLowerCase();
-		case 'youWereAttackedThisCombat':
-			layerReads |= READ_COMBAT;
-			return Boolean(
-				state.combat.active &&
-					state.combat.attackers.some(
-						(a) =>
-							a.defenderPlayerId === source.controllerId &&
-							!a.defenderPlaneswalkerId &&
-							!a.defenderBattleId
-					)
-			);
-		// --- End Track P18b ---
-		// --- Track P20a ---
-		case 'lifeCompareHalfStarting':
-			layerReads |= READ_P20A | READ_LIFE;
-			return evaluateLifeCompareHalfStarting(state, source.controllerId, cond.who, cond.op);
-		case 'mostCommonColorAmongPermanents': {
-			layerReads |= READ_P20A;
-			const counts: Record<ManaColor, number> = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
-			for (const w of workList) {
-				for (const c of w.colors) {
-					if (c === 'W' || c === 'U' || c === 'B' || c === 'R' || c === 'G') {
-						counts[c] += 1;
-					}
-				}
-			}
-			return evaluateMostCommonColorFromCounts(counts, cond.color, cond.allowTie);
-		}
-		// --- End Track P20a ---
-		// --- Track P20b ---
-		case 'p20bCondition':
-			layerReads |= READ_P20B | READ_HIDDEN_ZONES | READ_ACTIVE_PLAYER;
-			return evaluateP20bCondition(
-				cond,
-				{ state, controllerId: source.controllerId, source: source.inst },
-				matchesObjectFilter
-			);
-		// --- End Track P20b ---
-		// --- Track P22a ---
-		case 'lifeAtLeastAboveStarting':
-			layerReads |= READ_P22A | READ_LIFE;
-			return evaluateWave8Condition(cond, state, source.controllerId, source.inst) ?? false;
-		case 'isAttackingAlone':
-			layerReads |= READ_P22A | READ_COMBAT;
-			return evaluateWave8Condition(cond, state, source.controllerId, source.inst) ?? false;
-		case 'hasntDealtDamageYet':
-			layerReads |= READ_P22A;
-			return evaluateWave8Condition(cond, state, source.controllerId, source.inst) ?? false;
-		case 'yourTurnsTakenAtLeast':
-			layerReads |= READ_P22A | READ_ACTIVE_PLAYER;
-			return evaluateWave8Condition(cond, state, source.controllerId, source.inst) ?? false;
-		case 'enteredBattlefieldUnderYourControlThisTurn':
-			layerReads |= READ_P22A;
-			return evaluateWave8Condition(cond, state, source.controllerId, source.inst) ?? false;
-		// --- End Track P22a ---
-		default:
-			return false;
-	}
-}
-
-function hasAttachmentAbilityStrippingStatic(statics: StaticDef[]): boolean {
-	for (const st of statics) {
-		if (st.k !== 'continuous' || st.affected !== 'attachedTo') continue;
-		if (st.mod.k === 'removeAllAbilities') return true;
-		if (
-			st.mod.k === 'setTypes' &&
-			st.mod.types.includes('Land') &&
-			(st.mod.subtypes ?? []).some((sub) => BASIC_LAND_SUBTYPES.has(sub))
-		) {
-			return true;
-		}
-	}
-	return false;
-}
-
-export function getAttachedAbilityStrippingAuraSources(
-	stateOrSnap: GameState | BoardSnapshot,
-	targetInstanceId: string,
-	visited = new Set<string>()
-): string[] {
-	if (visited.has(targetInstanceId)) return [];
-	visited.add(targetInstanceId);
-	const snap = 'fingerprint' in stateOrSnap ? stateOrSnap : getBoardSnapshot(stateOrSnap);
-	const attached = snap.attachedTo.get(targetInstanceId);
-	if (!attached || attached.length === 0) return [];
-
-	const sources: string[] = [];
-	for (const entry of attached) {
-		if (entry.perm.isFaceDown) continue;
-		const abilities = activeAbilityDefs(entry.card, instanceFaceOptions(entry.perm, 'battlefield'));
-		const statics = abilities
-			.filter((a): a is { kind: 'static'; static: StaticDef; span: Span } => a.kind === 'static')
-			.map((a) => a.static);
-		if (!hasAttachmentAbilityStrippingStatic(statics)) continue;
-		if (getAttachedAbilityStrippingAuraSources(snap, entry.perm.instanceId, visited).length > 0) {
-			continue;
-		}
-		sources.push(entry.card.name);
-	}
-	return sources;
-}
+export {
+	KEYWORD_LABELS,
+	READ_ACTIVE_PLAYER,
+	READ_ALL_COUNTERS,
+	READ_CHOSEN_CARD_NAME,
+	READ_COMBAT,
+	READ_COMMANDER_CAST_COUNT,
+	READ_ENERGY,
+	READ_EXILE,
+	READ_GRAVEYARDS,
+	READ_HIDDEN_ZONES,
+	READ_KEYWORD_COUNTERS,
+	READ_LIFE,
+	READ_MONARCH,
+	READ_P10_SUSPECT,
+	READ_P12,
+	READ_P13,
+	READ_P14,
+	READ_P15,
+	READ_P16A,
+	READ_P16B,
+	READ_P17A,
+	READ_P17B,
+	READ_P18A,
+	READ_P18B,
+	READ_P19A,
+	READ_P20A,
+	READ_P20B,
+	READ_P22A,
+	READ_P22B,
+	READ_P22C,
+	READ_TAPPED,
+	READ_TURN_HISTORY,
+	READ_WAVE9_ATTACKS,
+	READ_WAVE9_DYNAMIC,
+	READ_WAVE9_MANA,
+	READ_ZONE_SIZES,
+	getAttachedAbilityStrippingAuraSources,
+	getLayerReads,
+	noteLayerRead,
+	resetLayerReads,
+	setExtraLayerReadHookForTest,
+	splitSubtypes,
+	type AttributedKeywordOrEffect,
+	type CardContinuousBreakdown,
+	type EvaluatedPermanent,
+	type ExtraLayerReadHook
+} from './layersPredicates.ts';
 
 interface BoardLayerCache {
 	dynamicFingerprint: unknown[];
@@ -2997,6 +206,11 @@ interface BoardLayerCache {
 				// --- Track P17a ---
 				keepManaAbilities?: boolean;
 				// --- End Track P17a ---
+				removalEvents?: ReadonlyArray<{
+					timestamp: number;
+					keepManaAbilities?: boolean;
+					fromLayer6?: boolean;
+				}>;
 			};
 			evaluated: EvaluatedPermanent;
 		}
@@ -3007,130 +221,17 @@ interface BoardLayerCache {
 
 const BOARD_CACHE_KEY = 'phase6_board_layer_cache';
 
-// ---- Read tracking (Phase 6d) ---------------------------------------------------------------
-//
-// Besides the board snapshot and each active permanent's own counters / temporary P/T / switch /
-// suspend / granted keywords (always fingerprinted), a board evaluation reads game state only at
-// these points, each of which sets its bit in `layerReads` while `computeBoardLayerCache` runs:
-//
-// - `matchesLayerFilter` with a `tapped` filter: every active permanent's `tapped`;
-// - `evaluateLayerAmount` `life`: life totals; `cardsIn`: zone sizes; `count` in graveyards:
-//   graveyard contents;
-// - `evaluateLayerCondition` `isTurnOf`: the active player.
-//
-// The dynamic fingerprint holds only the inputs the evaluation actually read. That's sound: with
-// every read input unchanged, re-running the evaluation takes the same path and reads the same
-// inputs, so it produces the same result. Before 6d every evaluation was keyed on all of them, so
-// a land tapping for mana, a card drawn or a point of damage re-evaluated the whole board even when
-// no static ability looked at them.
 
-const READ_TAPPED = 1;
-const READ_LIFE = 2;
-const READ_ZONE_SIZES = 4;
-const READ_GRAVEYARDS = 8;
-const READ_ACTIVE_PLAYER = 16;
-const READ_COMMANDER_CAST_COUNT = 32;
-const READ_EXILE = 64;
-const READ_ENERGY = 128;
-const READ_MONARCH = 256;
-// --- Track P8 ---
-const READ_COMBAT = 512;
-const READ_ALL_COUNTERS = 1024;
-const READ_HIDDEN_ZONES = 2048;
-// --- Track P7 ---
-const READ_TURN_HISTORY = 4096;
-// --- Track P10 ---
-const READ_P10_SUSPECT = 8192;
-// --- End Track P10 ---
-// --- Track P11 ---
-const READ_KEYWORD_COUNTERS = 16384;
-const READ_CHOSEN_CARD_NAME = 32768;
-// --- End Track P11 ---
-// --- Track P12 ---
-const READ_P12 = 65536;
-// --- End Track P12 ---
-// --- Track P13 ---
-const READ_P13 = 131072; // 1 << 17
-// --- End Track P13 ---
-// --- Track P14 ---
-const READ_P14 = 262144; // 1 << 18
-// --- End Track P14 ---
-// --- Track P15 ---
-const READ_P15 = 524288; // 1 << 19
-// --- End Track P15 ---
-// --- Track P16a ---
-const READ_P16A = 1 << 20;
-// --- End Track P16a ---
-// --- Track P16b ---
-const READ_P16B = 1 << 21;
-// --- End Track P16b ---
-// --- Track P17a ---
-const READ_P17A = 1 << 22;
-const NON_STANDARD_PT_COUNTER_RE = /^([+-]\d+)\/([+-]\d+)$/;
-
-function sumNonStandardPtCountersInLayer(counters: Record<string, number> | undefined): {
-	power: number;
-	toughness: number;
-	entries: Array<[string, number]>;
-} {
-	let power = 0;
-	let toughness = 0;
-	const entries: Array<[string, number]> = [];
-	if (!counters) return { power, toughness, entries };
-	for (const key of Object.keys(counters)) {
-		if (key === '+1/+1' || key === '-1/-1') continue;
-		const count = counters[key];
-		if (!count || count <= 0) continue;
-		const m = NON_STANDARD_PT_COUNTER_RE.exec(key);
-		if (!m) continue;
-		const dp = Number.parseInt(m[1], 10);
-		const dt = Number.parseInt(m[2], 10);
-		if (!Number.isFinite(dp) || !Number.isFinite(dt)) continue;
-		power += dp * count;
-		toughness += dt * count;
-		entries.push([key, count]);
-	}
-	if (entries.length > 1) entries.sort((a, b) => a[0].localeCompare(b[0]));
-	return { power, toughness, entries };
-}
-// --- End Track P17a ---
-// --- Track P17b ---
-const READ_P17B = 1 << 23;
-// --- End Track P17b ---
-// --- Track P18a ---
-const READ_P18A = 1 << 24;
-// --- End Track P18a ---
-// --- Track P18b ---
-const READ_P18B = 1 << 25;
-// --- End Track P18b ---
-// --- Track P19a ---
-const READ_P19A = 1 << 26; // 67108864
-// --- End Track P19a ---
-// --- Track P20a ---
-const READ_P20A = 1 << 28;
-// --- End Track P20a ---
-// --- Track P20b ---
-const READ_P20B = 1 << 29;
-// --- End Track P20b ---
-// --- Track P22a ---
-const READ_P22A = -2147483648; // 1 << 31
-// --- End Track P22a ---
-// --- Track P22b ---
-const READ_P22B = 1 << 27;
-// --- End Track P22b ---
-// --- Track P22c ---
-const READ_P22C = 1 << 30;
-// --- End Track P22c ---
-
-/** Inputs read by the evaluation in progress (bits above). */
-let layerReads = 0;
-
-function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: number): unknown[] {
+export function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: bigint): unknown[] {
 	const fp: unknown[] = [(state as { version?: number }).version, reads];
-	if (reads & READ_ACTIVE_PLAYER) fp.push(state.activePlayerIndex);
-	if (reads & READ_MONARCH) fp.push(state.monarchPlayerId ?? null);
+	const hook = getExtraLayerReadHook();
+	if (hook && (reads & hook.flag) !== 0n) {
+		fp.push(hook.read(state));
+	}
+	if ((reads & READ_ACTIVE_PLAYER) !== 0n) fp.push(state.activePlayerIndex);
+	if ((reads & READ_MONARCH) !== 0n) fp.push(state.monarchPlayerId ?? null);
 	// --- Track P8 ---
-	if (reads & READ_COMBAT) {
+	if ((reads & READ_COMBAT) !== 0n) {
 		const attackers = state.combat.attackers;
 		fp.push(attackers.length);
 		for (const atk of attackers) {
@@ -3144,9 +245,9 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		}
 	}
 	// --- Track P7 ---
-	if (reads & READ_TURN_HISTORY) fp.push(Boolean(state.creatureDiedThisTurn));
+	if ((reads & READ_TURN_HISTORY) !== 0n) fp.push(Boolean(state.creatureDiedThisTurn));
 	// --- Track P12 ---
-	if (reads & READ_P12) {
+	if ((reads & READ_P12) !== 0n) {
 		fp.push(
 			state.creaturesAttackedCountThisTurn ?? 0,
 			state.cardsPutIntoGraveyardThisTurn ?? 0
@@ -3161,7 +262,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- End Track P12 ---
 	// --- Track P13 ---
-	if (reads & READ_P13) {
+	if ((reads & READ_P13) !== 0n) {
 		fp.push(
 			state.initiativePlayerId ?? null,
 			state.spellsCastLastTurnTotal ?? 0,
@@ -3182,7 +283,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- End Track P13 ---
 	// --- Track P15 ---
-	if (reads & READ_P15) {
+	if ((reads & READ_P15) !== 0n) {
 		fp.push(
 			state.dayNight ?? null,
 			state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0
@@ -3193,7 +294,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- End Track P15 ---
 	// --- Track P16a ---
-	if (reads & READ_P16A) {
+	if ((reads & READ_P16A) !== 0n) {
 		for (const p of state.players) {
 			fp.push(
 				p.poison ?? 0,
@@ -3230,7 +331,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- End Track P16a ---
 	// --- Track P16b ---
-	if (reads & READ_P16B) {
+	if ((reads & READ_P16B) !== 0n) {
 		fp.push(state.combatPhasesCountThisTurn ?? 0);
 		for (const p of state.players) {
 			fp.push(
@@ -3246,7 +347,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- End Track P16b ---
 	// --- Track P17a ---
-	if (reads & READ_P17A) {
+	if ((reads & READ_P17A) !== 0n) {
 		for (const entry of snap.active) {
 			const ns = sumNonStandardPtCountersInLayer(entry.perm.counters);
 			fp.push(ns.power, ns.toughness, ns.entries.length);
@@ -3255,7 +356,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- End Track P17a ---
 	// --- Track P17b ---
-	if (reads & READ_P17B) {
+	if ((reads & READ_P17B) !== 0n) {
 		fp.push(
 			state.startingPlayerId ?? '',
 			state.creaturesAttackedCountThisTurn ?? 0
@@ -3272,7 +373,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- End Track P17b ---
 	// --- Track P18a ---
-	if (reads & READ_P18A) {
+	if ((reads & READ_P18A) !== 0n) {
 		fp.push(state.players.length);
 		for (const p of state.players) {
 			fp.push(Boolean(p.hasEnduringStory));
@@ -3280,17 +381,17 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- End Track P18a ---
 	// --- Track P18b ---
-	if (reads & READ_P18B) {
+	if ((reads & READ_P18B) !== 0n) {
 		fp.push(0);
 	}
 	// --- End Track P18b ---
 	// --- Track P19a ---
-	if (reads & READ_P19A) {
+	if ((reads & READ_P19A) !== 0n) {
 		fp.push(0);
 	}
 	// --- End Track P19a ---
 	// --- Track P20a ---
-	if (reads & READ_P20A) {
+	if ((reads & READ_P20A) !== 0n) {
 		fp.push(state.rules?.startingLife ?? 20, state.players.length);
 		for (const p of state.players) {
 			fp.push(p.life, Boolean(p.lost));
@@ -3306,7 +407,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- End Track P20a ---
 	// --- Track P20b ---
-	if (reads & READ_P20B) {
+	if ((reads & READ_P20B) !== 0n) {
 		fp.push(state.players.length);
 		for (const p of state.players) {
 			fp.push(
@@ -3323,7 +424,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- End Track P20b ---
 	// --- Track P22a ---
-	if ((reads & READ_P22A) !== 0) {
+	if ((reads & READ_P22A) !== 0n) {
 		fp.push(state.rules?.startingLife ?? 20, state.players.length, state.activePlayerIndex);
 		for (const p of state.players) {
 			const etbCards = p.enteredBattlefieldCardsThisTurn;
@@ -3350,20 +451,73 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 	}
 	// --- End Track P22a ---
 	// --- Track P22b ---
-	if (reads & READ_P22B) {
+	if ((reads & READ_P22B) !== 0n) {
 		fp.push(0);
 	}
 	// --- End Track P22b ---
 	// --- Track P22c ---
-	if (reads & READ_P22C) {
+	if ((reads & READ_P22C) !== 0n) {
 		fp.push(0);
 	}
 	// --- End Track P22c ---
+	// --- Wave 12 ---
+	if ((reads & READ_WAVE9_MANA) !== 0n) {
+		for (const p of state.players) {
+			fp.push(
+				p.manaPool.W,
+				p.manaPool.U,
+				p.manaPool.B,
+				p.manaPool.R,
+				p.manaPool.G,
+				p.manaPool.C
+			);
+			const rm = p.restrictedMana as Record<string, ManaPool | undefined> | undefined;
+			const rmKeys = rm ? Object.keys(rm).sort() : [];
+			fp.push(rmKeys.length);
+			for (const rk of rmKeys) {
+				const b = rm?.[rk];
+				fp.push(rk, b?.W ?? 0, b?.U ?? 0, b?.B ?? 0, b?.R ?? 0, b?.G ?? 0, b?.C ?? 0);
+			}
+			const rmb = p.restrictedManaBuckets ?? [];
+			fp.push(rmb.length);
+			for (const b of rmb) {
+				fp.push(b.key, b.pool.W, b.pool.U, b.pool.B, b.pool.R, b.pool.G, b.pool.C);
+			}
+		}
+	}
+	if ((reads & READ_WAVE9_ATTACKS) !== 0n) {
+		for (const entry of snap.active) {
+			fp.push(entry.perm.attacksCountThisTurn ?? 0);
+		}
+	}
+	if ((reads & READ_WAVE9_DYNAMIC) !== 0n) {
+		for (const p of state.players) {
+			fp.push(
+				Boolean(p.activatedTargetedOwnCreatureAbilityThisTurn),
+				p.spellsCastWithTreasureManaThisTurn ?? 0,
+				p.nextSpellCascadeCount ?? 0,
+				p.sacrificedCardsThisTurn?.length ?? 0,
+				p.cardsDrawnThisTurn ?? 0,
+				Boolean(p.playedLandThisTurn)
+			);
+		}
+	}
+	// --- End Wave 12 ---
+	const readsLife = (reads & READ_LIFE) !== 0n;
+	const readsEnergy = (reads & READ_ENERGY) !== 0n;
+	const readsTurnHistory = (reads & READ_TURN_HISTORY) !== 0n;
+	const readsP10Suspect = (reads & READ_P10_SUSPECT) !== 0n;
+	const readsCommanderCastCount = (reads & READ_COMMANDER_CAST_COUNT) !== 0n;
+	const readsZoneSizes = (reads & READ_ZONE_SIZES) !== 0n;
+	const readsGraveyards = (reads & READ_GRAVEYARDS) !== 0n;
+	const readsExile = (reads & READ_EXILE) !== 0n;
+	const readsHiddenZones = (reads & READ_HIDDEN_ZONES) !== 0n;
+	const readsP14 = (reads & READ_P14) !== 0n;
 	for (const p of state.players) {
-		if (reads & READ_LIFE) fp.push(p.life);
-		if (reads & READ_ENERGY) fp.push(p.energyCounters || 0);
+		if (readsLife) fp.push(p.life);
+		if (readsEnergy) fp.push(p.energyCounters || 0);
 		// --- Track P7 ---
-		if (reads & READ_TURN_HISTORY) {
+		if (readsTurnHistory) {
 			fp.push(
 				Boolean(p.attackedThisTurn),
 				Boolean(p.permanentLeftBattlefieldThisTurn),
@@ -3372,7 +526,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		}
 		// --- End Track P7 ---
 		// --- Track P10 ---
-		if (reads & READ_P10_SUSPECT) {
+		if (readsP10Suspect) {
 			fp.push(
 				Boolean(p.descendedThisTurn),
 				Boolean(p.lostLifeThisTurn),
@@ -3381,17 +535,17 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			);
 		}
 		// --- End Track P10 ---
-		if (reads & READ_COMMANDER_CAST_COUNT) fp.push(playerCommanderCastCount(state, p.playerId));
-		if (reads & READ_ZONE_SIZES) {
+		if (readsCommanderCastCount) fp.push(playerCommanderCastCount(state, p.playerId));
+		if (readsZoneSizes) {
 			fp.push(p.hand.length, p.graveyard.length, p.library.length, p.exile.length, p.command.length);
 		}
-		if (reads & READ_GRAVEYARDS) {
+		if (readsGraveyards) {
 			fp.push(p.graveyard.length);
 			for (const g of p.graveyard) {
 				fp.push(g.card, g.copiableCard, g.copiableState);
 			}
 		}
-		if (reads & READ_EXILE) {
+		if (readsExile) {
 			fp.push(p.exile.length);
 			for (const ex of p.exile) {
 				fp.push(
@@ -3401,17 +555,28 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 					ex.exiledBy?.sourceInstanceId,
 					ex.exiledBy?.sourceObjectVersion
 				);
+				const c = ex.counters ?? {};
+				const cKeys = Object.keys(c).sort();
+				fp.push(cKeys.length);
+				for (const ck of cKeys) {
+					fp.push(ck, (c as Record<string, number>)[ck] || 0);
+				}
+				const gk = ex.grantedKeywords ?? [];
+				fp.push(gk.length);
+				for (const kw of gk) {
+					fp.push(kw);
+				}
 			}
 		}
 		// --- Track P8 ---
-		if (reads & READ_HIDDEN_ZONES) {
+		if (readsHiddenZones) {
 			fp.push(p.hand.length, p.library.length, p.command.length);
 			for (const c of p.hand) fp.push(c.card, c.copiableCard, c.copiableState);
 			for (const c of p.library) fp.push(c.card, c.copiableCard, c.copiableState);
 			for (const c of p.command) fp.push(c.card, c.copiableCard, c.copiableState);
 		}
 		// --- Track P14 ---
-		if (reads & READ_P14) {
+		if (readsP14) {
 			fp.push(
 				p.cardsDrawnThisTurn ?? 0,
 				p.spellsCastThisTurn ?? 0,
@@ -3436,17 +601,22 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 		}
 		// --- End Track P14 ---
 	}
+	const readsTapped = (reads & READ_TAPPED) !== 0n;
+	const readsAllCounters = (reads & READ_ALL_COUNTERS) !== 0n;
+	const readsKwCounters = (reads & READ_KEYWORD_COUNTERS) !== 0n;
+	const readsChosenName = (reads & READ_CHOSEN_CARD_NAME) !== 0n;
+	const readsP13 = (reads & READ_P13) !== 0n;
 	for (const entry of snap.active) {
 		const perm = entry.perm;
-		if (reads & READ_TAPPED) fp.push(perm.tapped);
+		if (readsTapped) fp.push(perm.tapped);
 		// --- Track P8 ---
-		if (reads & READ_ALL_COUNTERS) {
+		if (readsAllCounters) {
 			const cKeys = Object.keys(perm.counters).sort();
 			fp.push(cKeys.length);
 			for (const ck of cKeys) fp.push(ck, (perm.counters as Record<string, number>)[ck] || 0);
 		}
 		// --- Track P11 ---
-		if (reads & READ_KEYWORD_COUNTERS) {
+		if (readsKwCounters) {
 			const kwMask = computeKeywordCounterMask(perm.counters);
 			fp.push(kwMask);
 			if (kwMask !== 0) {
@@ -3457,12 +627,12 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 				}
 			}
 		}
-		if (reads & READ_CHOSEN_CARD_NAME) {
+		if (readsChosenName) {
 			fp.push(perm.chosenCardName ?? '');
 		}
 		// --- End Track P11 ---
 		// --- Track P13 ---
-		if (reads & READ_P13) {
+		if (readsP13) {
 			fp.push(
 				Boolean(perm.enteredThisTurn),
 				Boolean(perm.dealtDamageThisTurn),
@@ -3571,6 +741,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 				eff.affected.length,
 				eff.layer4?.addTypes?.length || 0,
 				eff.layer4?.setTypes?.length || 0,
+				eff.layer4?.removeTypes?.length || 0,
 				eff.layer4?.addSubtypes?.length || 0,
 				eff.layer4?.setSubtypes?.length || 0,
 				eff.layer5?.setColors !== undefined ? 1 : 0,
@@ -3610,6 +781,7 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
 			for (const a of eff.affected) fp.push(a.instanceId, a.objectVersion ?? 1);
 			if (eff.layer4?.addTypes?.length) for (const t of eff.layer4.addTypes) fp.push(t);
 			if (eff.layer4?.setTypes?.length) for (const t of eff.layer4.setTypes) fp.push(t);
+			if (eff.layer4?.removeTypes?.length) for (const t of eff.layer4.removeTypes) fp.push(t);
 			if (eff.layer4?.addSubtypes?.length) for (const s of eff.layer4.addSubtypes) fp.push(s);
 			if (eff.layer4?.setSubtypes?.length) for (const s of eff.layer4.setSubtypes) fp.push(s);
 			if (eff.layer5?.setColors?.length) for (const c of eff.layer5.setColors) fp.push(c);
@@ -3630,14 +802,18 @@ function buildDynamicFingerprint(state: GameState, snap: BoardSnapshot, reads: n
  * Compares `fp` (from `buildDynamicFingerprint`) against the current state in place, without
  * allocating, bailing at the first difference. Must read exactly what the builder pushes, in order.
  */
-function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: unknown[]): boolean {
+export function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: unknown[]): boolean {
 	let i = 0;
 	if (fp[i++] !== (state as { version?: number }).version) return false;
-	const reads = fp[i++] as number;
-	if (reads & READ_ACTIVE_PLAYER && fp[i++] !== state.activePlayerIndex) return false;
-	if (reads & READ_MONARCH && fp[i++] !== (state.monarchPlayerId ?? null)) return false;
+	const reads = fp[i++] as bigint;
+	const hook = getExtraLayerReadHook();
+	if (hook && (reads & hook.flag) !== 0n && fp[i++] !== hook.read(state)) {
+		return false;
+	}
+	if ((reads & READ_ACTIVE_PLAYER) !== 0n && fp[i++] !== state.activePlayerIndex) return false;
+	if ((reads & READ_MONARCH) !== 0n && fp[i++] !== (state.monarchPlayerId ?? null)) return false;
 	// --- Track P8 ---
-	if (reads & READ_COMBAT) {
+	if ((reads & READ_COMBAT) !== 0n) {
 		const attackers = state.combat.attackers;
 		if (fp[i++] !== attackers.length) return false;
 		for (const atk of attackers) {
@@ -3655,9 +831,9 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		}
 	}
 	// --- Track P7 ---
-	if (reads & READ_TURN_HISTORY && fp[i++] !== Boolean(state.creatureDiedThisTurn)) return false;
+	if ((reads & READ_TURN_HISTORY) !== 0n && fp[i++] !== Boolean(state.creatureDiedThisTurn)) return false;
 	// --- Track P12 ---
-	if (reads & READ_P12) {
+	if ((reads & READ_P12) !== 0n) {
 		if (
 			fp[i++] !== (state.creaturesAttackedCountThisTurn ?? 0) ||
 			fp[i++] !== (state.cardsPutIntoGraveyardThisTurn ?? 0)
@@ -3676,7 +852,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- End Track P12 ---
 	// --- Track P13 ---
-	if (reads & READ_P13) {
+	if ((reads & READ_P13) !== 0n) {
 		if (
 			fp[i++] !== (state.initiativePlayerId ?? null) ||
 			fp[i++] !== (state.spellsCastLastTurnTotal ?? 0) ||
@@ -3701,7 +877,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- End Track P13 ---
 	// --- Track P15 ---
-	if (reads & READ_P15) {
+	if ((reads & READ_P15) !== 0n) {
 		if (
 			fp[i++] !== (state.dayNight ?? null) ||
 			fp[i++] !== (state.permanentsPutIntoGraveyardFromBattlefieldThisTurn ?? 0)
@@ -3716,7 +892,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- End Track P15 ---
 	// --- Track P16a ---
-	if (reads & READ_P16A) {
+	if ((reads & READ_P16A) !== 0n) {
 		for (const p of state.players) {
 			if (
 				fp[i++] !== (p.poison ?? 0) ||
@@ -3760,7 +936,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- End Track P16a ---
 	// --- Track P16b ---
-	if (reads & READ_P16B) {
+	if ((reads & READ_P16B) !== 0n) {
 		if (fp[i++] !== (state.combatPhasesCountThisTurn ?? 0)) return false;
 		for (const p of state.players) {
 			if (
@@ -3783,7 +959,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- End Track P16b ---
 	// --- Track P17a ---
-	if (reads & READ_P17A) {
+	if ((reads & READ_P17A) !== 0n) {
 		for (const entry of snap.active) {
 			const ns = sumNonStandardPtCountersInLayer(entry.perm.counters);
 			if (fp[i++] !== ns.power || fp[i++] !== ns.toughness || fp[i++] !== ns.entries.length) {
@@ -3796,7 +972,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- End Track P17a ---
 	// --- Track P17b ---
-	if (reads & READ_P17B) {
+	if ((reads & READ_P17B) !== 0n) {
 		if (
 			fp[i++] !== (state.startingPlayerId ?? '') ||
 			fp[i++] !== (state.creaturesAttackedCountThisTurn ?? 0)
@@ -3817,7 +993,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- End Track P17b ---
 	// --- Track P18a ---
-	if (reads & READ_P18A) {
+	if ((reads & READ_P18A) !== 0n) {
 		if (fp[i++] !== state.players.length) return false;
 		for (const p of state.players) {
 			if (fp[i++] !== Boolean(p.hasEnduringStory)) return false;
@@ -3825,17 +1001,17 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- End Track P18a ---
 	// --- Track P18b ---
-	if (reads & READ_P18B) {
+	if ((reads & READ_P18B) !== 0n) {
 		if (fp[i++] !== 0) return false;
 	}
 	// --- End Track P18b ---
 	// --- Track P19a ---
-	if (reads & READ_P19A) {
+	if ((reads & READ_P19A) !== 0n) {
 		if (fp[i++] !== 0) return false;
 	}
 	// --- End Track P19a ---
 	// --- Track P20a ---
-	if (reads & READ_P20A) {
+	if ((reads & READ_P20A) !== 0n) {
 		if (
 			fp[i++] !== (state.rules?.startingLife ?? 20) ||
 			fp[i++] !== state.players.length
@@ -3858,7 +1034,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- End Track P20a ---
 	// --- Track P20b ---
-	if (reads & READ_P20B) {
+	if ((reads & READ_P20B) !== 0n) {
 		if (fp[i++] !== state.players.length) return false;
 		for (const p of state.players) {
 			if (
@@ -3877,7 +1053,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- End Track P20b ---
 	// --- Track P22a ---
-	if ((reads & READ_P22A) !== 0) {
+	if ((reads & READ_P22A) !== 0n) {
 		if (
 			fp[i++] !== (state.rules?.startingLife ?? 20) ||
 			fp[i++] !== state.players.length ||
@@ -3914,21 +1090,100 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 	}
 	// --- End Track P22a ---
 	// --- Track P22b ---
-	if (reads & READ_P22B) {
+	if ((reads & READ_P22B) !== 0n) {
 		if (fp[i++] !== 0) return false;
 	}
 	// --- End Track P22b ---
 	// --- Track P22c ---
-	if (reads & READ_P22C) {
+	if ((reads & READ_P22C) !== 0n) {
 		if (fp[i++] !== 0) return false;
 	}
 	// --- End Track P22c ---
+	// --- Wave 12 ---
+	if ((reads & READ_WAVE9_MANA) !== 0n) {
+		for (const p of state.players) {
+			if (
+				fp[i++] !== p.manaPool.W ||
+				fp[i++] !== p.manaPool.U ||
+				fp[i++] !== p.manaPool.B ||
+				fp[i++] !== p.manaPool.R ||
+				fp[i++] !== p.manaPool.G ||
+				fp[i++] !== p.manaPool.C
+			) {
+				return false;
+			}
+			const rm = p.restrictedMana as Record<string, ManaPool | undefined> | undefined;
+			const rmKeys = rm ? Object.keys(rm).sort() : [];
+			if (fp[i++] !== rmKeys.length) return false;
+			for (const rk of rmKeys) {
+				const b = rm?.[rk];
+				if (
+					fp[i++] !== rk ||
+					fp[i++] !== (b?.W ?? 0) ||
+					fp[i++] !== (b?.U ?? 0) ||
+					fp[i++] !== (b?.B ?? 0) ||
+					fp[i++] !== (b?.R ?? 0) ||
+					fp[i++] !== (b?.G ?? 0) ||
+					fp[i++] !== (b?.C ?? 0)
+				) {
+					return false;
+				}
+			}
+			const rmb = p.restrictedManaBuckets ?? [];
+			if (fp[i++] !== rmb.length) return false;
+			for (const b of rmb) {
+				if (
+					fp[i++] !== b.key ||
+					fp[i++] !== b.pool.W ||
+					fp[i++] !== b.pool.U ||
+					fp[i++] !== b.pool.B ||
+					fp[i++] !== b.pool.R ||
+					fp[i++] !== b.pool.G ||
+					fp[i++] !== b.pool.C
+				) {
+					return false;
+				}
+			}
+		}
+	}
+	if ((reads & READ_WAVE9_ATTACKS) !== 0n) {
+		for (const entry of snap.active) {
+			if (fp[i++] !== (entry.perm.attacksCountThisTurn ?? 0)) {
+				return false;
+			}
+		}
+	}
+	if ((reads & READ_WAVE9_DYNAMIC) !== 0n) {
+		for (const p of state.players) {
+			if (
+				fp[i++] !== Boolean(p.activatedTargetedOwnCreatureAbilityThisTurn) ||
+				fp[i++] !== (p.spellsCastWithTreasureManaThisTurn ?? 0) ||
+				fp[i++] !== (p.nextSpellCascadeCount ?? 0) ||
+				fp[i++] !== (p.sacrificedCardsThisTurn?.length ?? 0) ||
+				fp[i++] !== (p.cardsDrawnThisTurn ?? 0) ||
+				fp[i++] !== Boolean(p.playedLandThisTurn)
+			) {
+				return false;
+			}
+		}
+	}
+	// --- End Wave 12 ---
+	const readsLife = (reads & READ_LIFE) !== 0n;
+	const readsEnergy = (reads & READ_ENERGY) !== 0n;
+	const readsTurnHistory = (reads & READ_TURN_HISTORY) !== 0n;
+	const readsP10Suspect = (reads & READ_P10_SUSPECT) !== 0n;
+	const readsCommanderCastCount = (reads & READ_COMMANDER_CAST_COUNT) !== 0n;
+	const readsZoneSizes = (reads & READ_ZONE_SIZES) !== 0n;
+	const readsGraveyards = (reads & READ_GRAVEYARDS) !== 0n;
+	const readsExile = (reads & READ_EXILE) !== 0n;
+	const readsHiddenZones = (reads & READ_HIDDEN_ZONES) !== 0n;
+	const readsP14 = (reads & READ_P14) !== 0n;
 	for (const p of state.players) {
-		if (reads & READ_LIFE && fp[i++] !== p.life) return false;
-		if (reads & READ_ENERGY && fp[i++] !== (p.energyCounters || 0)) return false;
+		if (readsLife && fp[i++] !== p.life) return false;
+		if (readsEnergy && fp[i++] !== (p.energyCounters || 0)) return false;
 		// --- Track P7 ---
 		if (
-			reads & READ_TURN_HISTORY &&
+			readsTurnHistory &&
 			(fp[i++] !== Boolean(p.attackedThisTurn) ||
 				fp[i++] !== Boolean(p.permanentLeftBattlefieldThisTurn) ||
 				fp[i++] !== (p.lifeGainedThisTurn || 0))
@@ -3938,7 +1193,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		// --- End Track P7 ---
 		// --- Track P10 ---
 		if (
-			reads & READ_P10_SUSPECT &&
+			readsP10Suspect &&
 			(fp[i++] !== Boolean(p.descendedThisTurn) ||
 				fp[i++] !== Boolean(p.lostLifeThisTurn) ||
 				fp[i++] !== (p.manaSpentOnSpellsThisTurn || 0) ||
@@ -3947,11 +1202,11 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			return false;
 		}
 		// --- End Track P10 ---
-		if (reads & READ_COMMANDER_CAST_COUNT && fp[i++] !== playerCommanderCastCount(state, p.playerId)) {
+		if (readsCommanderCastCount && fp[i++] !== playerCommanderCastCount(state, p.playerId)) {
 			return false;
 		}
 		if (
-			reads & READ_ZONE_SIZES &&
+			readsZoneSizes &&
 			(fp[i++] !== p.hand.length ||
 				fp[i++] !== p.graveyard.length ||
 				fp[i++] !== p.library.length ||
@@ -3960,7 +1215,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		) {
 			return false;
 		}
-		if (reads & READ_GRAVEYARDS) {
+		if (readsGraveyards) {
 			if (fp[i++] !== p.graveyard.length) return false;
 			for (const g of p.graveyard) {
 				if (fp[i++] !== g.card || fp[i++] !== g.copiableCard || fp[i++] !== g.copiableState) {
@@ -3968,7 +1223,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 				}
 			}
 		}
-		if (reads & READ_EXILE) {
+		if (readsExile) {
 			if (fp[i++] !== p.exile.length) return false;
 			for (const ex of p.exile) {
 				if (
@@ -3980,10 +1235,23 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 				) {
 					return false;
 				}
+				const c = ex.counters ?? {};
+				const cKeys = Object.keys(c).sort();
+				if (fp[i++] !== cKeys.length) return false;
+				for (const ck of cKeys) {
+					if (fp[i++] !== ck || fp[i++] !== ((c as Record<string, number>)[ck] || 0)) {
+						return false;
+					}
+				}
+				const gk = ex.grantedKeywords ?? [];
+				if (fp[i++] !== gk.length) return false;
+				for (const kw of gk) {
+					if (fp[i++] !== kw) return false;
+				}
 			}
 		}
 		// --- Track P8 ---
-		if (reads & READ_HIDDEN_ZONES) {
+		if (readsHiddenZones) {
 			if (
 				fp[i++] !== p.hand.length ||
 				fp[i++] !== p.library.length ||
@@ -4008,7 +1276,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			}
 		}
 		// --- Track P14 ---
-		if (reads & READ_P14) {
+		if (readsP14) {
 			if (
 				fp[i++] !== (p.cardsDrawnThisTurn ?? 0) ||
 				fp[i++] !== (p.spellsCastThisTurn ?? 0) ||
@@ -4037,14 +1305,14 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 		}
 		// --- End Track P14 ---
 	}
-	const readsTapped = (reads & READ_TAPPED) !== 0;
-	const readsAllCounters = (reads & READ_ALL_COUNTERS) !== 0;
+	const readsTapped = (reads & READ_TAPPED) !== 0n;
+	const readsAllCounters = (reads & READ_ALL_COUNTERS) !== 0n;
 	// --- Track P11 ---
-	const readsKwCounters = (reads & READ_KEYWORD_COUNTERS) !== 0;
-	const readsChosenName = (reads & READ_CHOSEN_CARD_NAME) !== 0;
+	const readsKwCounters = (reads & READ_KEYWORD_COUNTERS) !== 0n;
+	const readsChosenName = (reads & READ_CHOSEN_CARD_NAME) !== 0n;
 	// --- End Track P11 ---
 	// --- Track P13 ---
-	const readsP13 = (reads & READ_P13) !== 0;
+	const readsP13 = (reads & READ_P13) !== 0n;
 	// --- End Track P13 ---
 	for (const entry of snap.active) {
 		const perm = entry.perm;
@@ -4197,6 +1465,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			const affLen = eff.affected.length;
 			const l4AddTypes = eff.layer4?.addTypes?.length || 0;
 			const l4SetTypes = eff.layer4?.setTypes?.length || 0;
+			const l4RemTypes = eff.layer4?.removeTypes?.length || 0;
 			const l4AddSubs = eff.layer4?.addSubtypes?.length || 0;
 			const l4SetSubs = eff.layer4?.setSubtypes?.length || 0;
 			const hasL5Set = eff.layer5?.setColors !== undefined ? 1 : 0;
@@ -4222,6 +1491,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 				fp[i++] !== affLen ||
 				fp[i++] !== l4AddTypes ||
 				fp[i++] !== l4SetTypes ||
+				fp[i++] !== l4RemTypes ||
 				fp[i++] !== l4AddSubs ||
 				fp[i++] !== l4SetSubs ||
 				fp[i++] !== hasL5Set ||
@@ -4265,6 +1535,7 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 			}
 			if (l4AddTypes) for (const t of eff.layer4!.addTypes!) if (fp[i++] !== t) return false;
 			if (l4SetTypes) for (const t of eff.layer4!.setTypes!) if (fp[i++] !== t) return false;
+			if (l4RemTypes) for (const t of eff.layer4!.removeTypes!) if (fp[i++] !== t) return false;
 			if (l4AddSubs) for (const s of eff.layer4!.addSubtypes!) if (fp[i++] !== s) return false;
 			if (l4SetSubs) for (const s of eff.layer4!.setSubtypes!) if (fp[i++] !== s) return false;
 			if (l5SetLen) for (const c of eff.layer5!.setColors!) if (fp[i++] !== c) return false;
@@ -4280,16 +1551,16 @@ function dynamicFingerprintMatches(state: GameState, snap: BoardSnapshot, fp: un
 }
 
 function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLayerCache {
-	const outer = layerReads;
-	layerReads = 0;
+	const outer = getLayerReads();
+	resetLayerReads(0n);
 	try {
 		const byInstance = evaluateBoard(state, snap);
 		return {
-			dynamicFingerprint: buildDynamicFingerprint(state, snap, layerReads),
+			dynamicFingerprint: buildDynamicFingerprint(state, snap, getLayerReads()),
 			byInstance
 		};
 	} finally {
-		layerReads |= outer;
+		noteLayerRead(outer);
 	}
 }
 
@@ -4297,6 +1568,8 @@ function computeBoardLayerCache(state: GameState, snap: BoardSnapshot): BoardLay
 function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['byInstance'] {
 	// Split into one function per pass (Phase 6d): same code, but V8 optimises and re-optimises
 	// the passes separately instead of recompiling one ~850-line function after every deopt.
+	const hook = getExtraLayerReadHook();
+	if (hook) noteLayerRead(hook.flag);
 	const workList: PermWorkState[] = [];
 	const workMap = new Map<string, PermWorkState>();
 	// --- Track P13 (CR 114.3, 114.4): Emblems in the command zone contribute continuous effects
@@ -4305,6 +1578,7 @@ function evaluateBoard(state: GameState, snap: BoardSnapshot): BoardLayerCache['
 	// --- End Track P13 ---
 	evaluateLayer1(state, snap, workList, workMap);
 	evaluateLayer2Control(state, workList, workMap, emblemWorkList);
+	applyLayer3Wave9(state, workList, workMap);
 	evaluateAttachedTypes(state, snap, workList, workMap);
 	evaluateTypeOverwrites(state, snap, workList, workMap, emblemWorkList);
 	evaluateAdditiveTypesAndColors(state, snap, workList, workMap, emblemWorkList);
@@ -4886,7 +2160,7 @@ function isTimedContinuousEffectActive(
 		if (cond.kind === 'controlledByPlayer') {
 			return src.controllerId === cond.controllerId;
 		}
-		layerReads |= READ_TAPPED;
+		noteLayerRead(READ_TAPPED);
 		return Boolean(src.inst.tapped);
 	}
 	// --- End Track P16a ---
@@ -4894,27 +2168,6 @@ function isTimedContinuousEffectActive(
 	if (!usl) return true;
 	const src = workMap.get(usl.sourceInstanceId);
 	return Boolean(src && (src.inst.objectVersion ?? 1) === usl.sourceObjectVersion);
-}
-
-function resolveLayerPlayerRef(
-	ref: PlayerRef,
-	state: GameState,
-	source: PermWorkState,
-	target: PermWorkState
-): string {
-	switch (ref.k) {
-		case 'you':
-			return source.controllerId;
-		case 'activePlayer':
-			layerReads |= READ_ACTIVE_PLAYER;
-			return state.players[state.activePlayerIndex]?.playerId ?? source.controllerId;
-		case 'ownerOf':
-			return ref.of.k === 'affected' ? target.inst.ownerId : source.inst.ownerId;
-		case 'controllerOf':
-			return ref.of.k === 'affected' ? target.controllerId : source.controllerId;
-		default:
-			return source.controllerId;
-	}
 }
 
 /**
@@ -5013,9 +2266,10 @@ function evaluateAttachedTypes(
 	// --- End Track P11 ---
 	// 2. Layer 4 Pass A: Attached type-setting effects, attached ability-removal registration, and attached 7b setters
 	for (const target of workList) {
-		for (const att of workList) {
-			if (att.inst.attachedToId !== target.inst.instanceId) continue;
-			if (att.strippedByAttachment) continue;
+		const attached = workList
+			.filter((att) => att.inst.attachedToId === target.inst.instanceId && !att.strippedByAttachment)
+			.sort((a, b) => a.timestamp - b.timestamp);
+		for (const att of attached) {
 
 			let losesAbilities = false;
 			for (const st of att.statics) {
@@ -5023,9 +2277,8 @@ function evaluateAttachedTypes(
 				if (st.condition && !evaluateLayerCondition(st.condition, state, workList, att, target)) {
 					continue;
 				}
-				if (st.mod.k === 'removeAllAbilities') {
-					losesAbilities = true;
-				} else if (st.layer === '4' && st.mod.k === 'setTypes') {
+				if (st.layer === '4' && st.mod.k === 'setTypes') {
+					const wasAlreadyLand = target.types.includes('Land');
 					// CR 205.4b: Changing card types or subtypes does not change supertypes.
 					target.types = [...st.mod.types];
 					target.subtypes = [...(st.mod.subtypes ?? [])];
@@ -5036,6 +2289,12 @@ function evaluateAttachedTypes(
 					const subStr = target.subtypes.length > 0 ? ` — ${target.subtypes.join(' ')}` : '';
 					target.effectiveTypeLine = `${superPrefix}${typeStr}${subStr}`;
 					if (!target.typeModifiedBy.includes(att.name)) target.typeModifiedBy.push(att.name);
+					if (wasAlreadyLand && target.types.includes('Land')) {
+						target.latestSetLandSubtypesTs = Math.max(
+							target.latestSetLandSubtypesTs ?? -Infinity,
+							att.timestamp
+						);
+					}
 
 					// CR 305.7: setting a basic land subtype on a land removes rules-text abilities
 					if (
@@ -5043,14 +2302,6 @@ function evaluateAttachedTypes(
 						target.subtypes.some((sub) => BASIC_LAND_SUBTYPES.has(sub))
 					) {
 						losesAbilities = true;
-					}
-					if (target.types.includes('Land') && !target.types.includes('Creature')) {
-						target.layer7bSetters.push({
-							sourceName: att.name,
-							power: null,
-							toughness: null,
-							timestamp: att.timestamp
-						});
 					}
 				} else if (st.layer === '7b' && st.mod.k === 'setBasePT') {
 					const p = evaluateLayerAmount(st.mod.power, state, workList, att, target);
@@ -5080,10 +2331,32 @@ function evaluateAttachedTypes(
 				}
 			}
 			if (losesAbilities) {
-				recordAbilityRemoval(target, att.name, att.timestamp);
+				recordAbilityRemoval(target, att.name, att.timestamp, false, false, att.inst.instanceId);
 			}
 		}
 	}
+}
+
+function reconcilePendingLandSubtypes(target: PermWorkState): void {
+	if (!target.pendingLandSubtypes?.length) return;
+	if (target.types.includes('Land')) {
+		for (const pending of target.pendingLandSubtypes) {
+			if (!target.typeModifiedBy.includes(pending.rawSourceName)) {
+				target.typeModifiedBy.push(pending.rawSourceName);
+			}
+			if (pending.hasBasic) {
+				recordAbilityRemoval(
+					target,
+					pending.removalSourceName,
+					pending.timestamp,
+					false,
+					false,
+					pending.sourceId
+				);
+			}
+		}
+	}
+	target.pendingLandSubtypes = undefined;
 }
 
 function evaluateTypeOverwrites(
@@ -5096,9 +2369,158 @@ function evaluateTypeOverwrites(
 	// --- End Track P13 ---
 ): void {
 	// 3. Layer 4 Pass B: Global type-overwriting effects ("Nonbasic lands are Mountains." — CR 613.8 before additive land types)
-	const overwriteSources = emblemWorkList.length > 0 ? [...workList, ...emblemWorkList] : workList;
+	const overwriteSources =
+		emblemWorkList.length > 0
+			? [...workList, ...emblemWorkList].sort((a, b) => a.timestamp - b.timestamp)
+			: workList;
+	const sortedTimed = state.timedContinuousEffects?.length
+		? state.timedContinuousEffects
+				.map((eff, idx) => ({ eff, timedId: `timed:${idx}` }))
+				.filter(
+					({ eff }) =>
+						isTimedContinuousEffectActive(eff, workMap) &&
+						(eff.layer4?.setTypes?.length ||
+							eff.layer4?.removeTypes?.length ||
+							eff.layer4?.setSubtypes !== undefined)
+				)
+				.sort((a, b) => a.eff.timestamp - b.eff.timestamp)
+		: [];
+	let timedIdx = 0;
+	const applyTimedOverwrite = ({
+		eff,
+		timedId
+	}: {
+		eff: TimedContinuousEffect;
+		timedId: string;
+	}): void => {
+		for (const aff of eff.affected) {
+			const target = workMap.get(aff.instanceId);
+			if (!target || (target.inst.objectVersion ?? 1) !== (aff.objectVersion ?? 1)) continue;
+			const overwrittenByLaterAttached = workList.some(
+				(att) =>
+					att.inst.attachedToId === target.inst.instanceId &&
+					!att.strippedByAttachment &&
+					att.abilityRemovalEvents.length === 0 &&
+					att.timestamp > eff.timestamp &&
+					att.statics.some(
+						(st) =>
+							st.k === 'continuous' &&
+							st.layer === '4' &&
+							st.affected === 'attachedTo' &&
+							st.mod.k === 'setTypes' &&
+							(!st.condition || evaluateLayerCondition(st.condition, state, workList, att, target))
+					)
+			);
+			if (overwrittenByLaterAttached) continue;
+			const wasAlreadyLand = target.types.includes('Land');
+			if (eff.layer4?.setTypes?.length) {
+				target.types = [...eff.layer4.setTypes];
+				target.hasAllCreatureTypes = false;
+				if (wasAlreadyLand && target.types.includes('Land')) {
+					target.latestSetLandSubtypesTs = Math.max(
+						target.latestSetLandSubtypesTs ?? -Infinity,
+						eff.timestamp
+					);
+				}
+			}
+			if (eff.layer4?.removeTypes?.length) {
+				target.types = target.types.filter((t) => !eff.layer4!.removeTypes!.includes(t));
+				if (eff.layer4.removeTypes.includes('Creature')) {
+					target.hasAllCreatureTypes = false;
+				}
+			}
+			const hadLandTypeOrSubtypeRemoved =
+				Boolean(eff.layer4?.setTypes?.length) ||
+				Boolean(eff.layer4?.removeTypes?.includes('Land'));
+			if (
+				hadLandTypeOrSubtypeRemoved &&
+				!target.types.includes('Land') &&
+				eff.layer4?.setSubtypes === undefined
+			) {
+				target.subtypes = target.subtypes.filter((sub) => !LAND_SUBTYPES.has(sub));
+			}
+			let deferTypeModifiedBy = false;
+			const settingLandSubtypes = Boolean(
+				eff.layer4?.setSubtypes?.some((sub) => LAND_SUBTYPES.has(sub))
+			);
+			if (
+				hadLandTypeOrSubtypeRemoved ||
+				(eff.layer4?.setSubtypes !== undefined && settingLandSubtypes)
+			) {
+				target.pendingLandSubtypes = undefined;
+			}
+			if (eff.layer4?.setSubtypes !== undefined) {
+				if (settingLandSubtypes) {
+					target.latestSetLandSubtypesTs = Math.max(
+						target.latestSetLandSubtypesTs ?? -Infinity,
+						eff.timestamp
+					);
+				}
+				let retainedSubtypes: string[] = [];
+				if (settingLandSubtypes) {
+					retainedSubtypes = target.subtypes.filter((sub) => !LAND_SUBTYPES.has(sub));
+				} else if (!eff.layer4.setTypes?.length) {
+					// CR 205.1b: Additive card types (e.g. "[subtype] artifact creature") retain subtypes
+					// correlated with retained non-creature card types (such as land subtypes).
+					// Pass C may still add 'Land' (e.g. Ashaya, Geomancer Rite), so retain land subtypes
+					// across Pass B unless Land was removed; Pass C reconciles pendingLandSubtypes
+					// and strips land subtypes if target is not a Land.
+					retainedSubtypes = target.subtypes.filter(
+						(sub) =>
+							(!hadLandTypeOrSubtypeRemoved && LAND_SUBTYPES.has(sub)) ||
+							((target.types.includes('Artifact') || eff.layer4?.addTypes?.includes('Artifact')) &&
+								(sub === 'Equipment' ||
+									sub === 'Vehicle' ||
+									sub === 'Fortification' ||
+									sub === 'Treasure' ||
+									sub === 'Clue' ||
+									sub === 'Food' ||
+									sub === 'Blood' ||
+									sub === 'Map' ||
+									sub === 'Powerstone' ||
+									sub === 'Gold' ||
+									sub === 'Junk'))
+					);
+				}
+				target.subtypes = [...eff.layer4.setSubtypes, ...retainedSubtypes];
+				if (!settingLandSubtypes) {
+					target.hasAllCreatureTypes = false;
+				}
+				const hasBasic = eff.layer4.setSubtypes.some((sub) => BASIC_LAND_SUBTYPES.has(sub));
+				if (settingLandSubtypes) {
+					(target.pendingLandSubtypes ??= []).push({
+						rawSourceName: eff.sourceName,
+						removalSourceName: eff.sourceName || 'Temporary Effect',
+						timestamp: eff.timestamp,
+						sourceId: timedId,
+						hasBasic
+					});
+					if (
+						!eff.layer4.setTypes?.length &&
+						!eff.layer4.removeTypes?.length &&
+						!eff.layer4.addTypes?.length
+					) {
+						deferTypeModifiedBy = true;
+					}
+				}
+			}
+			const superPrefix = target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
+			const typeStr = target.types.join(' ');
+			const subStr = target.subtypes.length > 0 ? ` — ${target.subtypes.join(' ')}` : '';
+			target.effectiveTypeLine = `${superPrefix}${typeStr}${subStr}`;
+			if (!deferTypeModifiedBy && !target.typeModifiedBy.includes(eff.sourceName)) {
+				target.typeModifiedBy.push(eff.sourceName);
+			}
+		}
+	};
 	for (const source of overwriteSources) {
-		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
+		while (timedIdx < sortedTimed.length && sortedTimed[timedIdx].eff.timestamp <= source.timestamp) {
+			applyTimedOverwrite(sortedTimed[timedIdx++]);
+		}
+		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) {
+			source.skippedLayer4SetSubtypes = true;
+			continue;
+		}
 		for (const st of source.statics) {
 			if (
 				st.k !== 'continuous' ||
@@ -5133,6 +2555,22 @@ function evaluateTypeOverwrites(
 				if (st.condition && !evaluateLayerCondition(st.condition, state, workList, source, target, workMap)) {
 					continue;
 				}
+				const overwrittenByLaterAttached = workList.some(
+					(att) =>
+						att.inst.attachedToId === target.inst.instanceId &&
+						!att.strippedByAttachment &&
+						att.abilityRemovalEvents.length === 0 &&
+						att.timestamp > source.timestamp &&
+						att.statics.some(
+							(attSt) =>
+								attSt.k === 'continuous' &&
+								attSt.layer === '4' &&
+								attSt.affected === 'attachedTo' &&
+								attSt.mod.k === 'setTypes' &&
+								(!attSt.condition || evaluateLayerCondition(attSt.condition, state, workList, att, target))
+						)
+				);
+				if (overwrittenByLaterAttached) continue;
 				// CR 205.1a, 205.4b, 305.7: Setting land subtypes replaces only land subtypes while
 				// preserving supertypes, all card types (e.g. Artifact, Creature), and non-land subtypes.
 				const settingLandSubtypes = effectiveSubtypes.some((sub) => LAND_SUBTYPES.has(sub));
@@ -5142,91 +2580,55 @@ function evaluateTypeOverwrites(
 						target.latestSetLandSubtypesTs ?? -Infinity,
 						source.timestamp
 					);
+					target.pendingLandSubtypes = undefined;
 				}
 				// --- End Track P17a ---
 				const retainedSubtypes = settingLandSubtypes
 					? target.subtypes.filter((sub) => !LAND_SUBTYPES.has(sub))
-					: [];
+					: target.subtypes.filter(
+							(sub) =>
+								LAND_SUBTYPES.has(sub) ||
+								(target.types.includes('Artifact') &&
+									(sub === 'Equipment' ||
+										sub === 'Vehicle' ||
+										sub === 'Fortification' ||
+										sub === 'Treasure' ||
+										sub === 'Clue' ||
+										sub === 'Food' ||
+										sub === 'Blood' ||
+										sub === 'Map' ||
+										sub === 'Powerstone' ||
+										sub === 'Gold' ||
+										sub === 'Junk'))
+						);
 				target.subtypes = [...effectiveSubtypes, ...retainedSubtypes];
 				const superPrefix = target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
 				const typeStr = target.types.join(' ');
 				const subStr = target.subtypes.length > 0 ? ` — ${target.subtypes.join(' ')}` : '';
 				target.effectiveTypeLine = `${superPrefix}${typeStr}${subStr}`;
-				if (!target.typeModifiedBy.includes(source.name)) target.typeModifiedBy.push(source.name);
-				if (
-					effectiveSubtypes.some((sub) => BASIC_LAND_SUBTYPES.has(sub)) &&
-					target.inst.instanceId !== source.inst.instanceId
-				) {
-					recordAbilityRemoval(target, source.name, source.timestamp);
+				if (settingLandSubtypes) {
+					const hasBasic =
+						effectiveSubtypes.some((sub) => BASIC_LAND_SUBTYPES.has(sub)) &&
+						target.inst.instanceId !== source.inst.instanceId;
+					(target.pendingLandSubtypes ??= []).push({
+						rawSourceName: source.name,
+						removalSourceName: source.name,
+						timestamp: source.timestamp,
+						sourceId: source.inst.instanceId,
+						hasBasic
+					});
+				} else if (!target.typeModifiedBy.includes(source.name)) {
+					target.typeModifiedBy.push(source.name);
 				}
 			}
 		}
 	}
-	if (state.timedContinuousEffects?.length) {
-		const sorted = [...state.timedContinuousEffects]
-			.filter(
-				(e) =>
-					isTimedContinuousEffectActive(e, workMap) &&
-					(e.layer4?.setTypes?.length || e.layer4?.setSubtypes !== undefined)
-			)
-			.sort((a, b) => a.timestamp - b.timestamp);
-		for (const eff of sorted) {
-			for (const aff of eff.affected) {
-				const target = workMap.get(aff.instanceId);
-				if (!target || (target.inst.objectVersion ?? 1) !== (aff.objectVersion ?? 1)) continue;
-				const overwrittenByLaterAttached = workList.some(
-					(att) =>
-						att.inst.attachedToId === target.inst.instanceId &&
-						!att.strippedByAttachment &&
-						att.abilityRemovalEvents.length === 0 &&
-						att.timestamp > eff.timestamp &&
-						att.statics.some(
-							(st) =>
-								st.k === 'continuous' &&
-								st.layer === '4' &&
-								st.affected === 'attachedTo' &&
-								st.mod.k === 'setTypes' &&
-								(!st.condition || evaluateLayerCondition(st.condition, state, workList, att, target))
-						)
-				);
-				if (overwrittenByLaterAttached) continue;
-				if (eff.layer4?.setTypes?.length) {
-					target.types = [...eff.layer4.setTypes];
-					target.hasAllCreatureTypes = false;
-				}
-				if (eff.layer4?.setSubtypes !== undefined) {
-					const settingLandSubtypes = eff.layer4.setSubtypes.some((sub) => LAND_SUBTYPES.has(sub));
-					let retainedSubtypes: string[] = [];
-					if (settingLandSubtypes) {
-						retainedSubtypes = target.subtypes.filter((sub) => !LAND_SUBTYPES.has(sub));
-					} else if (!eff.layer4.setTypes?.length) {
-						// CR 205.1b: Additive card types (e.g. "[subtype] artifact creature") retain subtypes
-						// correlated with retained non-creature card types (such as land subtypes).
-						retainedSubtypes = target.subtypes.filter((sub) =>
-							(target.types.includes('Land') && LAND_SUBTYPES.has(sub)) ||
-							((target.types.includes('Artifact') || eff.layer4?.addTypes?.includes('Artifact')) &&
-								(sub === 'Equipment' ||
-									sub === 'Vehicle' ||
-									sub === 'Fortification' ||
-									sub === 'Treasure' ||
-									sub === 'Clue' ||
-									sub === 'Food' ||
-									sub === 'Blood' ||
-									sub === 'Map' ||
-									sub === 'Powerstone' ||
-									sub === 'Gold' ||
-									sub === 'Junk'))
-						);
-					}
-					target.subtypes = [...eff.layer4.setSubtypes, ...retainedSubtypes];
-					target.hasAllCreatureTypes = false;
-				}
-				const superPrefix = target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
-				const typeStr = target.types.join(' ');
-				const subStr = target.subtypes.length > 0 ? ` — ${target.subtypes.join(' ')}` : '';
-				target.effectiveTypeLine = `${superPrefix}${typeStr}${subStr}`;
-				if (!target.typeModifiedBy.includes(eff.sourceName)) target.typeModifiedBy.push(eff.sourceName);
-			}
+	while (timedIdx < sortedTimed.length) {
+		applyTimedOverwrite(sortedTimed[timedIdx++]);
+	}
+	for (const target of workList) {
+		if (target.types.includes('Land') && target.pendingLandSubtypes?.length) {
+			reconcilePendingLandSubtypes(target);
 		}
 	}
 
@@ -5317,7 +2719,10 @@ function evaluateAdditiveTypesAndColors(
 	// --- End Track P14 ---
 	const additiveSources = emblemWorkList.length > 0 ? [...workList, ...emblemWorkList] : workList;
 	for (const source of additiveSources) {
-		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) continue;
+		if (source.strippedByAttachment || source.abilityRemovalEvents.length > 0) {
+			source.skippedLayer4Additive = true;
+			continue;
+		}
 		for (const st of source.statics) {
 			if (st.k !== 'continuous' || st.layer !== '4') continue;
 			if (
@@ -5393,7 +2798,8 @@ function evaluateAdditiveTypesAndColors(
 						// --- Track P17a (CR 613.7): Skip additive land subtypes overwritten by a later-timestamp setSubtypes ---
 						if (
 							LAND_SUBTYPES.has(sub) &&
-							(target.latestSetLandSubtypesTs ?? -Infinity) > source.timestamp
+							(!target.types.includes('Land') ||
+								(target.latestSetLandSubtypesTs ?? -Infinity) > source.timestamp)
 						) {
 							continue;
 						}
@@ -5492,6 +2898,42 @@ function evaluateAdditiveTypesAndColors(
 						}
 					}
 				}
+			} else if (st.mod.k === 'setTypes' && st.affected === 'self') {
+				if (
+					!st.condition ||
+					evaluateLayerCondition(st.condition, state, workList, source, source, workMap)
+				) {
+					if (latestSetTypesTimestampOn(source) <= source.timestamp) {
+						source.types = [...st.mod.types];
+						if (st.mod.subtypes?.length) {
+							source.subtypes = [...st.mod.subtypes];
+						} else if (
+							!source.types.some((t) => {
+								const nl = normalizeLayerCardType(t);
+								return nl === 'creature' || nl === 'kindred' || nl === 'planeswalker';
+							})
+						) {
+							source.subtypes = source.subtypes.filter(
+								(sub) => LAND_SUBTYPES.has(sub) || NON_CREATURE_SUBTYPES.has(sub)
+							);
+							source.hasAllCreatureTypes = false;
+						}
+						const superPrefix =
+							source.supertypes.length > 0 ? `${source.supertypes.join(' ')} ` : '';
+						const subStr = source.subtypes.length > 0 ? ` — ${source.subtypes.join(' ')}` : '';
+						source.effectiveTypeLine = `${superPrefix}${source.types.join(' ')}${subStr}`.trim();
+						if (!source.typeModifiedBy.includes(source.name)) {
+							source.typeModifiedBy.push(source.name);
+						}
+					}
+				}
+			} else if (st.mod.k === 'copyStatsAndSubtypesFromLastExiled' && st.affected === 'self') {
+				if (
+					!st.condition ||
+					evaluateLayerCondition(st.condition, state, workList, source, source, workMap)
+				) {
+					applyLayer4CopyLastExiledWave9(state, source, source);
+				}
 			}
 			// --- End Track P14 ---
 		}
@@ -5524,6 +2966,13 @@ function evaluateAdditiveTypesAndColors(
 					}
 				}
 				for (const sub of eff.layer4?.addSubtypes ?? []) {
+					if (
+						LAND_SUBTYPES.has(sub) &&
+						(!target.types.includes('Land') ||
+							(target.latestSetLandSubtypesTs ?? -Infinity) > eff.timestamp)
+					) {
+						continue;
+					}
 					if (!target.subtypes.includes(sub)) target.subtypes.push(sub);
 					const nextType = addSubtypeToTypeLine(target.effectiveTypeLine, sub);
 					if (nextType !== target.effectiveTypeLine) {
@@ -5534,6 +2983,22 @@ function evaluateAdditiveTypesAndColors(
 					}
 				}
 			}
+		}
+	}
+	for (const target of workList) {
+		reconcilePendingLandSubtypes(target);
+		const isLand = target.types.includes('Land');
+		if (!isLand && target.subtypes.some((sub) => LAND_SUBTYPES.has(sub))) {
+			const hadAllTypesLabel = /\bAll-Types\b/.test(target.effectiveTypeLine);
+			target.subtypes = target.subtypes.filter((sub) => !LAND_SUBTYPES.has(sub));
+			const superPrefix = target.supertypes.length > 0 ? `${target.supertypes.join(' ')} ` : '';
+			const typeStr = target.types.join(' ');
+			const rightParts = [...target.subtypes];
+			if (hadAllTypesLabel && !rightParts.includes('All-Types')) {
+				rightParts.push('All-Types');
+			}
+			const subStr = rightParts.length > 0 ? ` — ${rightParts.join(' ')}` : '';
+			target.effectiveTypeLine = `${superPrefix}${typeStr}${subStr}`.trim();
 		}
 	}
 	// --- Track P13 (CR 701.54c, CR 613.1d): Ring Level >= 1 makes your Ring-bearer Legendary ---
@@ -5729,21 +3194,55 @@ function evaluateGlobalAbilityLoss(
 						continue;
 					}
 					// --- Track P17a ---
-					recordAbilityRemoval(target, source.name, source.timestamp, Boolean(st.mod.keepManaAbilities));
+					recordAbilityRemoval(
+						target,
+						source.name,
+						source.timestamp,
+						Boolean(st.mod.keepManaAbilities),
+						true,
+						source.inst.instanceId
+					);
 					// --- End Track P17a ---
 				}
 			}
 		}
 	}
+	if (snap.attachedTo.size > 0) {
+		for (const att of workList) {
+			if (att.strippedByAttachment || !att.inst.attachedToId) continue;
+			const target = workMap.get(att.inst.attachedToId);
+			if (!target) continue;
+			for (const st of att.statics) {
+				if (st.k !== 'continuous' || st.layer !== '6' || st.affected !== 'attachedTo') continue;
+				if (st.mod.k !== 'removeAllAbilities') continue;
+				if (
+					st.condition &&
+					!evaluateLayerCondition(st.condition, state, workList, att, target, workMap)
+				) {
+					continue;
+				}
+				recordAbilityRemoval(
+					target,
+					att.name,
+					att.timestamp,
+					Boolean(st.mod.keepManaAbilities),
+					true,
+					att.inst.instanceId
+				);
+			}
+		}
+	}
 	// --- Track P16a (CR 613.1f): Timed Layer 6 "loses all abilities" continuous effects ---
 	if (state.timedContinuousEffects?.length) {
-		for (const eff of state.timedContinuousEffects) {
+		for (let ti = 0; ti < state.timedContinuousEffects.length; ti++) {
+			const eff = state.timedContinuousEffects[ti];
 			if (!eff.layer6?.removeAllAbilities) continue;
 			if (!isTimedContinuousEffectActive(eff, workMap)) continue;
+			const timedId = `timed:${ti}`;
 			for (const a of eff.affected) {
 				const target = workMap.get(a.instanceId);
 				if (!target || (target.inst.objectVersion ?? 1) !== (a.objectVersion ?? 1)) continue;
-				recordAbilityRemoval(target, eff.sourceName || 'Temporary Effect', eff.timestamp);
+				recordAbilityRemoval(target, eff.sourceName || 'Temporary Effect', eff.timestamp, false, true, timedId);
 			}
 		}
 	}
@@ -5820,7 +3319,7 @@ function evaluatePerPermanent(
 			: workList.filter((w) => w.statics.length > 0 && !w.strippedByAttachment);
 	// --- End Track P11 + Track P13 ---
 	// --- Track P14 (CR 113.6b): Graveyard continuous statics (Wonder, Brawn, Anger, Filth, Valor, Glory) ---
-	layerReads |= READ_P14;
+	noteLayerRead(READ_P14);
 	const graveyardStaticSources: PermWorkState[] = [];
 	for (let pi = 0; pi < state.players.length; pi++) {
 		const pl = state.players[pi];
@@ -5884,19 +3383,69 @@ function evaluatePerPermanent(
 	// 6b. Layer 6 across ALL permanents (CR 613.1f): innate removal, Layer 6 grants/removals, cantHaveLocks, Suspend/Blitz haste.
 	for (const target of workList) {
 		const targetVersion = target.inst.objectVersion ?? 1;
-		const matchingTimedCont: TimedContinuousEffect[] = [];
+		const matchingTimedCont: Array<{ eff: TimedContinuousEffect; timedId: string }> = [];
 		if (state.timedContinuousEffects?.length) {
-			for (const eff of state.timedContinuousEffects) {
+			for (let ti = 0; ti < state.timedContinuousEffects.length; ti++) {
+				const eff = state.timedContinuousEffects[ti];
 				if (!isTimedContinuousEffectActive(eff, workMap)) continue;
 				if (
 					eff.affected.some(
 						(a) => a.instanceId === target.inst.instanceId && (a.objectVersion ?? 1) === targetVersion
 					)
 				) {
-					matchingTimedCont.push(eff);
+					matchingTimedCont.push({ eff, timedId: `timed:${ti}` });
 				}
 			}
 		}
+		const isOverwrittenByLaterAttachedSetTypes = (ts: number): boolean =>
+			workList.some(
+				(att) =>
+					att.inst.attachedToId === target.inst.instanceId &&
+					!att.strippedByAttachment &&
+					!att.abilityRemovalEvents.some((e) => !e.fromLayer6) &&
+					att.timestamp > ts &&
+					att.statics.some(
+						(attSt) =>
+							attSt.k === 'continuous' &&
+							attSt.layer === '4' &&
+							attSt.affected === 'attachedTo' &&
+							attSt.mod.k === 'setTypes' &&
+							(!attSt.condition || evaluateLayerCondition(attSt.condition, state, workList, att, target))
+					)
+			);
+		const isOverwrittenByLaterAttachedSetTypesNonRemoval = (ts: number): boolean =>
+			workList.some(
+				(att) =>
+					att.inst.attachedToId === target.inst.instanceId &&
+					!att.strippedByAttachment &&
+					!att.abilityRemovalEvents.some((e) => !e.fromLayer6) &&
+					att.timestamp > ts &&
+					att.statics.some(
+						(attSt) =>
+							attSt.k === 'continuous' &&
+							attSt.layer === '4' &&
+							attSt.affected === 'attachedTo' &&
+							attSt.mod.k === 'setTypes' &&
+							(!attSt.condition ||
+								evaluateLayerCondition(attSt.condition, state, workList, att, target, workMap))
+					) &&
+					!att.statics.some(
+						(attSt) =>
+							attSt.k === 'continuous' &&
+							attSt.layer === '6' &&
+							attSt.affected === 'attachedTo' &&
+							attSt.mod.k === 'removeAllAbilities' &&
+							!attSt.mod.keepManaAbilities &&
+							(!attSt.condition ||
+								evaluateLayerCondition(attSt.condition, state, workList, att, target, workMap))
+					)
+			);
+		const isOverwrittenByLaterTimedLandLoss = (ts: number): boolean =>
+			matchingTimedCont.some(
+				({ eff: e2 }) =>
+					e2.timestamp > ts &&
+					Boolean(e2.layer4?.setTypes?.length || e2.layer4?.removeTypes?.includes('Land'))
+			);
 
 		// Mark innate items as removed if any ability-removal source applies
 		if (target.allAbilityRemovalSources.length > 0) {
@@ -5929,14 +3478,21 @@ function evaluatePerPermanent(
 				}
 			}
 		}
-		for (const eff of matchingTimedCont) {
+		const timedLayer4LandEntries: Array<{
+			timestamp: number;
+			sourceName: string;
+			timedId: string;
+			info: { sym: string; subtype: string };
+			isAdd: boolean;
+		}> = [];
+		for (const { eff, timedId } of matchingTimedCont) {
 			// --- Track P10 ---
 			let extraQuotedKws: string[] | undefined;
 			if (eff.layer6?.grantedAbilityTexts?.length) {
 				for (const gt of eff.layer6.grantedAbilityTexts) {
 					for (const def of resolveQuotedAbilityDefs(gt, target.name)) {
 						if (def.kind === 'keyword') {
-							(extraQuotedKws ??= []).push(def.keyword.name);
+							(extraQuotedKws ??= []).push(formatGrantedKeywordDef(def.keyword));
 						}
 					}
 				}
@@ -5966,7 +3522,7 @@ function evaluatePerPermanent(
 				const grantedKws: string[] = [];
 				for (let bi = Math.max(0, eff.backupGrant.startAbilityIndex); bi < faceAbs.length; bi++) {
 					const fAb = faceAbs[bi];
-					if (fAb.kind === 'keyword') grantedKws.push(fAb.keyword.name);
+					if (fAb.kind === 'keyword') grantedKws.push(formatGrantedKeywordDef(fAb.keyword));
 				}
 				if (grantedKws.length > 0) {
 					targetTimedEffects.push({
@@ -5979,9 +3535,52 @@ function evaluatePerPermanent(
 				}
 			}
 			// --- End Track P12 ---
+			if (
+				eff.layer4?.setSubtypes !== undefined &&
+				target.types.includes('Land') &&
+				(target.latestSetLandSubtypesTs ?? -Infinity) <= eff.timestamp &&
+				!isOverwrittenByLaterAttachedSetTypes(eff.timestamp) &&
+				!isOverwrittenByLaterTimedLandLoss(eff.timestamp)
+			) {
+				for (const sub of eff.layer4.setSubtypes) {
+					const info = BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()];
+					if (info && hasSubtypeInWork(target, info.subtype)) {
+						timedLayer4LandEntries.push({
+							timestamp: eff.timestamp,
+							sourceName: eff.sourceName || 'Temporary Effect',
+							timedId,
+							info,
+							isAdd: false
+						});
+					}
+				}
+			}
+			if (
+				eff.layer4?.addSubtypes?.length &&
+				target.types.includes('Land') &&
+				(target.latestSetLandSubtypesTs ?? -Infinity) <= eff.timestamp &&
+				!isOverwrittenByLaterAttachedSetTypes(eff.timestamp) &&
+				!isOverwrittenByLaterTimedLandLoss(eff.timestamp)
+			) {
+				for (const sub of eff.layer4.addSubtypes) {
+					const info = BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()];
+					if (info && hasSubtypeInWork(target, info.subtype)) {
+						timedLayer4LandEntries.push({
+							timestamp: eff.timestamp,
+							sourceName: eff.sourceName || 'Temporary Effect',
+							timedId,
+							info,
+							isAdd: true
+						});
+					}
+				}
+			}
+		}
+		if (timedLayer4LandEntries.length > 1) {
+			timedLayer4LandEntries.sort((a, b) => a.timestamp - b.timestamp);
 		}
 		// --- Track P11 (CR 122.1b, 613.7c): Keyword counters grant their keyword in Layer 6 at counter timestamp ---
-		layerReads |= READ_KEYWORD_COUNTERS;
+		noteLayerRead(READ_KEYWORD_COUNTERS);
 		const targetKwCounterMask = computeKeywordCounterMask(target.inst.counters);
 		if (targetKwCounterMask !== 0) {
 			for (let ki = 0; ki < KEYWORD_COUNTER_TYPES.length; ki++) {
@@ -6001,7 +3600,7 @@ function evaluatePerPermanent(
 		}
 		// --- End Track P11 ---
 		// --- Track P16a (CR 122.1b, 613.7c): Extended keyword counters ('shadow', 'exalted', 'decayed') ---
-		layerReads |= READ_P16A;
+		noteLayerRead(READ_P16A);
 		for (const kw of P16A_EXTRA_KEYWORD_COUNTERS) {
 			if ((target.inst.counters[kw] || 0) <= 0) continue;
 			const kwTs = target.inst.counterTimestamps?.[kw] ?? target.timestamp;
@@ -6062,6 +3661,34 @@ function evaluatePerPermanent(
 		};
 
 		let timedIdx = 0;
+		let timedLandIdx = 0;
+		const applyTimedLayer4LandEntry = (entry: (typeof timedLayer4LandEntries)[number]): void => {
+			if (target.abilityRemovalEvents.length > 0) {
+				applyRemovalsUpTo(target, entry.timestamp);
+			}
+			grantItem(
+				target,
+				`mana_${entry.info.sym.toLowerCase()}`,
+				`Mana Ability: Add {${entry.info.sym}}`,
+				'ability',
+				entry.sourceName,
+				entry.timestamp,
+				{
+					grantedAbility: makeIntrinsicBasicManaAbility(entry.info.sym as ManaColor),
+					sourceInstanceId: entry.timedId
+				}
+			);
+			grantItem(
+				target,
+				entry.isAdd && entry.info.subtype === 'Forest'
+					? 'type_forest_add'
+					: `type_${entry.info.subtype.toLowerCase()}`,
+				entry.isAdd ? `Subtype: +${entry.info.subtype}` : `Type: Land — ${entry.info.subtype}`,
+				'type_mod',
+				entry.sourceName,
+				entry.timestamp
+			);
+		};
 
 		// CR 702.152a: "As long as this permanent's blitz cost was paid, it has haste"
 		if (
@@ -6098,6 +3725,12 @@ function evaluatePerPermanent(
 				targetTimedEffects[timedIdx].timestamp <= source.timestamp
 			) {
 				applyTimedEffect(targetTimedEffects[timedIdx++]);
+			}
+			while (
+				timedLandIdx < timedLayer4LandEntries.length &&
+				timedLayer4LandEntries[timedLandIdx].timestamp <= source.timestamp
+			) {
+				applyTimedLayer4LandEntry(timedLayer4LandEntries[timedLandIdx++]);
 			}
 			if (target.abilityRemovalEvents.length > 0) {
 				applyRemovalsUpTo(target, source.timestamp);
@@ -6143,25 +3776,34 @@ function evaluatePerPermanent(
 							);
 						} else if (st.mod.types.includes('Land')) {
 							const sub = st.mod.subtypes?.[0];
-							if (sub && BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()]) {
-								const info = BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()];
-								grantItem(
-									target,
-									`mana_${info.sym.toLowerCase()}`,
-									`Mana Ability: Add {${info.sym}}`,
-									'ability',
-									source.name,
-									source.timestamp,
-									{ grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor) }
-								);
-								grantItem(
-									target,
-									`type_${info.subtype.toLowerCase()}`,
-									`Type: Land — ${info.subtype}`,
-									'type_mod',
-									source.name,
-									source.timestamp
-								);
+							const info = sub ? BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()] : undefined;
+							if (info) {
+								if (
+									(target.latestSetLandSubtypesTs ?? -Infinity) <= source.timestamp &&
+									!isOverwrittenByLaterAttachedSetTypesNonRemoval(source.timestamp) &&
+									!isOverwrittenByLaterTimedLandLoss(source.timestamp)
+								) {
+									grantItem(
+										target,
+										`mana_${info.sym.toLowerCase()}`,
+										`Mana Ability: Add {${info.sym}}`,
+										'ability',
+										source.name,
+										source.timestamp,
+										{
+											grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor),
+											sourceInstanceId: source.inst.instanceId
+										}
+									);
+									grantItem(
+										target,
+										`type_${info.subtype.toLowerCase()}`,
+										`Type: Land — ${info.subtype}`,
+										'type_mod',
+										source.name,
+										source.timestamp
+									);
+								}
 							} else {
 								for (const st2 of source.statics) {
 									if (
@@ -6184,19 +3826,27 @@ function evaluatePerPermanent(
 											{
 												grantedAbility: st2.mod.ability,
 												grantSourceCard: source.baseCard,
-												grantSourceId: source.inst.instanceId
+												grantSourceId: source.inst.instanceId,
+												grantFaceIndex: lookupStaticLocator(source.baseCard, st2)?.faceIndex ?? 0
 											}
 										);
 									}
 								}
-								grantItem(
-									target,
-									'type_land',
-									'Type: Colorless Land',
-									'type_mod',
-									source.name,
-									source.timestamp
-								);
+								if (
+									target.types.includes('Land') &&
+									(target.latestSetLandSubtypesTs ?? -Infinity) <= source.timestamp &&
+									!isOverwrittenByLaterAttachedSetTypes(source.timestamp) &&
+									!isOverwrittenByLaterTimedLandLoss(source.timestamp)
+								) {
+									grantItem(
+										target,
+										'type_land',
+										'Type: Colorless Land',
+										'type_mod',
+										source.name,
+										source.timestamp
+									);
+								}
 							}
 						}
 					} else if (st.mod.k === 'addTypes' && st.mod.types.includes('Creature')) {
@@ -6225,7 +3875,8 @@ function evaluatePerPermanent(
 							grantItem(target, desc.key, desc.name, 'ability', source.name, source.timestamp, {
 								grantedAbility: st.mod.ability,
 								grantSourceCard: source.baseCard,
-								grantSourceId: source.inst.instanceId
+								grantSourceId: source.inst.instanceId,
+								grantFaceIndex: lookupStaticLocator(source.baseCard, st)?.faceIndex ?? 0
 							});
 						}
 					// --- Track P11 ---
@@ -6302,30 +3953,47 @@ function evaluatePerPermanent(
 						}
 					// --- Track P20a ---
 					} else if (st.layer === '4' && (st.mod.k === 'setSubtypes' || st.mod.k === 'setChosenSubtype')) {
-						const sub =
-							st.mod.k === 'setChosenSubtype' ? source.inst.chosenSubType : st.mod.subtypes[0];
-						const info = sub ? BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()] : undefined;
-						if (info) {
-							grantItem(
-								target,
-								`mana_${info.sym.toLowerCase()}`,
-								`Mana Ability: Add {${info.sym}}`,
-								'ability',
-								source.name,
-								source.timestamp,
-								{ grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor) }
-							);
-							grantItem(
-								target,
-								`type_${info.subtype.toLowerCase()}`,
-								`Type: Land — ${info.subtype}`,
-								'type_mod',
-								source.name,
-								source.timestamp
-							);
+						if (
+							!source.skippedLayer4SetSubtypes &&
+							target.types.includes('Land') &&
+							(target.latestSetLandSubtypesTs ?? -Infinity) <= source.timestamp &&
+							!isOverwrittenByLaterAttachedSetTypes(source.timestamp) &&
+							!isOverwrittenByLaterTimedLandLoss(source.timestamp)
+						) {
+							const subs =
+								st.mod.k === 'setChosenSubtype'
+									? source.inst.chosenSubType
+										? [source.inst.chosenSubType]
+										: []
+									: st.mod.subtypes;
+							for (const sub of subs) {
+								const info = BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()];
+								if (info && hasSubtypeInWork(target, info.subtype)) {
+									grantItem(
+										target,
+										`mana_${info.sym.toLowerCase()}`,
+										`Mana Ability: Add {${info.sym}}`,
+										'ability',
+										source.name,
+										source.timestamp,
+										{
+											grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor),
+											sourceInstanceId: source.inst.instanceId
+										}
+									);
+									grantItem(
+										target,
+										`type_${info.subtype.toLowerCase()}`,
+										`Type: Land — ${info.subtype}`,
+										'type_mod',
+										source.name,
+										source.timestamp
+									);
+								}
+							}
 						}
 					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenPlayer') {
-						layerReads |= READ_P20A;
+						noteLayerRead(READ_P20A);
 						const chosenPid = source.inst.chosenPlayerId;
 						if (chosenPid) {
 							grantItem(
@@ -6341,7 +4009,7 @@ function evaluatePerPermanent(
 					// --- End Track P20a ---
 					// --- Track P22a ---
 					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenCardType') {
-						layerReads |= READ_P22A;
+						noteLayerRead(READ_P22A);
 						const chosenCt = source.inst.chosenCardType;
 						if (chosenCt) {
 							const kw = `protection from ${pluralizeCardTypeForProtection(chosenCt)}`;
@@ -6359,34 +4027,16 @@ function evaluatePerPermanent(
 				}
 			}
 
-			// B. Self & Global Layer 4/6 effects from `source` (only if `source` has not lost all abilities)
-			if (!sourceLostAbilities) {
-				for (const st of source.statics) {
-					// --- Track P22a: Dynamic Ward {X} (CR 702.21a) ---
-					if (st.k === 'dynamicWardMana') {
-						if (st.affected === 'attachedTo') {
-							if (source.inst.attachedToId !== target.inst.instanceId) continue;
-						} else if (st.affected === 'self') {
-							if (source.inst.instanceId !== target.inst.instanceId) continue;
-						} else {
-							if (!matchesLayerFilter(st.affected, target, source, state, workList)) continue;
-						}
-						if (
-							st.condition &&
-							!evaluateLayerCondition(st.condition, state, workList, source, target, workMap)
-						) {
-							continue;
-						}
-						const wardVal = evaluateLayerAmount(st.generic, state, workList, source, target);
-						if (wardVal >= 0) {
-							grantKeywordString(target, `Ward {${wardVal}}`, source.name, source.timestamp);
-						}
-						continue;
-					}
-					// --- End Track P22a ---
-					if (st.k !== 'continuous' || st.affected === 'attachedTo') continue;
-					if (st.layer !== '4' && st.layer !== '6') continue;
-					if (st.affected === 'self') {
+			// B. Self & Global Layer 4/6 effects from `source`
+			// CR 613.6: Layer 4 type/subtype grants already applied before Layer 6 ability removal, so
+			// only gate Layer 4 grants on Layer 4 suppression (skippedLayer4SetSubtypes / skippedLayer4Additive).
+			for (const st of source.statics) {
+				// --- Track P22a: Dynamic Ward {X} (CR 702.21a) ---
+				if (st.k === 'dynamicWardMana') {
+					if (sourceLostAbilities) continue;
+					if (st.affected === 'attachedTo') {
+						if (source.inst.attachedToId !== target.inst.instanceId) continue;
+					} else if (st.affected === 'self') {
 						if (source.inst.instanceId !== target.inst.instanceId) continue;
 					} else {
 						if (!matchesLayerFilter(st.affected, target, source, state, workList)) continue;
@@ -6397,12 +4047,43 @@ function evaluatePerPermanent(
 					) {
 						continue;
 					}
+					const wardVal = evaluateLayerAmount(st.generic, state, workList, source, target);
+					if (wardVal >= 0) {
+						grantKeywordString(target, `Ward {${wardVal}}`, source.name, source.timestamp);
+					}
+					continue;
+				}
+				// --- End Track P22a ---
+				if (st.k !== 'continuous' || st.affected === 'attachedTo') continue;
+				if (st.layer !== '4' && st.layer !== '6') continue;
+				if (st.layer === '6' && sourceLostAbilities) continue;
+				if (st.affected === 'self') {
+					if (source.inst.instanceId !== target.inst.instanceId) continue;
+				} else {
+					if (!matchesLayerFilter(st.affected, target, source, state, workList)) continue;
+				}
+				if (
+					st.condition &&
+					!evaluateLayerCondition(st.condition, state, workList, source, target, workMap)
+				) {
+					continue;
+				}
 
-					if (st.layer === '4' && (st.mod.k === 'setSubtypes' || st.mod.k === 'setChosenSubtype')) {
-						const sub =
-							st.mod.k === 'setChosenSubtype' ? source.inst.chosenSubType : st.mod.subtypes[0];
-						const info = sub ? BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()] : undefined;
-						if (info) {
+				if (st.layer === '4' && (st.mod.k === 'setSubtypes' || st.mod.k === 'setChosenSubtype')) {
+					if (source.skippedLayer4SetSubtypes) continue;
+					if (!target.types.includes('Land')) continue;
+					if ((target.latestSetLandSubtypesTs ?? -Infinity) > source.timestamp) continue;
+					if (isOverwrittenByLaterAttachedSetTypes(source.timestamp)) continue;
+					if (isOverwrittenByLaterTimedLandLoss(source.timestamp)) continue;
+					const subs =
+						st.mod.k === 'setChosenSubtype'
+							? source.inst.chosenSubType
+								? [source.inst.chosenSubType]
+								: []
+							: st.mod.subtypes;
+					for (const sub of subs) {
+						const info = BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()];
+						if (info && hasSubtypeInWork(target, info.subtype)) {
 							grantItem(
 								target,
 								`mana_${info.sym.toLowerCase()}`,
@@ -6410,7 +4091,10 @@ function evaluatePerPermanent(
 								'ability',
 								source.name,
 								source.timestamp,
-								{ grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor) }
+								{
+									grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor),
+									sourceInstanceId: source.inst.instanceId
+								}
 							);
 							grantItem(
 								target,
@@ -6421,69 +4105,113 @@ function evaluatePerPermanent(
 								source.timestamp
 							);
 						}
-					} else if (st.layer === '4' && st.mod.k === 'addTypes' && st.mod.subtypes?.length) {
-						for (const sub of st.mod.subtypes) {
-							// --- Track P17a (CR 613.7): Skip intrinsic mana grant when overwritten by later setSubtypes ---
-							if (
-								LAND_SUBTYPES.has(sub) &&
-								(target.latestSetLandSubtypesTs ?? -Infinity) > source.timestamp
-							) {
-								continue;
-							}
-							// --- End Track P17a ---
-							const info = BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()];
-							if (info) {
-								grantItem(
-									target,
-									`mana_${info.sym.toLowerCase()}`,
-									`Mana Ability: Add {${info.sym}}`,
-									'ability',
-									source.name,
-									source.timestamp,
-									{ grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor) }
-								);
-								grantItem(
-									target,
-									info.subtype === 'Forest'
-										? 'type_forest_add'
-										: `type_${info.subtype.toLowerCase()}`,
-									`Subtype: +${info.subtype}`,
-									'type_mod',
-									source.name,
-									source.timestamp
-								);
-							}
+					}
+				} else if (st.layer === '4' && st.mod.k === 'addTypes' && st.mod.subtypes?.length) {
+					if (source.skippedLayer4Additive) continue;
+					for (const sub of st.mod.subtypes) {
+						// --- Track P17a (CR 613.7): Skip intrinsic mana grant when overwritten by later setSubtypes ---
+						if (
+							LAND_SUBTYPES.has(sub) &&
+							(!target.types.includes('Land') ||
+								(target.latestSetLandSubtypesTs ?? -Infinity) > source.timestamp)
+						) {
+							continue;
 						}
-					} else if (st.layer === '4' && st.mod.k === 'allCreatureTypes') {
+						// --- End Track P17a ---
+						const info = BASIC_LAND_MANA_BY_SUBTYPE[sub.toLowerCase()];
+						if (info) {
+							grantItem(
+								target,
+								`mana_${info.sym.toLowerCase()}`,
+								`Mana Ability: Add {${info.sym}}`,
+								'ability',
+								source.name,
+								source.timestamp,
+								{
+									grantedAbility: makeIntrinsicBasicManaAbility(info.sym as ManaColor),
+									sourceInstanceId: source.inst.instanceId
+								}
+							);
+							grantItem(
+								target,
+								info.subtype === 'Forest'
+									? 'type_forest_add'
+									: `type_${info.subtype.toLowerCase()}`,
+								`Subtype: +${info.subtype}`,
+								'type_mod',
+								source.name,
+								source.timestamp
+							);
+						}
+					}
+				} else if (st.layer === '4' && st.mod.k === 'allCreatureTypes') {
+					if (source.skippedLayer4Additive) continue;
+					grantItem(
+						target,
+						'changeling',
+						'Changeling (All Creature Types)',
+						'keyword',
+						source.name,
+						source.timestamp
+					);
+				} else if (
+					st.layer === '6' &&
+					st.mod.k === 'grantAbility' &&
+					st.mod.ability.kind === 'activated'
+				) {
+					const desc = describeGrantedActivatedAbility(st.mod.ability, source.inst.instanceId);
+					grantItem(target, desc.key, desc.name, 'ability', source.name, source.timestamp, {
+						grantedAbility: st.mod.ability,
+						grantSourceCard: source.baseCard,
+						grantSourceId: source.inst.instanceId,
+						grantFaceIndex: lookupStaticLocator(source.baseCard, st)?.faceIndex ?? 0
+					});
+				// --- Track P11 ---
+				} else if (st.layer === '6' && st.mod.k === 'grantAbility') {
+					if (grantNonActivatedAbility(target, source, st, st.mod.ability)) {
+						anyGrantedStaticInBoard = true;
+					}
+				// --- End Track P11 ---
+				} else if (st.layer === '6' && st.mod.k === 'addKeywords') {
+					if (st.affected === 'self' && !st.condition) continue; // already in innate items
+					// --- Track P14 ---
+					const protMeta: GrantedAbilityMeta | undefined = st.mod.protectionAttachmentExemption
+						? {
+								grantSourceId: source.inst.instanceId,
+								protectionExemption: {
+									mode: st.mod.protectionAttachmentExemption,
+									sourceId: source.inst.instanceId,
+									controllerId: source.controllerId
+								}
+							}
+						: undefined;
+					// --- End Track P14 ---
+					for (const kw of sortGrantedKeywords(st.mod.keywords)) {
+						const kwLow = kw.toLowerCase();
+						if (kwLow.startsWith('ward')) {
+							grantKeywordString(target, kw, source.name, source.timestamp);
+							continue;
+						}
+						const key = kwLow.startsWith('protection from ') ? 'protection' : kwLow;
 						grantItem(
 							target,
-							'changeling',
-							'Changeling (All Creature Types)',
+							key,
+							formatKeywordLabel(kwLow),
 							'keyword',
 							source.name,
-							source.timestamp
+							source.timestamp,
+							// --- Track P14 ---
+							key === 'protection' ? protMeta : undefined
+							// --- End Track P14 ---
 						);
-					} else if (
-						st.layer === '6' &&
-						st.mod.k === 'grantAbility' &&
-						st.mod.ability.kind === 'activated'
-					) {
-						const desc = describeGrantedActivatedAbility(st.mod.ability, source.inst.instanceId);
-						grantItem(target, desc.key, desc.name, 'ability', source.name, source.timestamp, {
-							grantedAbility: st.mod.ability,
-							grantSourceCard: source.baseCard,
-							grantSourceId: source.inst.instanceId
-						});
-					// --- Track P11 ---
-					} else if (st.layer === '6' && st.mod.k === 'grantAbility') {
-						if (grantNonActivatedAbility(target, source, st, st.mod.ability)) {
-							anyGrantedStaticInBoard = true;
-						}
-					// --- End Track P11 ---
-					} else if (st.layer === '6' && st.mod.k === 'addKeywords') {
-						if (st.affected === 'self' && !st.condition) continue; // already in innate items
+					}
+				} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenColor') {
+					const chosenCol = source.inst.chosenColor;
+					const kw = chosenCol ? PROTECTION_KEYWORD_BY_COLOR[chosenCol] : undefined;
+					if (kw) {
 						// --- Track P14 ---
-						const protMeta: GrantedAbilityMeta | undefined = st.mod.protectionAttachmentExemption
+						const chosenProtMeta: GrantedAbilityMeta | undefined = st.mod
+							.protectionAttachmentExemption
 							? {
 									grantSourceId: source.inst.instanceId,
 									protectionExemption: {
@@ -6494,98 +4222,69 @@ function evaluatePerPermanent(
 								}
 							: undefined;
 						// --- End Track P14 ---
-						for (const kw of sortGrantedKeywords(st.mod.keywords)) {
-							const kwLow = kw.toLowerCase();
-							if (kwLow.startsWith('ward')) {
-								grantKeywordString(target, kw, source.name, source.timestamp);
-								continue;
-							}
-							const key = kwLow.startsWith('protection from ') ? 'protection' : kwLow;
-							grantItem(
-								target,
-								key,
-								formatKeywordLabel(kwLow),
-								'keyword',
-								source.name,
-								source.timestamp,
-								// --- Track P14 ---
-								key === 'protection' ? protMeta : undefined
-								// --- End Track P14 ---
-							);
-						}
-					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenColor') {
-						const chosenCol = source.inst.chosenColor;
-						const kw = chosenCol ? PROTECTION_KEYWORD_BY_COLOR[chosenCol] : undefined;
-						if (kw) {
+						grantItem(
+							target,
+							'protection',
+							formatKeywordLabel(kw),
+							'keyword',
+							source.name,
+							source.timestamp,
 							// --- Track P14 ---
-							const chosenProtMeta: GrantedAbilityMeta | undefined = st.mod
-								.protectionAttachmentExemption
-								? {
-										grantSourceId: source.inst.instanceId,
-										protectionExemption: {
-											mode: st.mod.protectionAttachmentExemption,
-											sourceId: source.inst.instanceId,
-											controllerId: source.controllerId
-										}
-									}
-								: undefined;
+							chosenProtMeta
 							// --- End Track P14 ---
-							grantItem(
-								target,
-								'protection',
-								formatKeywordLabel(kw),
-								'keyword',
-								source.name,
-								source.timestamp,
-								// --- Track P14 ---
-								chosenProtMeta
-								// --- End Track P14 ---
-							);
-						}
-					} else if (st.layer === '6' && st.mod.k === 'removeKeywords') {
-						removeMatchingKeywordsUpTo(target, st.mod.keywords, source.name, source.timestamp);
-						if (st.mod.cantHaveOrGain) {
-							cantHaveLocks.push({ keywords: st.mod.keywords, sourceName: source.name });
-						}
-					// --- Track P20a ---
-					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenPlayer') {
-						layerReads |= READ_P20A;
-						const chosenPid = source.inst.chosenPlayerId;
-						if (chosenPid) {
-							grantItem(
-								target,
-								'protection',
-								'Protection from chosen player',
-								'keyword',
-								source.name,
-								source.timestamp,
-								{ protectedFromPlayerId: chosenPid }
-							);
-						}
-					// --- End Track P20a ---
-					// --- Track P22a ---
-					} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenCardType') {
-						layerReads |= READ_P22A;
-						const chosenCt = source.inst.chosenCardType;
-						if (chosenCt) {
-							const kw = `protection from ${pluralizeCardTypeForProtection(chosenCt)}`;
-							grantItem(
-								target,
-								'protection',
-								formatKeywordLabel(kw),
-								'keyword',
-								source.name,
-								source.timestamp
-							);
-						}
-					// --- End Track P22a ---
+						);
 					}
+				} else if (st.layer === '6' && st.mod.k === 'removeKeywords') {
+					removeMatchingKeywordsUpTo(target, st.mod.keywords, source.name, source.timestamp);
+					if (st.mod.cantHaveOrGain) {
+						cantHaveLocks.push({ keywords: st.mod.keywords, sourceName: source.name });
+					}
+				// --- Track P20a ---
+				} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenPlayer') {
+					noteLayerRead(READ_P20A);
+					const chosenPid = source.inst.chosenPlayerId;
+					if (chosenPid) {
+						grantItem(
+							target,
+							'protection',
+							'Protection from chosen player',
+							'keyword',
+							source.name,
+							source.timestamp,
+							{ protectedFromPlayerId: chosenPid }
+						);
+					}
+				// --- End Track P20a ---
+				// --- Track P22a ---
+				} else if (st.layer === '6' && st.mod.k === 'protectionFromChosenCardType') {
+					noteLayerRead(READ_P22A);
+					const chosenCt = source.inst.chosenCardType;
+					if (chosenCt) {
+						const kw = `protection from ${pluralizeCardTypeForProtection(chosenCt)}`;
+						grantItem(
+							target,
+							'protection',
+							formatKeywordLabel(kw),
+							'keyword',
+							source.name,
+							source.timestamp
+						);
+					}
+				// --- End Track P22a ---
+				} else if (
+					st.layer === '6' &&
+					(st.mod.k === 'grantAbilitiesFromObjects' || st.mod.k === 'copyKeywordsFromExiled')
+				) {
+					applyLayer6Wave9Mod(state, source, target, st.mod, workList);
 				}
 			}
 		}
 
 		while (timedIdx < targetTimedEffects.length) {
 			applyTimedEffect(targetTimedEffects[timedIdx++]);
+		}
+		while (timedLandIdx < timedLayer4LandEntries.length) {
+			applyTimedLayer4LandEntry(timedLayer4LandEntries[timedLandIdx++]);
 		}
 
 		applyRemovalsUpTo(target, Infinity);
@@ -6658,7 +4357,8 @@ function evaluatePerPermanent(
 				st.layer !== '7b' ||
 				(st.mod.k !== 'setBasePT' &&
 					st.mod.k !== 'setBasePower' &&
-					st.mod.k !== 'setBaseToughness')
+					st.mod.k !== 'setBaseToughness' &&
+					st.mod.k !== 'copyStatsAndSubtypesFromLastExiled')
 			) {
 				continue;
 			}
@@ -6670,6 +4370,18 @@ function evaluatePerPermanent(
 					st.condition &&
 					!evaluateLayerCondition(st.condition, state, workList, source, source, workMap)
 				) {
+					continue;
+				}
+				if (st.mod.k === 'copyStatsAndSubtypesFromLastExiled') {
+					const pt = applyLayer7bCopyLastExiledWave9(state, source, source);
+					if (pt) {
+						source.layer7bSetters.push({
+							sourceName: source.name,
+							power: pt.power,
+							toughness: pt.toughness,
+							timestamp: source.timestamp
+						});
+					}
 					continue;
 				}
 				const p =
@@ -6763,17 +4475,19 @@ function evaluatePerPermanent(
 			}
 		}
 		// --- End Track P11 ---
-		target.layer7bSetters.sort((a, b) => a.timestamp - b.timestamp);
-		for (const setter of target.layer7bSetters) {
-			if (setter.power !== undefined) target.workingPower = setter.power;
-			if (setter.toughness !== undefined) target.workingToughness = setter.toughness;
-			if (
-				(setter.power !== undefined && setter.power !== null) ||
-				(setter.toughness !== undefined && setter.toughness !== null)
-			) {
-				const label = `${setter.sourceName} (base ${target.workingPower ?? '*'}/${target.workingToughness ?? '*'})`;
-				if (!target.ptModifiedBy.includes(label)) {
-					target.ptModifiedBy.push(label);
+		if (isCreature) {
+			target.layer7bSetters.sort((a, b) => a.timestamp - b.timestamp);
+			for (const setter of target.layer7bSetters) {
+				if (setter.power !== undefined) target.workingPower = setter.power;
+				if (setter.toughness !== undefined) target.workingToughness = setter.toughness;
+				if (
+					(setter.power !== undefined && setter.power !== null) ||
+					(setter.toughness !== undefined && setter.toughness !== null)
+				) {
+					const label = `${setter.sourceName} (base ${target.workingPower ?? '*'}/${target.workingToughness ?? '*'})`;
+					if (!target.ptModifiedBy.includes(label)) {
+						target.ptModifiedBy.push(label);
+					}
 				}
 			}
 		}
@@ -6781,7 +4495,7 @@ function evaluatePerPermanent(
 
 	// 7c. Layer 7c across ALL permanents: counters, temp P/T, and continuous P/T modifications (CR 613.4c)
 	// --- Track P17a ---
-	if (workList.length > 0) layerReads |= READ_P17A;
+	if (workList.length > 0) noteLayerRead(READ_P17A);
 	// --- End Track P17a ---
 	for (const target of workList) {
 		if (target.workingPower === null || target.workingToughness === null) continue;
@@ -7014,6 +4728,11 @@ function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstan
 				// --- Track P17a ---
 				keepManaAbilities?: boolean;
 				// --- End Track P17a ---
+				removalEvents?: ReadonlyArray<{
+					timestamp: number;
+					keepManaAbilities?: boolean;
+					fromLayer6?: boolean;
+				}>;
 			};
 			evaluated: EvaluatedPermanent;
 		}
@@ -7042,12 +4761,21 @@ function buildBoardResults(workList: PermWorkState[]): BoardLayerCache['byInstan
 			work.abilityRemovalEvents.length > 0 &&
 			work.abilityRemovalEvents.every((e) => Boolean(e.keepManaAbilities));
 		// --- End Track P17a ---
+		const removalEvents =
+			work.abilityRemovalEvents.length > 0
+				? work.abilityRemovalEvents.map((e) => ({
+						timestamp: e.timestamp,
+						...(e.keepManaAbilities ? { keepManaAbilities: true } : {}),
+						...(e.fromLayer6 ? { fromLayer6: true } : {})
+					}))
+				: undefined;
 		const lost = {
 			lost: work.allAbilityRemovalSources.length > 0,
 			sources: work.allAbilityRemovalSources,
 			// --- Track P17a ---
-			...(keepManaAbilities ? { keepManaAbilities: true } : {})
+			...(keepManaAbilities ? { keepManaAbilities: true } : {}),
 			// --- End Track P17a ---
+			...(removalEvents ? { removalEvents } : {})
 		};
 
 		const tLine = breakdown.effectiveTypeLine;
@@ -7410,6 +5138,64 @@ export function permanentRetainsInnateManaAbilities(
 	return Boolean(entry?.lost.lost && entry?.lost.keepManaAbilities);
 }
 // --- End Track P17a ---
+
+export function timedLayer6AbilitySurvivesRemoval(
+	perm: CardInstance,
+	state: GameState,
+	grantTimestamp: number,
+	isManaAbility: boolean
+): boolean {
+	const { cache } = getBoardLayerCache(state);
+	const entry = cache.byInstance.get(perm);
+	let out = true;
+	if (entry?.lost.lost && entry.lost.removalEvents?.length) {
+		for (const ev of entry.lost.removalEvents) {
+			if (!ev.fromLayer6) continue;
+			if (grantTimestamp < ev.timestamp && !(isManaAbility && ev.keepManaAbilities)) {
+				out = false;
+				break;
+			}
+		}
+	}
+	if (layerCacheCheckEnabled()) {
+		crossCheckLayerResult('timedLayer6AbilitySurvivesRemoval', out, () =>
+			timedLayer6AbilitySurvivesRemoval(perm, state, grantTimestamp, isManaAbility)
+		);
+	}
+	return out;
+}
+
+export function isTimedContinuousEffectActiveForState(
+	state: GameState,
+	eff: TimedContinuousEffect
+): boolean {
+	const findActivePerm = (instanceId: string): CardInstance | undefined => {
+		for (const p of state.players) {
+			if (p.lost) continue;
+			for (const b of p.battlefield) {
+				if (!b.phasedOut && b.instanceId === instanceId) return b;
+			}
+		}
+		return undefined;
+	};
+	if (
+		eff.expires === 'forAsLongAsYouControlSelf' ||
+		eff.expires === 'forAsLongAsSelfRemainsTapped'
+	) {
+		const cond = eff.sourceCondition;
+		if (!cond || cond.broken) return false;
+		const src = findActivePerm(cond.sourceInstanceId);
+		if (!src || (src.objectVersion ?? 1) !== cond.sourceObjectVersion) return false;
+		if (cond.kind === 'controlledByPlayer') {
+			return evaluatePermanent(state, src).controllerId === cond.controllerId;
+		}
+		return Boolean(src.tapped);
+	}
+	const usl = eff.layer2?.untilSourceLeaves;
+	if (!usl) return true;
+	const src = findActivePerm(usl.sourceInstanceId);
+	return Boolean(src && (src.objectVersion ?? 1) === usl.sourceObjectVersion);
+}
 
 export function hasAllOffBattlefieldAndSpellsColorless(state: GameState): boolean {
 	for (const { perm, card } of abilityActivePermanents(state)) {

@@ -126,6 +126,7 @@ export function resolveCardInstanceDisplay(
 	viewerId: string | null
 ): {
 	displayCard: ScryfallCard;
+	types: string[];
 	imageUrl: string;
 	artCropUrl: string;
 	isFaceDownHidden: boolean;
@@ -138,8 +139,15 @@ export function resolveCardInstanceDisplay(
 			inst.card.id === 'face_down'
 				? inst.card
 				: scrubFaceDownCard(label, zone, inst.faceDownSpec);
+		const types =
+			zone === 'battlefield' || zone === 'stack'
+				? inst.faceDownSpec?.types?.length
+					? [...inst.faceDownSpec.types]
+					: ['Creature']
+				: [];
 		return {
 			displayCard: scrubbed,
+			types,
 			imageUrl: FACE_DOWN_ART_URI,
 			artCropUrl: FACE_DOWN_ART_URI,
 			isFaceDownHidden: true
@@ -151,8 +159,13 @@ export function resolveCardInstanceDisplay(
 		// Viewer is permitted to peek at this face-down object's true characteristics.
 		const img = effCard.imageUrl || FACE_DOWN_ART_URI;
 		const crop = effCard.artCropUrl || img;
+		const peekView = resolveObjectFaces(effCard, {
+			...instanceFaceOptions(inst, zone),
+			isFaceDown: false
+		});
 		return {
 			displayCard: effCard,
+			types: peekView.types,
 			imageUrl: img,
 			artCropUrl: crop,
 			isFaceDownHidden: false
@@ -179,6 +192,7 @@ export function resolveCardInstanceDisplay(
 
 	return {
 		displayCard,
+		types: view.types,
 		imageUrl,
 		artCropUrl,
 		isFaceDownHidden: false

@@ -65,6 +65,10 @@ import {
 	spellCastRestrictions,
 	type CostContext
 } from './costs.ts';
+import {
+	hasCounterRemovalSerializedPart,
+	totalRemovedCountersFromSerializedParts
+} from './costsWave7.ts';
 import { activeAbilityDefs, effectiveManaValue, resolveObjectFaces } from './faces.ts';
 import type { Wave3FinalizeCastOptions } from './keywordsWave3.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
@@ -125,7 +129,7 @@ export interface P16aRuntimeHost {
 		actor: PlayerGameState,
 		inst: CardInstance,
 		sourcePlayer: PlayerGameState,
-		sourceZone: 'hand' | 'command' | 'exile' | 'graveyard',
+		sourceZone: 'hand' | 'command' | 'exile' | 'graveyard' | 'library',
 		opts: Wave3FinalizeCastOptions
 	) => void;
 }
@@ -578,7 +582,7 @@ export function getPlayerCounterCount(
 
 export function evaluateP16aAmount(amount: Amount, ctx: FilterContext): number | null {
 	if (amount.k === 'countersRemovedThisWay') {
-		return ctx.stackItem?.lastCountersRemoved ?? 0;
+		return ctx.stackItem?.lastCountersRemoved ?? ctx.stackItem?.removedCounterCount ?? 0;
 	}
 	if (amount.k === 'playerCounters') {
 		let pl: PlayerGameState | undefined;
@@ -1037,7 +1041,7 @@ function buildFreeCastFaceSetups(
 	state: GameState,
 	actor: PlayerGameState,
 	inst: CardInstance,
-	fromZone: 'hand' | 'exile' | 'graveyard',
+	fromZone: 'hand' | 'exile' | 'graveyard' | 'library',
 	filter?: ObjectFilter
 ): FreeCastFaceSetup[] {
 	const rHost = requireP16aHost();
@@ -1137,13 +1141,29 @@ export function executeCastFree(host: P16aStepHost, step: EffectStep): void {
 	if (!actor || actor.lost) return;
 
 	const listKey = `castfree:list:${host.stepIndex}`;
+	const spentMvKey = `castfree:spent_mv:${host.stepIndex}`;
+	const totalMaxMvBudget =
+		spec.totalMaxMv !== undefined ? Math.max(0, host.amount(spec.totalMaxMv)) : undefined;
+	const getSpentMv = () => {
+		const rec = host.answers[spentMvKey];
+		return rec?.kind === 'chooseObjects' ? Number(rec.objectIds[0] ?? '0') || 0 : 0;
+	};
+	const addSpentMv = (delta: number) => {
+		host.answers[spentMvKey] = { kind: 'chooseObjects', objectIds: [String(getSpentMv() + delta)] };
+	};
 	let candIds: string[];
 	const savedList = host.answers[listKey];
 	if (savedList?.kind === 'chooseObjects') {
 		candIds = savedList.objectIds;
 	} else {
+		const expectedSrcVer =
+			host.sourceObjectVersion ?? host.locate(host.sourceId)?.inst.objectVersion ?? 1;
 		const rawObjs = host.objects(step.subject).filter(
-			(o) => o.zone === 'exile' || o.zone === 'graveyard' || o.zone === 'hand'
+			(o) =>
+				(o.zone === 'exile' || o.zone === 'graveyard' || o.zone === 'hand' || o.zone === 'library') &&
+				(!spec.exiledWithSelf ||
+					(o.exiledBy?.sourceInstanceId === host.sourceId &&
+						(o.exiledBy.sourceObjectVersion ?? 1) === expectedSrcVer))
 		);
 		const maxPick = spec.upToCount !== undefined ? spec.upToCount : rawObjs.length;
 		candIds = rawObjs.slice(0, maxPick).map((o) => o.instanceId);
@@ -1161,14 +1181,22 @@ export function executeCastFree(host: P16aStepHost, step: EffectStep): void {
 		const origFound = host.locate(candIds[i]);
 		if (
 			!origFound ||
-			(origFound.zone !== 'exile' && origFound.zone !== 'graveyard' && origFound.zone !== 'hand')
+			(origFound.zone !== 'exile' &&
+				origFound.zone !== 'graveyard' &&
+				origFound.zone !== 'hand' &&
+				origFound.zone !== 'library')
 		) {
 			host.answers[doneItemKey] = { kind: 'yesNo', yes: false };
 			continue;
 		}
-		const fromZone = origFound.zone as 'exile' | 'graveyard' | 'hand';
+		const fromZone = origFound.zone as 'exile' | 'graveyard' | 'hand' | 'library';
 		const sourceHolder = origFound.holder;
 		const baseInst = origFound.inst;
+
+		if (totalMaxMvBudget !== undefined && objectManaValue(state, baseInst) > totalMaxMvBudget - getSpentMv()) {
+			host.answers[doneItemKey] = { kind: 'yesNo', yes: false };
+			continue;
+		}
 
 		const setups = buildFreeCastFaceSetups(state, actor, baseInst, fromZone, spec.filter);
 		if (setups.length === 0) {
@@ -1178,15 +1206,23 @@ export function executeCastFree(host: P16aStepHost, step: EffectStep): void {
 
 		const askKey = `castfree:ask:${host.stepIndex}:${i}`;
 		let wantsCast = true;
+		const isFree = spec.withoutPayingManaCost !== false;
 		if (!actor.isBot && host.canPause) {
 			const ans = host.answers[askKey];
 			if (!ans) {
+				const costPhrase = isFree
+					? ' without paying its mana cost'
+					: spec.alternativeManaCost
+						? ` by paying ${spec.alternativeManaCost}`
+						: spec.payLifeEqualManaValue
+							? ' by paying life equal to its mana value'
+							: '';
 				host.pauseForYesNo(
 					actor,
-					`${host.title} — Cast Without Paying Mana Cost`,
+					`${host.title} — Cast Card`,
 					spec.copyCardFirst
-						? `Cast a copy of ${baseInst.card.name} without paying its mana cost?`
-						: `Cast ${baseInst.card.name} without paying its mana cost?`,
+						? `Cast a copy of ${baseInst.card.name}${costPhrase}?`
+						: `Cast ${baseInst.card.name}${costPhrase}?`,
 					askKey,
 					{ yesLabel: 'Cast', noLabel: 'Decline' }
 				);
@@ -1358,28 +1394,46 @@ export function executeCastFree(host: P16aStepHost, step: EffectStep): void {
 			castInst = copyInst;
 		}
 
+		const baseCostArg: import('../types.ts').CastOption['baseCost'] = isFree
+			? { kind: 'free' }
+			: spec.payLifeEqualManaValue
+				? { kind: 'free' }
+				: spec.alternativeManaCost !== undefined
+					? { kind: 'alternative', manaCost: spec.alternativeManaCost }
+					: { kind: 'printed' };
 		const req = effectiveSpellManaCost(
 			state,
 			actor,
 			castInst,
 			0,
-			{ kind: 'free' },
+			baseCostArg,
 			undefined,
 			pickedSetup.faceIndex
 		);
+		const extraCostDefs = [...pickedSetup.costDefs];
+		if (spec.payLifeEqualManaValue) {
+			extraCostDefs.push({
+				k: 'payLife',
+				amount: { k: 'const', n: objectManaValue(state, baseInst) }
+			});
+		}
 		let paidOk = true;
 		let descriptions: string[] = [];
-		if (pickedSetup.costDefs.length > 0) {
+		let removedCounterCount: number | undefined;
+		if (extraCostDefs.length > 0) {
 			const ctx = rHost.costContext(state, actor, castInst, 0, true, req);
-			const payment = chooseCostPayment(ctx, pickedSetup.costDefs);
+			const payment = chooseCostPayment(ctx, extraCostDefs);
 			if (!payment) {
 				paidOk = false;
 			} else {
-				const plan = planCosts(ctx, pickedSetup.costDefs, payment);
+				const plan = planCosts(ctx, extraCostDefs, payment);
 				if (!plan.ok || plan.question) {
 					paidOk = false;
 				} else {
 					const parts = serializeCostPlanParts(ctx, plan);
+					if (hasCounterRemovalSerializedPart(parts)) {
+						removedCounterCount = totalRemovedCountersFromSerializedParts(parts);
+					}
 					payTapAndManaCostParts(ctx, parts, plan.mana, descriptions);
 					const paid = executeCostPaymentParts(ctx, parts, 0, 0, descriptions);
 					descriptions = paid.descriptions;
@@ -1390,6 +1444,7 @@ export function executeCastFree(host: P16aStepHost, step: EffectStep): void {
 		}
 
 		if (paidOk) {
+			const castMv = objectManaValue(state, baseInst);
 			rHost.finalizeCastSpell(state, actor, castInst, castHolder, fromZone, {
 				targets,
 				...(activeSpecs.length > 0 ? { targetsBySpec } : {}),
@@ -1398,14 +1453,24 @@ export function executeCastFree(host: P16aStepHost, step: EffectStep): void {
 				castOptionId: `${fromZone}:free_cast`,
 				faceIndex: pickedSetup.faceIndex,
 				spellMods: {
-					castSummarySuffix: spec.copyCardFirst ? ' (copied card, free)' : ' (without paying mana cost)',
+					castSummarySuffix: spec.copyCardFirst
+						? isFree
+							? ' (copied card, free)'
+							: spec.alternativeManaCost
+								? ` (copied card, ${spec.alternativeManaCost})`
+								: ' (copied card)'
+						: isFree
+							? ' (without paying mana cost)'
+							: '',
 					...(spec.exileIfPutIntoGraveyard ? { exileIfPutIntoGraveyard: true } : {}),
 					...(spec.copyCardFirst ? { exileOnLeaveStack: true } : {})
 				},
 				exSourceName: host.title,
 				descriptions,
-				additionalIncomplete: pickedSetup.additionalIncomplete
+				additionalIncomplete: pickedSetup.additionalIncomplete,
+				...(removedCounterCount !== undefined ? { removedCounterCount } : {})
 			});
+			if (totalMaxMvBudget !== undefined) addSpentMv(castMv);
 			// Mark copy on top stack item if `copyCardFirst` (`CR 707.12`).
 			if (spec.copyCardFirst && state.stack.length > 0) {
 				const topStk = state.stack[state.stack.length - 1];

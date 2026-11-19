@@ -135,6 +135,11 @@ export function matchesManaValueParity(
 			if (!chosen) return false;
 			return chosen === 'even' ? isEven : !isEven;
 		}
+		case 'chosenParity': {
+			const chosen = source?.chosenParity;
+			if (!chosen) return false;
+			return chosen === 'even' ? isEven : !isEven;
+		}
 		case 'notChosenQuality': {
 			const chosen = source?.chosenParity;
 			if (!chosen) return false;
@@ -466,20 +471,22 @@ export function applyWave7CopyModificationExtras(
 	if (!mods || !destPerm.copiableState) return;
 	if (mods.addSupertypes?.length) {
 		const except = (destPerm.copiableState.except ??= {});
-		const existing = except.supertypes ?? [];
+		const existing =
+			except.supertypes ??
+			resolveObjectFaces(destPerm.copiableState.card, {
+				...instanceFaceOptions(destPerm, 'battlefield'),
+				copiableState: undefined
+			}).supertypes;
 		const mergedSupers = [...existing];
 		for (const sup of mods.addSupertypes) {
 			if (!mergedSupers.includes(sup)) mergedSupers.push(sup);
 		}
 		except.supertypes = mergedSupers;
-		if (mods.addSupertypes.includes('Legendary')) {
-			const card = destPerm.copiableState.card;
-			if (card && !/\bLegendary\b/.test(card.typeLine)) {
-				card.typeLine = `Legendary ${card.typeLine}`;
-			}
-			if (destPerm.copiableCard && destPerm.copiableCard !== card && !/\bLegendary\b/.test(destPerm.copiableCard.typeLine)) {
-				destPerm.copiableCard.typeLine = `Legendary ${destPerm.copiableCard.typeLine}`;
-			}
+		if (except.removeSupertypes?.length) {
+			const addedLower = new Set(mods.addSupertypes.map((s) => s.toLowerCase()));
+			const remaining = except.removeSupertypes.filter((s) => !addedLower.has(s.toLowerCase()));
+			if (remaining.length > 0) except.removeSupertypes = remaining;
+			else delete except.removeSupertypes;
 		}
 	}
 	if (mods.addedAbilityTexts?.length) {

@@ -90,8 +90,42 @@ import {
 	type Wave8ParserLike
 } from './effectsWave8.ts';
 // --- End Track P22d ---
+// --- Wave 9 ---
+import {
+	convertExileUntilFollowUpWave9,
+	parseDigKeepClauseWave9,
+	parseObjectFilterWave9,
+	parseSentenceWave9,
+	parseWave9EffectCondition,
+	type EffectsWave9Helpers,
+	type EffectsWave9ParserLike
+} from './effectsWave9.ts';
+// --- End Wave 9 ---
+// --- Wave 10 ---
+import {
+	parseAmountWave10,
+	parseConditionWave10,
+	parseObjectFilterWave10,
+	parseSentenceWave10,
+	parseTargetSpecWave10,
+	type EffectsWave10Helpers
+} from './effectsWave10.ts';
+// --- End Wave 10 ---
+// --- Wave 11 ---
+import {
+	isWave11GrantableKeyword,
+	parseObjectFilterWave11,
+	parseSentenceWave11
+} from './effectsWave11.ts';
+import {
+	parseAmountWave11,
+	parseConditionWave11,
+	parseManaRestrictionWave11,
+	type EffectsWave11Helpers
+} from './manaCountersWave11.ts';
+// --- End Wave 11 ---
 import { staticallyInterpretable } from './interpretable.ts';
-import { parseActivatedIfConditionSentence, parseCondition } from './triggers.ts';
+import { parseActivatedIfConditionSentence, parseCondition, parseTriggerHeader } from './triggers.ts';
 import {
 	hashText,
 	normalizeFace,
@@ -178,7 +212,13 @@ const QUOTED_ABILITY_CACHE = new Map<string, AbilityDef[]>();
 const UNSUPPORTED_DIGITAL_RE = /\b(?:perpetually|conjure|seek|draft a card|spellbook|boon|specialize|intensity)\b/i;
 
 export function compileQuotedAbilityString(abilityText: string, cardName = 'Permanent'): AbilityDef[] {
-	const trimmed = abilityText.trim().replace(/^[“"]|[”"]$/g, '').trim();
+	const rawQ = abilityText.trim();
+	const trimmed = (
+		(rawQ.startsWith('“') && rawQ.endsWith('”')) ||
+		(rawQ.startsWith('"') && rawQ.endsWith('"'))
+	)
+		? rawQ.slice(1, -1).trim()
+		: rawQ;
 	if (!trimmed || UNSUPPORTED_DIGITAL_RE.test(trimmed)) return [];
 	const cacheKey = `${cardName}::${trimmed}`;
 	const cached = QUOTED_ABILITY_CACHE.get(cacheKey);
@@ -252,9 +292,19 @@ function isSupportedEmblemQuotedAbility(abilityText: string): boolean {
 const RESTRICTION_SENTENCES: RegExp[] = [
 	/^activate only as a sorcery\.?$/i,
 	/^activate only during your turn\.?$/i,
+	/^activate only during (?:an opponent['’]s turn|opponents['’] turns|turns other than yours)\.?$/i,
 	/^activate only once each turn\.?$/i,
+	/^activate only once(?:\s+each\s+game)?\.?$/i,
 	/^activate only during your upkeep\.?$/i,
 	/^activate only during combat\.?$/i,
+	/^activate only (?:during combat )?before attackers are declared\.?$/i,
+	/^activate only (?:(?:during combat )?after attackers are declared|during the declare attackers step)\.?$/i,
+	/^activate only (?:during combat )?before blockers are declared\.?$/i,
+	/^activate only during the declare blockers step\.?$/i,
+	/^activate only (?:during combat )?after blockers are declared\.?$/i,
+	/^activate only (?:after combat|during (?:your |the )?postcombat main phase)\.?$/i,
+	/^activate only during your turn,\s*before attackers are declared\.?$/i,
+	/^activate only during an opponent['’]s turn,\s*before attackers are declared\.?$/i,
 	/^activate only if ~ is in your (?:hand|graveyard)(?: and only (?:as a sorcery|once each turn|during your turn|during your upkeep|during combat))?\.?$/i,
 	/^activate only (?:as a sorcery|once each turn|during your turn|during your upkeep|during combat) and only if ~ is in your (?:hand|graveyard)\.?$/i,
 	/^equip only as a sorcery\.?$/i,
@@ -363,7 +413,7 @@ class Parser {
 		this.lastObject = { ref, stepIndex: -1 };
 	}
 
-	/** "it" / "that creature": the last object acted on, or the trigger's object. */
+	/** "it" / "that creature": the last object acted on, or the trigger's object (self for state triggers). */
 	itRef(): Ref | null {
 		if (this.lastObject) {
 			if (this.lastObject.stepIndex >= 0) {
@@ -372,7 +422,10 @@ class Parser {
 			}
 			return this.lastObject.ref;
 		}
-		if (this.context === 'triggered') return { k: 'eventObject' };
+		if (this.context === 'triggered') {
+			if (this.trigger?.isStateTrigger) return { k: 'self' };
+			return { k: 'eventObject' };
+		}
 		return null;
 	}
 
@@ -670,6 +723,22 @@ function objectFilter(phrase: string): ObjectFilter | null {
 	const extW8 = parseExtendedFilterWave8(p, objectFilter);
 	if (extW8) return withSuspect(extW8);
 	// --- End Track P22d ---
+	// --- Wave 9 ---
+	const extW9 = parseObjectFilterWave9(p, objectFilter, singularSubtype);
+	if (extW9) return withSuspect(extW9);
+	// --- End Wave 9 ---
+	// --- Wave 10 ---
+	const extW10 = parseObjectFilterWave10(p, objectFilter, singularSubtype, (raw) => {
+		const low = raw.trim().toLowerCase();
+		if (/^\d+$/.test(low)) return parseInt(low, 10);
+		return NUMBER_WORDS[low] ?? null;
+	});
+	if (extW10) return withSuspect(extW10);
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	const extW11 = parseObjectFilterWave11(p, getWave11Helpers());
+	if (extW11) return withSuspect(extW11);
+	// --- End Wave 11 ---
 	return null;
 }
 
@@ -688,6 +757,8 @@ function targetPhrase(text: string, p?: Parser): Omit<TargetSpec, 'min' | 'max'>
 		return { ...permSpec, alsoSpells: true };
 	}
 	// --- End Precon Bragos Spirit ---
+	const w10Target = parseTargetSpecWave10(phrase, objectFilter);
+	if (w10Target) return w10Target;
 	if (/^(?:player|players)$/.test(phrase)) return { kind: 'player', filter: {}, player: { relation: 'any' } };
 	if (/^(?:opponent|opponents)$/.test(phrase)) return { kind: 'player', filter: {}, player: { relation: 'opponent' } };
 
@@ -897,7 +968,7 @@ function applyOtherTargetQualifier(p: Parser, index: number): boolean {
 	}
 	if (
 		p.context === 'activated' ||
-		(p.context === 'triggered' && (!p.trigger?.filter.object || p.trigger.filter.object === 'self'))
+		p.context === 'triggered'
 	) {
 		spec.filter.other = true;
 		return true;
@@ -1437,6 +1508,10 @@ function equalTo(p: Parser, text: string): Amount | null {
 		(sub) => equalTo(p, sub) ?? numberOf(sub) ?? amountWord(p, sub.toLowerCase())
 	);
 	if (p13Amt) return p13Amt;
+	const w10Amt = parseAmountWave10(p, t, getWave10Helpers());
+	if (w10Amt) return w10Amt;
+	const w11Amt = parseAmountWave11(p, t, getWave11Helpers());
+	if (w11Amt) return w11Amt;
 	return null;
 }
 
@@ -1565,6 +1640,9 @@ function whereX(
 	}
 	if (/^your life total$/i.test(rhs)) {
 		return { text: m[1], x: { k: 'life', of: { k: 'you' } } };
+	}
+	if (/^the amount of life you (?:gained|lost)$/i.test(rhs)) {
+		return { text: m[1], x: { k: 'eventAmount' } };
 	}
 	// --- Precon Bragos Spirit: "the mana value of the exiled card" (CR 607.2a linked exile) ---
 	const linkedStat = rhs.match(
@@ -2129,7 +2207,7 @@ function keywordList(text: string, allowOr = false): string[] | null {
 	const parts = text
 		.split(allowOr ? /,? (?:and|or) |, / : /,? and |, /)
 		.map((s) => s.trim().toLowerCase());
-	if (!parts.every((k) => GRANTABLE_KEYWORDS.includes(k) || k === 'changeling' || isParameterizedGrantKeyword(k))) {
+	if (!parts.every((k) => GRANTABLE_KEYWORDS.includes(k) || k === 'changeling' || isParameterizedGrantKeyword(k) || isWave11GrantableKeyword(k))) {
 		return null;
 	}
 	return parts.map((k) =>
@@ -5219,6 +5297,85 @@ function getWave8Helpers(): Wave8CompilerHelpers {
 }
 // --- End Track P22d ---
 
+// --- Wave 9 ---
+let cachedWave9Helpers: EffectsWave9Helpers | undefined;
+function getWave9Helpers(): EffectsWave9Helpers {
+	if (!cachedWave9Helpers) {
+		const built: EffectsWave9Helpers = {
+			objectFilter: (phrase) => objectFilter(phrase),
+			objectPhrase: (p, phrase) => objectPhrase(p as Parser, phrase),
+			playerPhrase: (p, phrase) => playerPhrase(p as Parser, phrase),
+			singlePlayer: (sel) => singlePlayer(sel),
+			amountWord: (p, raw) => amountWord(p as Parser, raw),
+			equalTo: (p, raw) => equalTo(p as Parser, raw),
+			singularSubtype: (raw) => singularSubtype(raw),
+			clauses: (p, text, offset) => clauses(p as Parser, text, offset),
+			parseSubEffects: (text, offset, context, trigger, seedLastObject) =>
+				parseEffects(text, offset, context, trigger, seedLastObject),
+			parseTriggerHeader: (text, offset) => parseTriggerHeader(text, offset),
+			stepOptionalChooser: (step) => stepOptionalChooser(step)
+		};
+		cachedWave9Helpers = built;
+		return built;
+	}
+	return cachedWave9Helpers;
+}
+// --- End Wave 9 ---
+// --- Wave 10 ---
+let cachedWave10Helpers: EffectsWave10Helpers | undefined;
+function getWave10Helpers(): EffectsWave10Helpers {
+	if (!cachedWave10Helpers) {
+		const built: EffectsWave10Helpers = {
+			objectFilter: (phrase) => objectFilter(phrase),
+			objectPhrase: (p, phrase) => objectPhrase(p as Parser, phrase),
+			targetPhrase: (_p, text) => targetPhrase(text, _p as Parser),
+			playerPhrase: (p, phrase) => playerPhrase(p as Parser, phrase),
+			singlePlayer: (sel) => singlePlayer(sel),
+			amountWord: (p, raw) => amountWord(p as Parser, raw),
+			equalTo: (p, raw) => equalTo(p as Parser, raw),
+			numberWord: (raw) => {
+				const low = raw.trim().toLowerCase();
+				if (/^\d+$/.test(low)) return parseInt(low, 10);
+				return NUMBER_WORDS[low] ?? null;
+			},
+			singularSubtype: (raw) => singularSubtype(raw),
+			parseCost: (raw) => {
+				const c = parseCost(raw);
+				return c.unparsed.length === 0 && c.defs.length > 0 ? c.defs : null;
+			},
+			clauses: (p, text, offset) => clauses(p as Parser, text, offset),
+			sentence: (p, text, span, optional) => sentence(p as Parser, text, span, optional),
+			parseSubEffects: (text, offset, context, trigger, seedLastObject) =>
+				parseEffects(text, offset, context, trigger, seedLastObject)
+		};
+		cachedWave10Helpers = built;
+		return built;
+	}
+	return cachedWave10Helpers;
+}
+// --- End Wave 10 ---
+// --- Wave 11 ---
+let cachedWave11Helpers: EffectsWave11Helpers | undefined;
+function getWave11Helpers(): EffectsWave11Helpers {
+	if (!cachedWave11Helpers) {
+		const w10 = getWave10Helpers();
+		const built: EffectsWave11Helpers = {
+			...w10,
+			compileQuotedAbilityString: (abilityText, cardName) =>
+				compileQuotedAbilityString(abilityText, cardName),
+			buildTokenSpec: (power, toughness, desc, withClause) =>
+				buildTokenSpec(power, toughness, desc, withClause),
+			colorWord: (raw) => COLOR_WORDS[raw] ?? null,
+			keywordList: (text, allowOr) => keywordList(text, allowOr),
+			parseManaRestriction: (text) => parseManaRestrictionSentence(text)
+		};
+		cachedWave11Helpers = built;
+		return built;
+	}
+	return cachedWave11Helpers;
+}
+// --- End Wave 11 ---
+
 // --- Track P19a ---
 function tryWave7Clause(p: Parser, text: string, span: Span): boolean {
 	const mark = p.mark();
@@ -5295,6 +5452,18 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	// --- Track P19a ---
 	if (tryWave7Clause(p, t, span)) return true;
 	// --- End Track P19a ---
+
+	// --- Wave 9 ---
+	if (parseSentenceWave9(p, t, span, getWave9Helpers())) return true;
+	// --- End Wave 9 ---
+
+	// --- Wave 10 ---
+	if (parseSentenceWave10(p, t, span, getWave10Helpers())) return true;
+	// --- End Wave 10 ---
+
+	// --- Wave 11 ---
+	if (parseSentenceWave11(p, t, span, getWave11Helpers())) return true;
+	// --- End Wave 11 ---
 
 	// --- Track P22d ---
 	if (/^(?:the next time\b|prevent\b)/i.test(t) && tryParsePreventWave8(p, t, span, getWave8Helpers())) {
@@ -6111,15 +6280,18 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 			...(nonLegendary ? { nonLegendary: true } : {}),
 			...(exceptColors !== undefined ? { exceptColors } : {})
 		};
-		p.push(
+		const idx = p.push(
 			{
 				verb: 'copySpell',
 				subject: sel,
 				...(Object.keys(params).length > 0 ? { params } : {}),
 				span
 			},
-			true
+			false
 		);
+		if (sel.k === 'target') {
+			p.lastObject = { ref: { k: 'target', index: sel.index }, stepIndex: idx };
+		}
 		return true;
 	}
 	m = t.match(/^add (.+)$/);
@@ -6236,12 +6408,14 @@ function imperative(p: Parser, text: string, span: Span): ClauseResult {
 	}
 	m = t.match(/^support (\S+)$/);
 	if (m) {
-		const c = count(m[1]);
-		if (!c || c.k !== 'const' || c.n < 1) return false;
+		const c = amountWord(p, m[1]);
+		if (!c) return false;
+		if (c.k === 'const' && c.n < 1) return false;
 		const index = p.addTarget({
 			kind: 'object',
 			min: 0,
-			max: c.n,
+			max: c.k === 'const' ? c.n : 99,
+			...(c.k !== 'const' ? { dynamicCount: c, dynamicUpTo: true } : {}),
 			filter: {
 				zone: 'battlefield',
 				types: ['Creature'],
@@ -6795,8 +6969,11 @@ function isP7ResolutionCondition(cond: Condition): boolean {
 		cond.k === 'objectState' ||
 		cond.k === 'matchesFilter' ||
 		cond.k === 'selfInZone' ||
-		cond.k === 'compare'
+		cond.k === 'compare' ||
 		// --- End Track P13 ---
+		// --- Wave 9 ---
+		cond.k === 'enteredUnderYourControlThisTurn'
+		// --- End Wave 9 ---
 	);
 }
 
@@ -6851,9 +7028,32 @@ function parseEffectResolutionCondition(p: Parser, rawCondText: string): Conditi
 		parseWave7Condition(
 			rawCondText,
 			p.lastObject?.ref ?? (p.targets.length === 1 ? { k: 'target', index: 0 } : null)
-		)
+		) ??
+		parseWave9EffectCondition(rawCondText, p) ??
+		parseConditionWave10(p, rawCondText, getWave10Helpers()) ??
+		parseConditionWave11(p, rawCondText, getWave11Helpers())
 	// --- End Track P19a ---
 	;
+}
+
+function isCastTimeTargetCond(cond: Condition): boolean {
+	switch (cond.k) {
+		case 'kicked':
+		case 'giftPromised':
+		case 'foretold':
+		case 'evoked':
+		case 'escaped':
+		case 'blitzed':
+		case 'additionalCostPaidThisSpell':
+			return true;
+		case 'not':
+			return isCastTimeTargetCond(cond.of);
+		case 'and':
+		case 'or':
+			return cond.of.every(isCastTimeTargetCond);
+		default:
+			return false;
+	}
 }
 
 function tryReplacementIfSentence(
@@ -6869,7 +7069,9 @@ function tryReplacementIfSentence(
 	const baseSteps = p.steps.slice(startIdx, stepsBefore);
 	if (baseSteps.some((s) => Boolean(s.condition) || Boolean(s.optional))) return false;
 
+	const savedLastObject = p.lastObject;
 	const savedMark = p.mark();
+	const savedBaseBinds = baseSteps.map((bs) => bs.bindAs);
 	let directRef: Ref | null = null;
 	if (baseSteps.length === 1) {
 		const baseStep = baseSteps[0];
@@ -6904,10 +7106,11 @@ function tryReplacementIfSentence(
 	}
 	normInner = normInner.replace(/^it deals\b/i, '~ deals');
 
+	const allowTargetSwap = isCastTimeTargetCond(cond);
 	if (
 		!clauses(p, normInner, span.start) ||
 		p.steps.length <= stepsBefore ||
-		p.targets.length !== targetsBefore ||
+		(!allowTargetSwap && p.targets.length !== targetsBefore) ||
 		p.steps.slice(stepsBefore).some((s) => Boolean(s.optional))
 	) {
 		p.rollback(savedMark);
@@ -6915,6 +7118,24 @@ function tryReplacementIfSentence(
 	}
 
 	const negCond: Condition = cond.k === 'not' ? cond.of : { k: 'not', of: cond };
+	if (p.targets.length > targetsBefore) {
+		const baseTargetIndices = new Set<number>();
+		for (const bs of baseSteps) {
+			if (bs.subject.k === 'target') baseTargetIndices.add(bs.subject.index);
+		}
+		for (const bi of baseTargetIndices) {
+			if (bi < targetsBefore && p.targets[bi]) {
+				p.targets[bi].condition = p.targets[bi].condition
+					? { k: 'and', of: [negCond, p.targets[bi].condition!] }
+					: negCond;
+			}
+		}
+		for (let ti = targetsBefore; ti < p.targets.length; ti++) {
+			p.targets[ti].condition = p.targets[ti].condition
+				? { k: 'and', of: [cond, p.targets[ti].condition!] }
+				: cond;
+		}
+	}
 	for (let i = startIdx; i < stepsBefore; i++) {
 		p.steps[i].condition = negCond;
 	}
@@ -6922,23 +7143,109 @@ function tryReplacementIfSentence(
 		const st = p.steps[i];
 		st.condition = st.condition ? { k: 'and', of: [cond, st.condition] } : cond;
 	}
-	// --- Track P22d: Link replaced pending dig steps (e.g. Farsight Ritual bargain dig 4 vs dig 8) ---
-	if (savedMark.pendingDig && p.pendingDig && !savedMark.pendingDig.hasKeep && !p.pendingDig.hasKeep) {
-		p.pendingDig = {
-			...p.pendingDig,
-			linkedStepIndices: [
-				...(savedMark.pendingDig.linkedStepIndices ?? []),
-				savedMark.pendingDig.stepIndex
-			]
-		};
-	}
-	// --- End Track P22d ---
-	if (baseSteps.length === 1) {
-		p.lastObject = directRef ? { ref: directRef, stepIndex: -1 } : undefined;
+	const sharedBindingName =
+		savedBaseBinds[0] ??
+		(savedLastObject && savedLastObject.stepIndex >= startIdx && savedLastObject.ref.k === 'binding'
+			? savedLastObject.ref.name
+			: undefined);
+	// Share binding across mutually-exclusive branches (e.g. *Burning Curiosity*: exile 2 vs exile 3 -> play those cards)
+	if (baseSteps.length === 1 && !directRef && sharedBindingName && p.steps.length - stepsBefore === 1) {
+		p.steps[startIdx].bindAs = sharedBindingName;
+		p.steps[stepsBefore].bindAs = sharedBindingName;
+		p.lastObject = { ref: { k: 'binding', name: sharedBindingName }, stepIndex: stepsBefore };
+	} else {
+		// --- Track P22d: Link replaced pending dig steps (e.g. Farsight Ritual bargain dig 4 vs dig 8) ---
+		if (savedMark.pendingDig && p.pendingDig && !savedMark.pendingDig.hasKeep && !p.pendingDig.hasKeep) {
+			p.pendingDig = {
+				...p.pendingDig,
+				linkedStepIndices: [
+					...(savedMark.pendingDig.linkedStepIndices ?? []),
+					savedMark.pendingDig.stepIndex
+				]
+			};
+		}
+		// --- End Track P22d ---
+		if (baseSteps.length === 1 && !savedBaseBinds[0]) {
+			p.lastObject = directRef ? { ref: directRef, stepIndex: -1 } : undefined;
+		}
 	}
 	return true;
 }
 // --- End Track P7 ---
+
+/**
+ * Applies `cond` to `p.steps.slice(startIdx)`. Single-step conditionals stay flat (`step.condition`);
+ * multi-step clauses wrap into `conditionalSequence` so `cond` is evaluated once per CR 608.2c
+ * (unless pendingDig or a cross-boundary ifPrecedingAccepted/Declined reference requires flat steps).
+ */
+function applyConditionToRange(
+	p: Parser,
+	startIdx: number,
+	cond: Condition,
+	span: Span,
+	condFirst = true
+): void {
+	const countAdded = p.steps.length - startIdx;
+	if (countAdded <= 0) return;
+	if (countAdded === 1) {
+		const step = p.steps[startIdx];
+		step.condition = step.condition
+			? { k: 'and', of: condFirst ? [cond, step.condition] : [step.condition, cond] }
+			: cond;
+		return;
+	}
+	const added = p.steps.slice(startIdx);
+	const hasCrossBoundaryDecision = added.some(
+		(s) =>
+			(s.ifPrecedingAccepted !== undefined && s.ifPrecedingAccepted < startIdx) ||
+			(s.ifPrecedingDeclined !== undefined && s.ifPrecedingDeclined < startIdx)
+	);
+	const hasPendingDig = p.pendingDig !== undefined && p.pendingDig.stepIndex >= startIdx;
+	if (hasPendingDig || hasCrossBoundaryDecision) {
+		for (const step of added) {
+			step.condition = step.condition
+				? { k: 'and', of: condFirst ? [cond, step.condition] : [step.condition, cond] }
+				: cond;
+		}
+		return;
+	}
+	if (p.lastObject && p.lastObject.stepIndex >= startIdx) {
+		const boundStep = p.steps[p.lastObject.stepIndex];
+		if (boundStep) {
+			const bindName =
+				boundStep.bindAs ??
+				(p.lastObject.ref.k === 'binding' ? p.lastObject.ref.name : `b${p.lastObject.stepIndex}`);
+			boundStep.bindAs = bindName;
+			p.lastObject = { ref: { k: 'binding', name: bindName }, stepIndex: -1 };
+		}
+	}
+	const thenSteps = p.steps.splice(startIdx);
+	for (const s of thenSteps) {
+		if (s.ifPrecedingAccepted !== undefined && s.ifPrecedingAccepted >= startIdx) {
+			s.ifPrecedingAccepted -= startIdx;
+		}
+		if (s.ifPrecedingDeclined !== undefined && s.ifPrecedingDeclined >= startIdx) {
+			s.ifPrecedingDeclined -= startIdx;
+		}
+	}
+	p.push(
+		{
+			verb: 'conditionalSequence',
+			subject: { k: 'none' },
+			params: {
+				conditionalSequence: {
+					condition: cond,
+					thenSteps
+				}
+			},
+			span
+		},
+		false
+	);
+	if (p.lastOptionalStep !== undefined && p.lastOptionalStep >= startIdx) {
+		p.lastOptionalStep = startIdx;
+	}
+}
 
 function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
 	const unlessMatch = text.match(/^(.+?)(?:,)?\s+unless\s+(.+)$/i);
@@ -6959,9 +7266,7 @@ function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
 			return false;
 		}
 		const notEscaped: Condition = { k: 'not', of: { k: 'escaped' } };
-		for (const step of added) {
-			step.condition = step.condition ? { k: 'and', of: [notEscaped, step.condition] } : notEscaped;
-		}
+		applyConditionToRange(p, mark.steps, notEscaped, span, true);
 		return true;
 	}
 	// --- Track P7 / P16a: "unless <resolution condition>" ---
@@ -6981,9 +7286,7 @@ function tryUnlessClause(p: Parser, text: string, span: Span): boolean {
 		}
 		const negCond: Condition =
 			unlessCond.k === 'not' ? unlessCond.of : { k: 'not', of: unlessCond };
-		for (const step of added) {
-			step.condition = step.condition ? { k: 'and', of: [negCond, step.condition] } : negCond;
-		}
+		applyConditionToRange(p, mark.steps, negCond, span, true);
 		return true;
 	}
 	// --- End Track P7 / P16a ---
@@ -7502,9 +7805,6 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 				p.rollback(mark);
 				continue;
 			}
-			for (const st of p.steps.slice(mark.steps)) {
-				st.condition = st.condition ? { k: 'and', of: [st.condition, cond] } : cond;
-			}
 			const afterStepSubj =
 				afterBaseLastObj && afterBaseLastObj.stepIndex >= mark.steps
 					? p.steps[afterBaseLastObj.stepIndex]?.subject
@@ -7515,6 +7815,7 @@ function clause(p: Parser, c: Clause, allowUnless = true): ClauseResult {
 					: afterStepSubj?.k === 'target'
 						? { ref: { k: 'target' as const, index: afterStepSubj.index }, stepIndex: -1 }
 						: preBaseLastObj;
+			applyConditionToRange(p, mark.steps, cond, c.span, false);
 			p.lastConditional = { cond, stepStart: mark.steps, preLastObject: otherwiseObj };
 			return true;
 		}
@@ -7659,6 +7960,8 @@ function parseAbilityClauseForMana(raw: string): NonNullable<ManaSpendingRestric
 }
 
 function parseManaRestrictionSentence(t: string): ManaSpendingRestrictionSpec | null {
+	const w11Mana = parseManaRestrictionWave11(t, singularSubtype);
+	if (w11Mana) return w11Mana;
 	const onlyTo = t.match(/^spend this mana only to (.+)$/i);
 	if (onlyTo) {
 		const body = onlyTo[1].trim();
@@ -7716,7 +8019,7 @@ function parseManaRestrictionSentence(t: string): ManaSpendingRestrictionSpec | 
 			allowAbilities: { anyAbility: true, foretell: true }
 		};
 	}
-	return null;
+	return parseManaRestrictionWave11(t, singularSubtype);
 }
 
 function attachToTrailingAddManaSteps(
@@ -7783,7 +8086,10 @@ function sentenceBody(
 		  }
 		| undefined
 ): boolean {
-	let t = text.replace(/[.!]$/, '').trim();
+	let t = text
+		.replace(/[.!]$/, '')
+		.trim()
+		.replace(/^(?:[A-Za-z0-9][A-Za-z0-9 ',-]{0,30}\s+—\s+)+/, '');
 	const t0 = t;
 	// Lower-case the first letter so productions don't have to care, unless it's "~".
 	if (/^[A-Z][a-z]*\b/.test(t) && LOWER_START.has(t.split(/[\s,']/)[0].toLowerCase())) {
@@ -7806,7 +8112,6 @@ function sentenceBody(
 			}
 		}
 		p.rollback(mark);
-		return false;
 	}
 	// --- End Precon Bragos Spirit ---
 
@@ -7814,7 +8119,7 @@ function sentenceBody(
 	if (p.pendingCardCopy) {
 		const copyIdx = p.pendingCardCopy.stepIndex;
 		const castCopyMatch = t.match(
-			/^you may cast (?:the copy|that copy|it)( without paying its mana cost)?$/i
+			/^you may cast (?:the copy|that copy|it)(?:( without paying its mana cost)| by paying ((?:\{[^}]+\})+) rather than paying its mana cost)?$/i
 		);
 		if (castCopyMatch) {
 			const copyStep = p.steps[copyIdx];
@@ -7823,7 +8128,10 @@ function sentenceBody(
 					...copyStep.params,
 					castFreeSpec: {
 						...copyStep.params.castFreeSpec,
-						withoutPayingManaCost: Boolean(castCopyMatch[1])
+						withoutPayingManaCost: Boolean(castCopyMatch[1]),
+						...(castCopyMatch[2]
+							? { alternativeManaCost: castCopyMatch[2].toUpperCase() }
+							: {})
 					}
 				};
 			}
@@ -7852,7 +8160,14 @@ function sentenceBody(
 	// --- End Track P22d ---
 	// --- End Track P16a ---
 
-	if (NEUTRAL_SENTENCES.some((re) => re.test(t0))) {
+	const prevPlayFromExile =
+		/^you may play the exiled cards? this turn\.?$/i.test(t0) &&
+		p.steps.length > 0 &&
+		p.steps[p.steps.length - 1]?.verb === 'dig' &&
+		p.steps[p.steps.length - 1]?.params?.dig?.keepTo === 'exile' &&
+		!p.steps[p.steps.length - 1]?.params?.dig?.partitions &&
+		!p.steps[p.steps.length - 1]?.params?.dig?.playFromExile;
+	if (!prevPlayFromExile && NEUTRAL_SENTENCES.some((re) => re.test(t0))) {
 		p.lastOptionalStep = undefined;
 		return true;
 	}
@@ -8300,6 +8615,12 @@ function sentenceBody(
 			prev.params = { ...prev.params, winFlipEffect: updated };
 			return true;
 		}
+		for (let i = p.steps.length - 1; i >= Math.max(0, p.steps.length - 4); i--) {
+			if (p.steps[i].verb === 'copySpell') {
+				p.steps[i].params = { ...p.steps[i].params, mayChooseNewTargets: true };
+				return true;
+			}
+		}
 		return fail();
 	}
 
@@ -8355,9 +8676,9 @@ function sentenceBody(
 		const cond = parseCondition(ifKicked[1]);
 		if (!cond) return fail();
 		let innerText = ifKicked[2].trim();
-		// --- Track P19a: Support replacement-style blitz/saddle/monstrous/foretell/escape/exert clauses ---
+		// --- Track P19a: Support replacement-style blitz/saddle/monstrous/foretell/escape/exert/kicker clauses ---
 		const leadInstead = innerText.match(/^instead,?\s+(.+)$/i);
-		if ((/\s+instead$/i.test(innerText) || leadInstead) && cond.k !== 'kicked') {
+		if (/\s+instead$/i.test(innerText) || leadInstead) {
 			const stripped = leadInstead
 				? leadInstead[1].trim()
 				: innerText.replace(/\s+instead$/i, '').trim();
@@ -8372,9 +8693,7 @@ function sentenceBody(
 		innerText = innerText.replace(/^it (?:also )?deals\b/i, '~ deals').replace(/^also\s+/i, '');
 		const innerStart = Math.max(span.start, span.end - ifKicked[2].length);
 		if (!sentence(p, innerText, { start: innerStart, end: span.end }, true)) return fail();
-		for (const step of p.steps.slice(stepsBefore)) {
-			step.condition = step.condition ? { k: 'and', of: [cond, step.condition] } : cond;
-		}
+		applyConditionToRange(p, stepsBefore, cond, span, true);
 		for (const target of p.targets.slice(targetsBefore)) {
 			target.condition = target.condition ? { k: 'and', of: [cond, target.condition] } : cond;
 		}
@@ -8405,9 +8724,7 @@ function sentenceBody(
 		if (/\binstead\b/i.test(innerText)) return fail();
 		const innerStart = Math.max(span.start, span.end - ifMonarch[2].length);
 		if (!sentence(p, innerText, { start: innerStart, end: span.end }, true)) return fail();
-		for (const step of p.steps.slice(stepsBefore)) {
-			step.condition = step.condition ? { k: 'and', of: [cond, step.condition] } : cond;
-		}
+		applyConditionToRange(p, stepsBefore, cond, span, true);
 		for (const target of p.targets.slice(targetsBefore)) {
 			target.condition = target.condition ? { k: 'and', of: [cond, target.condition] } : cond;
 		}
@@ -8519,20 +8836,38 @@ function sentenceBody(
 			const rawCondPart = strippedLead.slice(0, commaIdx).trim();
 			let innerText = strippedLead.slice(commaIdx + 1).trim();
 			if (!innerText) continue;
+			const preCondLastObj = p.lastObject;
+			if (
+				prevLastConditional?.preLastObject !== undefined &&
+				p.lastOptionalStep === undefined &&
+				p.lastObject !== undefined &&
+				p.lastObject.stepIndex >= prevLastConditional.stepStart &&
+				p.steps[p.lastObject.stepIndex]?.verb === 'createToken' &&
+				/^if\s+(?:it\b|it's\b|that card\b)/i.test(rawCondPart)
+			) {
+				p.lastObject = prevLastConditional.preLastObject;
+			}
 			const cond = parseEffectResolutionCondition(p, rawCondPart);
-			if (!cond) continue;
+			if (!cond) {
+				p.lastObject = preCondLastObj;
+				continue;
+			}
 			const leadInstead = innerText.match(/^instead,?\s+(.+)$/i);
-			if ((/\s+instead$/i.test(innerText) || leadInstead) && cond.k !== 'kicked') {
+			if (/\s+instead$/i.test(innerText) || leadInstead) {
 				const stripped = leadInstead
 					? leadInstead[1].trim()
 					: innerText.replace(/\s+instead$/i, '').trim();
 				if (!tryReplacementIfSentence(p, stripped, cond, stepsBefore, targetsBefore, span)) {
+					if (parseSentenceWave11(p, t, span, getWave11Helpers())) return true;
 					return fail();
 				}
 				p.lastOptionalStep = undefined;
 				return true;
 			}
-			if (/\binstead\b/i.test(innerText)) return fail();
+			if (/\binstead\b/i.test(innerText)) {
+				if (parseSentenceWave11(p, t, span, getWave11Helpers())) return true;
+				return fail();
+			}
 			const preLastObject = p.lastObject;
 			// --- Track P22d: Strip "also" in "it also gets +3/+0 and gains menace" (*Goatnap*) ---
 			innerText = innerText
@@ -8544,10 +8879,8 @@ function sentenceBody(
 			const leadMark = p.mark();
 			if (!sentence(p, innerText, { start: innerStart, end: span.end }, true)) {
 				p.rollback(leadMark);
+				p.lastObject = preCondLastObj;
 				continue;
-			}
-			for (const step of p.steps.slice(stepsBefore)) {
-				step.condition = step.condition ? { k: 'and', of: [cond, step.condition] } : cond;
 			}
 			if (p.lastOptionalStep !== undefined && p.lastOptionalStep >= stepsBefore) {
 				p.preOptionalLastObject = preLastObject;
@@ -8562,6 +8895,7 @@ function sentenceBody(
 					: afterStepSubj?.k === 'target'
 						? { ref: { k: 'target' as const, index: afterStepSubj.index }, stepIndex: -1 }
 						: preLastObject;
+			applyConditionToRange(p, stepsBefore, cond, span, true);
 			p.lastConditional = { cond, stepStart: stepsBefore, preLastObject: otherwiseObj };
 			return true;
 		}
@@ -8605,18 +8939,33 @@ function sentenceBody(
 				prevLastConditional.cond.k === 'not'
 					? prevLastConditional.cond.of
 					: { k: 'not', of: prevLastConditional.cond };
-			for (const step of p.steps.slice(stepsBefore)) {
-				step.condition = step.condition ? { k: 'and', of: [negCond, step.condition] } : negCond;
-			}
+			applyConditionToRange(p, stepsBefore, negCond, span, true);
 			return true;
 		}
 	}
 	// --- End Track P16a ---
 
-	const followUp = parseOptionalFollowUp(p, t, span, (innerText, innerStart) =>
-		sentence(p, innerText, { start: innerStart, end: span.end }, true)
-	);
-	if (followUp !== null) return followUp;
+	if (
+		(/^if you do,\s*copy (?:it|that card)$/i.test(t) ||
+			/^if you do,\s*put one of those cards on top of your library and the rest on the bottom of your library in any order$/i.test(
+				t
+			)) &&
+		parseSentenceWave9(p, t, span, getWave9Helpers())
+	) {
+		return true;
+	}
+
+	const followUp =
+		p.steps[p.steps.length - 1]?.verb === 'punisherChoice'
+			? null
+			: parseOptionalFollowUp(p, t, span, (innerText, innerStart) =>
+					sentence(p, innerText, { start: innerStart, end: span.end }, true)
+				);
+	if (followUp === true) return true;
+	if (followUp === false) {
+		if (parseSentenceWave11(p, t, span, getWave11Helpers())) return true;
+		return false;
+	}
 
 	// --- Track P16a: Multi-sentence CR 700.3 two-pile library split ---
 	if (p.pendingDig && !p.pendingDig.hasKeep && tryParsePileSplitFollowUp(p.steps, t)) {
@@ -8637,7 +8986,8 @@ function sentenceBody(
 	if (p.pendingDig && !p.pendingDig.hasKeep && p.pendingDig.draft.untilFilter) {
 		const pdStep = p.steps[p.pendingDig.stepIndex];
 		const exUntilSpec = pdStep
-			? convertDigStepToExileUntil(p.pendingDig.draft.untilFilter, t)
+			? (convertDigStepToExileUntil(p.pendingDig.draft.untilFilter, t) ??
+				convertExileUntilFollowUpWave9(p.pendingDig.draft.untilFilter, t))
 			: null;
 		if (pdStep && exUntilSpec) {
 			const idx = p.pendingDig.stepIndex;
@@ -8699,6 +9049,10 @@ function sentenceBody(
 		return true;
 	}
 	if (p.pendingDig) {
+		if (parseSentenceWave11(p, t, span, getWave11Helpers())) {
+			p.pendingDig = undefined;
+			return true;
+		}
 		p.flushPendingDig();
 	}
 	// --- Track P22d: Wave 8 post-flush follow-up sentences ---
@@ -8706,6 +9060,29 @@ function sentenceBody(
 		return true;
 	}
 	// --- End Track P22d ---
+	// --- Wave 9 ---
+	const trailInsteadM = t.match(/^(.+?)\s+instead\s+(if\s+.+)$/i);
+	if (trailInsteadM) {
+		const cond = parseEffectResolutionCondition(p, trailInsteadM[2].trim());
+		if (cond && tryReplacementIfSentence(p, trailInsteadM[1].trim(), cond, stepsBefore, targetsBefore, span)) {
+			p.lastOptionalStep = undefined;
+			return true;
+		}
+	}
+	if (parseSentenceWave9(p, t, span, getWave9Helpers())) {
+		return true;
+	}
+	// --- End Wave 9 ---
+	// --- Wave 10 ---
+	if (parseSentenceWave10(p, t, span, getWave10Helpers())) {
+		return true;
+	}
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	if (parseSentenceWave11(p, t, span, getWave11Helpers())) {
+		return true;
+	}
+	// --- End Wave 11 ---
 	if (tryCoerciveStart(p, t, span)) {
 		return true;
 	}
@@ -8916,6 +9293,19 @@ function stepOptionalChooser(step: EffectStep | undefined): PlayerRef | undefine
 	if (step.verb === 'redirectTargets' && step.params?.redirectSpec?.mode === 'chooseNewTargets') {
 		return { k: 'you' };
 	}
+	if (step.verb === 'conditionalSequence' && step.params?.conditionalSequence) {
+		const cs = step.params.conditionalSequence;
+		for (let i = cs.thenSteps.length - 1; i >= 0; i--) {
+			const ch = stepOptionalChooser(cs.thenSteps[i]);
+			if (ch) return ch;
+		}
+		if (cs.elseSteps) {
+			for (let i = cs.elseSteps.length - 1; i >= 0; i--) {
+				const ch = stepOptionalChooser(cs.elseSteps[i]);
+				if (ch) return ch;
+			}
+		}
+	}
 	// --- End Track P19a ---
 	return undefined;
 }
@@ -8994,9 +9384,22 @@ function parseReflexiveTriggerFollowUp(p: Parser, text: string, span: Span): boo
 	if (!hdr) return null;
 
 	let parentIdx: number | undefined;
+	let parentSteps: EffectStep[] = p.steps;
 	if (hdr.eventFilter === 'whenYouDo') {
 		parentIdx = p.lastOptionalStep;
-		const chooser = parentIdx !== undefined ? stepOptionalChooser(p.steps[parentIdx]) : undefined;
+		if (parentIdx === undefined) {
+			const tail = p.steps[p.steps.length - 1];
+			if (tail?.verb === 'delayedTrigger' && tail.delayed?.effect.length) {
+				for (let j = tail.delayed.effect.length - 1; j >= 0; j--) {
+					if (stepOptionalChooser(tail.delayed.effect[j])) {
+						parentSteps = tail.delayed.effect;
+						parentIdx = j;
+						break;
+					}
+				}
+			}
+		}
+		const chooser = parentIdx !== undefined ? stepOptionalChooser(parentSteps[parentIdx]) : undefined;
 		if (parentIdx === undefined || !chooser) return false;
 		const whoMatch = text.match(/^when ([^,]+),/i);
 		const who = whoMatch?.[1]?.toLowerCase() ?? 'you do';
@@ -9005,15 +9408,23 @@ function parseReflexiveTriggerFollowUp(p: Parser, text: string, span: Span): boo
 	} else {
 		parentIdx = p.lastOptionalStep ?? (p.steps.length > 0 ? p.steps.length - 1 : undefined);
 		if (parentIdx === undefined || !p.steps[parentIdx]) return false;
+		if (
+			p.lastOptionalStep === undefined &&
+			p.steps[parentIdx]?.verb === 'delayedTrigger' &&
+			p.steps[parentIdx].delayed?.effect.length
+		) {
+			parentSteps = p.steps[parentIdx].delayed!.effect;
+			parentIdx = parentSteps.length - 1;
+		}
 	}
 
-	const parentStep = p.steps[parentIdx];
+	const parentStep = parentSteps[parentIdx];
 	if (!parentStep || parentStep.params?.reflexiveTrigger) return false;
 
 	// Ensure parentStep binds its acted-on objects so reflexive inner clauses can read "its power", "that card", etc.
 	const savedBind = parentStep.bindAs;
 	let inheritedObj: { ref: Ref; stepIndex: number } | undefined;
-	if (p.lastObject && p.lastObject.stepIndex === parentIdx) {
+	if (parentSteps === p.steps && p.lastObject && p.lastObject.stepIndex === parentIdx) {
 		const bindName = parentStep.bindAs ?? `b${parentIdx}`;
 		parentStep.bindAs = bindName;
 		inheritedObj = { ref: { k: 'binding', name: bindName }, stepIndex: -1 };
@@ -9059,7 +9470,7 @@ function parseReflexiveTriggerFollowUp(p: Parser, text: string, span: Span): boo
 		...(hdr.objectFilter ? { objectFilter: hdr.objectFilter } : {})
 	};
 	parentStep.params = { ...parentStep.params, reflexiveTrigger };
-	if (hdr.eventFilter === 'whenYouDo') {
+	if (hdr.eventFilter === 'whenYouDo' && parentSteps === p.steps) {
 		p.lastOptionalStep = parentIdx;
 	}
 	return true;
@@ -9227,11 +9638,12 @@ type DigKeepSpec = Pick<
 	| 'keepAttacking'
 	| 'keepAttackingPlayer'
 	| 'revealKept'
+	| 'keepMaxMvStrictLt'
 >;
 type DigRestSpec = Pick<NonNullable<EffectParams['dig']>, 'rest' | 'restRandom' | 'restOrder' | 'restToHand'>;
 
 function parseDigDestination(dest: string): { keepTo: DigKeepSpec['keepTo']; keepTapped?: true; keepAttacking?: true } | null {
-	const d = dest.trim().toLowerCase();
+	const d = dest.trim().toLowerCase().replace(/\s+in any order$/, '');
 	if (d === 'into your hand') return { keepTo: 'hand' };
 	if (d === 'on top of your library' || d === 'back on top of your library') return { keepTo: 'libraryTop' };
 	if (d === 'onto the battlefield tapped and attacking') {
@@ -9280,6 +9692,12 @@ function parseDigKeepClause(p: Parser, clauseStr: string, hasUntilFilter = false
 	const w8 = parseDigKeepClauseWave8(s, hasUntilFilter, getWave8Helpers(), p);
 	if (w8) return w8;
 	// --- End Track P22d ---
+	// --- Wave 9 ---
+	const w9 = parseDigKeepClauseWave9(s, p, getWave9Helpers());
+	if (w9 && w9.keep !== undefined && w9.keepTo !== undefined) {
+		return w9 as DigKeepSpec;
+	}
+	// --- End Wave 9 ---
 	const mayPrefix = /^you may\s+/i.test(s);
 	const body = s.replace(/^you may\s+/i, '');
 
@@ -9421,6 +9839,25 @@ function tryDigFollowUp(p: Parser, text: string): boolean {
 				{ count: 1, to: 'hand' },
 				{ count: 1, to: 'libraryBottom' },
 				{ count: 1, to: 'exile', playableThisTurn: true }
+			]
+		};
+		pd.hasKeep = true;
+		pd.hasRest = true;
+		commitPendingDig(p, pd);
+		return true;
+	}
+
+	if (/^put one of those cards into your hand, one into your graveyard, and one on the bottom of your library$/i.test(t)) {
+		pd.draft = {
+			...pd.draft,
+			keep: 1,
+			upTo: false,
+			keepTo: 'hand',
+			rest: 'libraryBottom',
+			partitions: [
+				{ count: 1, to: 'hand' },
+				{ count: 1, to: 'graveyard' },
+				{ count: 1, to: 'libraryBottom' }
 			]
 		};
 		pd.hasKeep = true;

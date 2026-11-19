@@ -1,0 +1,108 @@
+{
+  "oracleId": "723a66c3-2c2c-411c-bba5-922e8601981b",
+  "cardName": "Indominus Rex, Alpha",
+  "expectedTextHash": "8244ea97",
+  "compiledVersion": 44,
+  "notes": "Wave 13 override: Self-replacement ETB discard creature cards for keyword counters + ETB draw trigger.",
+  "faces": [
+    {
+      "name": "Indominus Rex, Alpha",
+      "characteristics": {
+        "manaCost": "{1}{U/B}{U/B}{G}{G}",
+        "types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Dinosaur",
+          "Mutant"
+        ],
+        "supertypes": [
+          "Legendary"
+        ],
+        "colors": [
+          "B",
+          "G",
+          "U"
+        ],
+        "power": 6,
+        "toughness": 6
+      },
+      "abilities": [
+        {
+          "kind": "replacement",
+          "replacement": {
+            "replaces": {
+              "event": "zoneChange",
+              "filter": {
+                "object": "self",
+                "to": "battlefield"
+              }
+            },
+            "with": {
+              "k": "modify",
+              "etbDiscardForKeywordCounters": {
+                "keywords": [
+                  "flying",
+                  "first strike",
+                  "double strike",
+                  "deathtouch",
+                  "hexproof",
+                  "haste",
+                  "indestructible",
+                  "lifelink",
+                  "menace",
+                  "reach",
+                  "trample",
+                  "vigilance"
+                ]
+              }
+            },
+            "selfReplacement": true
+          },
+          "span": {
+            "start": 0,
+            "end": 273
+          }
+        },
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "zoneChange",
+            "filter": {
+              "object": "self",
+              "to": "battlefield"
+            }
+          },
+          "targets": [],
+          "effect": [
+            {
+              "verb": "draw",
+              "subject": {
+                "k": "player",
+                "filter": {
+                  "relation": "you"
+                }
+              },
+              "amount": {
+                "k": "countersOn",
+                "counter": "any",
+                "of": {
+                  "k": "eventObject"
+                }
+              },
+              "span": {
+                "start": 289,
+                "end": 324
+              }
+            }
+          ],
+          "text": "When ~ enters, draw a card for each counter on it.",
+          "span": {
+            "start": 274,
+            "end": 324
+          }
+        }
+      ]
+    }
+  ]
+}

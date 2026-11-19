@@ -52,6 +52,9 @@ import {
 	type UnpreventableDamageSourceContext
 } from './staticsWave8.ts';
 // --- End Track P22a ---
+// --- Wave 10 ---
+import { shieldMatchesWave10Source } from './combatWave10.ts';
+// --- End Wave 10 ---
 
 // ---- Subtype classification for CR 205.1a type-overwriting copy exceptions ------------------
 
@@ -255,7 +258,12 @@ export type DamagePreventedHandler = (
 	state: GameState,
 	shield: DamagePreventionShieldEntry,
 	preventedAmount: number,
-	opts: { sourceId?: string; sourceInst?: CardInstance }
+	opts: {
+		sourceId?: string;
+		sourceInst?: CardInstance;
+		sourceCard?: ScryfallCard;
+		sourceControllerId?: string;
+	}
 ) => void;
 
 let onDamagePreventedHook: DamagePreventedHandler | null = null;
@@ -270,7 +278,9 @@ function shieldMatchesDamageSource(
 	shield: DamagePreventionShieldEntry,
 	sourceInst: CardInstance | undefined,
 	sourceId?: string,
-	sourceTypes?: readonly string[]
+	sourceTypes?: readonly string[],
+	sourceCard?: ScryfallCard,
+	sourceControllerId?: string
 ): boolean {
 	// --- Track P22d ---
 	if (shield.fromSourceStackItemId !== undefined) {
@@ -320,7 +330,12 @@ function shieldMatchesDamageSource(
 			return false;
 		}
 	}
-	return true;
+	return shieldMatchesWave10Source(state, shield, {
+		sourceInst,
+		sourceId,
+		sourceCard,
+		sourceControllerId
+	});
 }
 
 /**
@@ -399,6 +414,7 @@ export function applyDamagePreventionShields(
 	// aren't needlessly consumed when an infinite shield already prevents all of this event's damage.
 	for (let sIdx = 0; sIdx < shields.length; sIdx++) {
 		const shield = shields[sIdx];
+		if (shield.redirectTo !== undefined || shield.minLifeFloor !== undefined) continue;
 		if (shield.remaining !== 'infinite') continue;
 		if (shield.combatOnly && !opts.isCombat) continue;
 		if (
@@ -414,15 +430,35 @@ export function applyDamagePreventionShields(
 		) {
 			continue;
 		}
-		if (!shieldMatchesDamageSource(state, shield, opts.sourceInst, opts.sourceId, opts.sourceTypes)) continue;
+		if (
+			!shieldMatchesDamageSource(
+				state,
+				shield,
+				opts.sourceInst,
+				opts.sourceId,
+				opts.sourceTypes,
+				opts.sourceCard,
+				opts.sourceControllerId
+			)
+		) {
+			continue;
+		}
 		// --- Track P22d ---
 		if (shield.nextEventOnly) {
 			state.damagePreventionShields = shields.filter((_, idx) => idx !== sIdx);
 		}
-		if (shield.onPrevented && onDamagePreventedHook) {
+		const hasRider = Boolean(
+			shield.onPrevented ||
+				shield.onPreventedToDamageSourceController ||
+				shield.onPreventedCreature ||
+				shield.onPreventedNoncreature
+		);
+		if (hasRider && onDamagePreventedHook) {
 			onDamagePreventedHook(state, shield, remainingDamage, {
 				sourceId: opts.sourceId,
-				sourceInst: opts.sourceInst
+				sourceInst: opts.sourceInst,
+				sourceCard: opts.sourceCard,
+				sourceControllerId: opts.sourceControllerId
 			});
 		}
 		// --- End Track P22d ---
@@ -446,7 +482,12 @@ export function applyDamagePreventionShields(
 				continue;
 			}
 		}
-		if (remainingDamage <= 0 || shield.remaining === 'infinite') {
+		if (
+			remainingDamage <= 0 ||
+			shield.remaining === 'infinite' ||
+			shield.redirectTo !== undefined ||
+			shield.minLifeFloor !== undefined
+		) {
 			kept.push(shield);
 			continue;
 		}
@@ -461,7 +502,15 @@ export function applyDamagePreventionShields(
 				opts.targetControllerId,
 				opts.sourceInst
 			) ||
-			!shieldMatchesDamageSource(state, shield, opts.sourceInst, opts.sourceId, opts.sourceTypes)
+			!shieldMatchesDamageSource(
+				state,
+				shield,
+				opts.sourceInst,
+				opts.sourceId,
+				opts.sourceTypes,
+				opts.sourceCard,
+				opts.sourceControllerId
+			)
 		) {
 			kept.push(shield);
 			continue;
@@ -469,7 +518,13 @@ export function applyDamagePreventionShields(
 		const prevented = Math.min(remainingDamage, shield.remaining);
 		remainingDamage -= prevented;
 		// --- Track P22d ---
-		if (prevented > 0 && shield.onPrevented) {
+		const hasRider = Boolean(
+			shield.onPrevented ||
+				shield.onPreventedToDamageSourceController ||
+				shield.onPreventedCreature ||
+				shield.onPreventedNoncreature
+		);
+		if (prevented > 0 && hasRider) {
 			preventedRiders.push({ shield, prevented });
 		}
 		const left = shield.nextEventOnly ? 0 : shield.remaining - prevented;
@@ -484,7 +539,9 @@ export function applyDamagePreventionShields(
 		for (const entry of preventedRiders) {
 			onDamagePreventedHook(state, entry.shield, entry.prevented, {
 				sourceId: opts.sourceId,
-				sourceInst: opts.sourceInst
+				sourceInst: opts.sourceInst,
+				sourceCard: opts.sourceCard,
+				sourceControllerId: opts.sourceControllerId
 			});
 		}
 	}
@@ -923,8 +980,15 @@ export function buildModifiedCopiableState(
 		except.colors = [...priorCopy.except.colors];
 	}
 
-	const power = mod?.power !== undefined ? mod.power : priorCopy?.except?.power;
-	const toughness = mod?.toughness !== undefined ? mod.toughness : priorCopy?.except?.toughness;
+	let power = mod?.power !== undefined ? mod.power : priorCopy?.except?.power;
+	let toughness = mod?.toughness !== undefined ? mod.toughness : priorCopy?.except?.toughness;
+	if (mod?.halvePT && (power === undefined || toughness === undefined)) {
+		const ev = target.zone === 'battlefield' && state ? evaluatePermanent(state, target) : null;
+		const baseP = ev ? ev.power : (parseInt(String(priorView.power ?? '0'), 10) || 0);
+		const baseT = ev ? ev.toughness : (parseInt(String(priorView.toughness ?? '0'), 10) || 0);
+		if (power === undefined) power = Math.ceil(baseP / 2);
+		if (toughness === undefined) toughness = Math.ceil(baseT / 2);
+	}
 	if (power !== undefined) except.power = power;
 	if (toughness !== undefined) except.toughness = toughness;
 
@@ -989,6 +1053,35 @@ export function applyBecomeCopyEffect(
 	const liveAffected = affected.filter((p) => p.zone === 'battlefield' && !p.phasedOut);
 	if (liveAffected.length === 0) return [];
 	const { copiableState } = buildModifiedCopiableState(state, copySource, mod, false);
+	if (mod?.keepSelfName || mod?.keepThisAbility) {
+		for (const p of liveAffected) {
+			const customState: CopiableState = {
+				...copiableState,
+				except: {
+					...(copiableState.except ?? {}),
+					...(mod.keepSelfName ? { names: [p.card.name] } : {})
+				},
+				...(mod.keepThisAbility
+					? {
+							mergedComponents: [
+								...(copiableState.mergedComponents ?? [copiableState.card]),
+								p.card
+							]
+						}
+					: {})
+			};
+			(state.timedContinuousEffects ??= []).push({
+				timestamp: allocateTimestampFn(state),
+				sourceName,
+				controllerId,
+				expires: duration === 'permanent' ? 'never' : 'endOfTurn',
+				affected: [{ instanceId: p.instanceId, objectVersion: p.objectVersion ?? 1 }],
+				layer1a: customState
+			});
+		}
+		noteLayerInputsChanged(state);
+		return [...liveAffected];
+	}
 	(state.timedContinuousEffects ??= []).push({
 		timestamp: allocateTimestampFn(state),
 		sourceName,

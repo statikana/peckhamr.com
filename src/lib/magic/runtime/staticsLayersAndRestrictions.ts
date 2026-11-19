@@ -1603,12 +1603,6 @@ export function applyCopyModificationSpecToState(
 			except.removeSupertypes,
 			mods.removeSupertypes
 		);
-		if (mods.removeSupertypes.some((s) => s.toLowerCase() === 'legendary')) {
-			baseCardToCopy.typeLine = baseCardToCopy.typeLine.replace(/\bLegendary\s+/g, '');
-			for (const f of baseCardToCopy.faces ?? []) {
-				if (f.typeLine) f.typeLine = f.typeLine.replace(/\bLegendary\s+/g, '');
-			}
-		}
 	}
 	if (mods.addKeywords?.length) {
 		except.addKeywords = mergeUniqueStrings(except.addKeywords, mods.addKeywords);

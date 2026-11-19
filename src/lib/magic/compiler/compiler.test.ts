@@ -509,7 +509,7 @@ describe('Track B3 Slice 2 keyword compilation (Exalted, Annihilator, Landwalk)'
 		assert.deepEqual(a.faces[0].abilities, b.faces[0].abilities);
 	});
 
-	it('compiles Kicker and Multikicker costs, conditions, ETB replacements, and rejects instead overrides', () => {
+	it('compiles Kicker and Multikicker costs, conditions, ETB replacements, and instead overrides', () => {
 		const single = compileFresh(
 			synthetic({
 				name: 'Kicker Bolt',
@@ -596,7 +596,14 @@ describe('Track B3 Slice 2 keyword compilation (Exalted, Annihilator, Landwalk)'
 					'Kicker {2}\nInstead Shock deals 2 damage to any target. If Instead Shock was kicked, it deals 4 damage to that target instead.'
 			})
 		);
-		assert.equal(insteadDef.faces[0].abilities.some((a) => a.kind === 'unsupported'), true);
+		assert.equal(insteadDef.faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const instSpell = insteadDef.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.equal(instSpell?.kind, 'spell');
+		if (instSpell?.kind === 'spell') {
+			assert.equal(instSpell.effect.length, 2);
+			assert.deepEqual(instSpell.effect[0].condition, { k: 'not', of: { k: 'kicked' } });
+			assert.deepEqual(instSpell.effect[1].condition, { k: 'kicked' });
+		}
 
 		const textA = 'Kicker {2}\n~ deals 2 damage to any target.\nIf ~ was kicked, draw a card.';
 		const inv1 = compileFresh(synthetic({ name: 'Amber Flare', typeLine: 'Instant', oracleText: textA }));
@@ -1239,6 +1246,69 @@ describe('Track D Slice 3: modal triggered, activated, loyalty, and multi-target
 		assert.equal(resolved.steps.length, 2);
 		assert.equal(resolved.steps[0]?.verb, 'sacrifice');
 		assert.equal(resolved.steps[1]?.verb, 'loseLife');
+
+		const reflTwoTargets = synthetic({
+			name: 'Delayed Reflexive Broker',
+			manaCost: '{1}{U}',
+			cmc: 2,
+			typeLine: 'Creature — Human Wizard',
+			power: '1',
+			toughness: '3',
+			oracleText:
+				'{T}: You may pay {1}. When you do, at the beginning of the next end step, target player draws a card and target opponent loses 3 life.'
+		});
+		const reflTwoDef = compileFresh(reflTwoTargets);
+		assert.equal(reflTwoDef.fullySupported, true);
+		const reflTwoAb = reflTwoDef.faces[0].abilities.find((a) => a.kind === 'activated');
+		assert.ok(reflTwoAb && reflTwoAb.kind === 'activated');
+		const resolvedReflTwo = resolveCompiledDelayedSteps({
+			kind: 'compiledDelayed',
+			sourceCard: reflTwoTargets,
+			abilityKind: 'activated',
+			abilityId: reflTwoAb.id,
+			stepPath: [0, 0],
+			boundRefs: [],
+			targets: []
+		});
+		assert.ok(resolvedReflTwo);
+		assert.equal(resolvedReflTwo.targets.length, 2);
+		assert.equal(resolvedReflTwo.targets[0]?.player?.relation, 'any');
+		assert.equal(resolvedReflTwo.targets[1]?.player?.relation, 'opponent');
+		assert.deepEqual(
+			resolvedReflTwo.steps.map((s) => s.verb),
+			['draw', 'loseLife']
+		);
+
+		const reflGyCopy = synthetic({
+			name: 'Delayed Reflexive Necromancer',
+			manaCost: '{2}{B}',
+			cmc: 3,
+			typeLine: 'Creature — Zombie Wizard',
+			power: '2',
+			toughness: '2',
+			oracleText:
+				"{T}: You may pay {1}. When you do, at the beginning of the next end step, create a token that's a copy of target creature card in your graveyard."
+		});
+		const reflGyDef = compileFresh(reflGyCopy);
+		assert.equal(reflGyDef.fullySupported, true);
+		const reflGyAb = reflGyDef.faces[0].abilities.find((a) => a.kind === 'activated');
+		assert.ok(reflGyAb && reflGyAb.kind === 'activated');
+		const resolvedReflGy = resolveCompiledDelayedSteps({
+			kind: 'compiledDelayed',
+			sourceCard: reflGyCopy,
+			abilityKind: 'activated',
+			abilityId: reflGyAb.id,
+			stepPath: [0, 0],
+			boundRefs: [],
+			targets: []
+		});
+		assert.ok(resolvedReflGy);
+		assert.equal(resolvedReflGy.targets.length, 1);
+		assert.equal(resolvedReflGy.targets[0]?.filter.zone, 'graveyard');
+		assert.deepEqual(
+			resolvedReflGy.steps.map((s) => s.verb),
+			['copyPermanent']
+		);
 	});
 
 	it('compiles linked exile (until ~ leaves the battlefield, cards exiled with ~) with rename invariance', () => {
@@ -1470,6 +1540,20 @@ describe('Track D Slice 3: modal triggered, activated, loyalty, and multi-target
 			spDef.faces[1].abilities.some((a) => a.kind === 'keyword' && a.keyword.name === 'delve')
 		);
 	});
-});
 
+	it('normalizes curly apostrophes in CastRestriction sentences (parseP18bCastRestrictionSentence)', () => {
+		const curlyOppSpell = synthetic({
+			name: 'Twilight Insight',
+			manaCost: '{1}{U}',
+			cmc: 2,
+			typeLine: 'Instant',
+			oracleText: 'Cast this spell only during an opponent’s turn.\nDraw a card.'
+		});
+		const def = compileFresh(curlyOppSpell);
+		assert.equal(def.fullySupported, true);
+		const spellAb = def.faces[0].abilities.find((a) => a.kind === 'spell');
+		assert.ok(spellAb && spellAb.kind === 'spell');
+		assert.deepEqual(spellAb.castRestrictions, ['duringOpponentsTurn']);
+	});
+});
 

@@ -68,6 +68,20 @@ export interface CopyModificationSpec {
 	/** CR 707.9a: Supertypes added to the copy's copiable values ("..., except it's legendary in addition to its other types"). */
 	addSupertypes?: string[];
 	// --- End Track P20a ---
+	// --- Wave 11 ---
+	/** CR 707.9b: Halves power and toughness of the copied object (*Saw in Half*). */
+	halvePT?: { round: 'up' | 'down' };
+	/** CR 707.9a: Retains the copying ability on the copy (*Irma*, *Kimahri*). */
+	keepThisAbility?: boolean;
+	// --- End Wave 11 ---
+	// --- Wave 12 ---
+	/** Additional counters placed on the entering copy ("except it enters with an additional <counter> counter on it"). */
+	additionalCounters?: { counter: CounterType; amount: Amount };
+	/** Conditional counters placed on the entering copy ("if you control a commander, it enters with a finality counter on it"). */
+	conditionalCounters?: { condition: Condition; counter: CounterType; count: number };
+	/** Conditional counters on copy based on copied permanent's types ("enters with +1/+1 if creature, loyalty if planeswalker"). */
+	conditionalTypeCounters?: Array<{ type: string; counter: CounterType; count: number }>;
+	// --- End Wave 12 ---
 }
 
 export interface DamagePreventionSpec {
@@ -91,7 +105,37 @@ export interface DamagePreventionSpec {
 		counter?: CounterType;
 		recipient?: Selector;
 	};
-	// --- End Track P22d ---
+	// --- Wave 10 ---
+	/** CR 614.9: Redirect prevented/replaced damage to `'sourceController'` or `'chosenPermanent'`. */
+	redirectTo?: 'sourceController' | 'chosenPermanent';
+	/** Optional source color filter for redirection/prevention riders (*Honorable Passage*, *Surge of Salvation*). */
+	redirectSourceColorFilter?: ManaColor[];
+	/** Source kind filter (`'creature' | 'noncreature' | 'any'`) for redirection/prevention (*Comeuppance*). */
+	redirectSourceKind?: 'creature' | 'noncreature' | 'any';
+	/** Replacement floor (`reduces it to N instead`, e.g. *Angel's Grace* `minLifeFloor: 1`). */
+	minLifeFloor?: number;
+	/** Protect you and all permanents you control (*Gideon's Sacrifice*). */
+	allDamageToYouAndPerms?: boolean;
+	/** Protect you and planeswalkers you control (*Comeuppance*). */
+	youAndPlaneswalkersYouControl?: boolean;
+	/** Restrict shield to sources not controlled by `you` (*Comeuppance*). */
+	fromSourcesYouDontControl?: boolean;
+	/** Restrict shield to sources of specified colors (*Surge of Salvation*). */
+	fromSourceColors?: ManaColor[];
+	/** Restrict shield to sources NOT having specified subtypes (*Arachnogenesis*, *Galadhrim Ambush*). */
+	fromSourceNotSubtypes?: string[];
+	/** Separate onPrevented riders for creature vs noncreature sources (*Comeuppance*). */
+	onPreventedCreature?: {
+		kind: 'dealDamageEqual';
+		to: 'sourceCreature' | 'sourceController';
+	};
+	onPreventedNoncreature?: {
+		kind: 'dealDamageEqual';
+		to: 'sourceController';
+	};
+	/** Use the actual damage event source's controller as dealDamageEqual recipient (*Deflecting Palm*, *Honorable Passage*). */
+	onPreventedToDamageSourceController?: boolean;
+	// --- End Wave 10 ---
 }
 
 export interface TimedCombatRestrictionSpec {
@@ -487,6 +531,10 @@ export interface KeywordDef {
 	/** CR 702.6: Inline activation cost reduction on Equip ("Equip {3}. This ability costs {1} less to activate for each ..."). */
 	equipCostReduction?: { delta: CostDelta; condition?: Condition };
 	// --- End Track P21 ---
+	// --- Wave 12 ---
+	/** CR 702.181 / 702.189: Dynamic N from "where X is <amount>" on keyword lines (e.g. Mobilize X, Firebending X). */
+	dynamicAmount?: Amount;
+	// --- End Wave 12 ---
 }
 
 // ---- Filters --------------------------------------------------------------------------------
@@ -519,6 +567,7 @@ export interface ObjectFilter {
 	/** Dynamic controller reference ("creatures target player controls"). */
 	controllerRef?: PlayerRef;
 	owner?: 'you' | 'opponent' | 'any';
+	ownerRef?: PlayerRef;
 	tapped?: boolean;
 	token?: boolean;
 	/** "another" / "other": not the source object. */
@@ -541,6 +590,8 @@ export interface ObjectFilter {
 	// --- Track P4 ---
 	/** CR 205.3m / 614.12: matches the `chosenSubType` recorded on the source permanent. */
 	ofChosenType?: boolean;
+	/** Matches objects that are NOT of the `chosenSubType` (*Crippling Fear*). */
+	notOfChosenType?: boolean;
 	/** CR 105.4 / 614.12: matches the `chosenColor` recorded on the source permanent. */
 	ofChosenColor?: boolean;
 	// --- Track P5 ---
@@ -563,6 +614,8 @@ export interface ObjectFilter {
 	lacksKeywords?: string[];
 	/** Matches iff the object has >= 1 counter of the specified type (or `'any'` for any counter). */
 	hasCounters?: CounterType | string | 'any';
+	/** Matches iff the object has 0 counters of the specified type (or `'any'`). */
+	notHasCounters?: CounterType | string | 'any';
 	/** CR 205.2b AND-semantics for compound card types ("artifact creature" requires BOTH Artifact and Creature). */
 	allTypes?: string[];
 	// --- Track P9 ---
@@ -684,7 +737,7 @@ export interface ObjectFilter {
 	/** Matches objects whose toughness is strictly greater than their power (`T > P`). */
 	toughnessGreaterThanPower?: boolean;
 	/** CR 107.1c: matches objects by mana-value parity (`0` is even), or relative to `source.chosenParity` (`chosenQuality` / `notChosenQuality`). */
-	manaValueParity?: 'odd' | 'even' | 'chosenQuality' | 'notChosenQuality';
+	manaValueParity?: 'odd' | 'even' | 'chosenQuality' | 'notChosenQuality' | 'chosenParity';
 	/** Matches permanents controlled by `source.chosenPlayerId` ("the chosen player controls"). */
 	controlledByChosenPlayer?: boolean;
 	// --- End Track P20a ---
@@ -723,6 +776,77 @@ export interface ObjectFilter {
 	/** CR 120.4: Matches permanents dealt damage this turn by the object `source` is currently attached to (*Scythe of the Wretched*). */
 	dealtDamageByAttachedThisTurn?: boolean;
 	// --- End Track P22b ---
+	// --- Wave 9 ---
+	/** Matches creatures whose power OR toughness satisfies `powerOrToughness` (*Arnyn, Deathbloom Botanist*). */
+	powerOrToughness?: Compare;
+	/** Compares object mana value against a dynamic `Amount` (e.g. *Krile Baldesion*, *Puca's Covenant*). */
+	manaValueCompare?: Compare;
+	// --- End Wave 9 ---
+	// --- Wave 10 ---
+	/** Matches permanents whose `stat` equals the greatest `stat` among matching permanents controlled by the same player (*Soul Shatter*, *Crackling Doom*). */
+	greatestStatAmongControlled?: 'power' | 'toughness' | 'manaValue';
+	/** Optional scope types for `greatestStatAmongControlled` (e.g. `['Creature', 'Planeswalker']` for *Soul Shatter*). */
+	greatestStatAmongControlledTypes?: string[];
+	/** Matches permanents whose `stat` equals the least `stat` among matching permanents controlled by the same player. */
+	leastStatAmongControlled?: 'power' | 'toughness' | 'manaValue';
+	/** Matches objects with the same name as target `sameNameAsTargetIndex ?? 0` (*Maelstrom Pulse*, *Legions to Ashes*, *Echoing Return*). */
+	sameNameAsTarget?: boolean;
+	sameNameAsTargetIndex?: number;
+	/** Restricts multi-target selection or object matching to distinct controllers (*Cloud's Limit Break*). */
+	differentControllers?: boolean;
+	/** Matches objects that have one or more colors (*All Is Dust*, *Ugin, the Ineffable*). */
+	isColored?: boolean;
+	/** Matches permanents that did NOT enter the battlefield this turn (*Let the Galaxy Burn*). */
+	notEnteredThisTurn?: boolean;
+	/** Matches permanents whose controller was dealt combat damage by `~` this turn (*Steel Hellkite*). */
+	controllerDealtCombatDamageBySelfThisTurn?: boolean;
+	/** Matches objects whose controller matches `target[index]`'s controller (*Legions to Ashes*). */
+	controllerOfTargetIndex?: number;
+	/** Matches objects sharing at least one card type with `binding[name]` (*Braids, Arisen Nightmare*). */
+	sharesCardTypeWithBinding?: string;
+	/** Matches permanents created by the source permanent (`createdBySourceId` === `source.instanceId`, *Tombstone Stairwell*). */
+	createdWithSelf?: boolean;
+	/** Matches objects matching `powerOrToughness` using base P/T (*Angelic Aberration*). */
+	basePowerOrToughness?: Compare;
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	/** Matches cards in a graveyard that were put there from the battlefield this turn (*Continue?*). */
+	enteredGraveyardFromBattlefieldThisTurn?: boolean;
+	/** Matches cards with cycling or typecycling abilities (*Herald of the Forgotten*). */
+	withCyclingAbility?: boolean;
+	/** Matches creatures whose power is strictly greater than each other creature's power (*Selvala, Heart of the Wilds*). */
+	greatestPowerAmongAll?: boolean;
+	/** Matches objects whose controller equals the event object's controller (*Broodcaller Scourge*, *Fear of Burning Alive*). */
+	controllerOfEventObject?: boolean;
+	/** Matches cards in exile regardless of which source exiled them (*Oblivion Sower*). */
+	exiledByAnyPlayer?: boolean;
+	/** Matches objects whose mana value is <= event object's mana value (*Hammerhead Tyrant*). */
+	manaValueLteEventObject?: boolean;
+	/** Matches objects with a different name from all other chosen targets, or not yet chosen in current step (*Rejoin the Fight*). */
+	notYetChosenInStep?: boolean;
+	/** Matches permanents whose mana value is strictly less than the revealed cost card's mana value (*Calamity of the Titans*). */
+	manaValueLtRevealedCostCard?: boolean;
+	/** Matches creatures whose power is <= the revealed cost card's power (*Titan's Presence*). */
+	powerLteRevealedCostCard?: boolean;
+	/** Matches objects whose mana value is <= the triggering event amount (*Broodcaller Scourge*). */
+	manaValueLteEventAmount?: boolean;
+	/** Matches creatures with power strictly less than self's power. */
+	powerLtSelf?: boolean;
+	/** Matches objects with mana value <= total counters among permanents you control. */
+	manaValueLteTotalCounters?: boolean;
+	/** Matches creature cards that share a creature type with the cost-sacrificed permanent. */
+	sharesSubtypeWithSacrificed?: boolean;
+	// --- End Wave 11 ---
+	// --- Wave 12 ---
+	/** Matches spells cast from one of these zones (e.g. graveyard, library, exile). */
+	castFromZones?: ZoneType[];
+	/** Matches cards put into a graveyard from anywhere other than the battlefield this turn. */
+	putIntoGraveyardFromNonBattlefieldThisTurn?: boolean;
+	/** Matches permanents sharing a card name with the affected object (used with 'other'). */
+	sameNameAsAffected?: boolean;
+	/** Matches objects whose card name differs from the static source's card name. */
+	notSameNameAsSource?: boolean;
+	// --- End Wave 12 ---
 }
 
 export interface Compare {
@@ -767,6 +891,18 @@ export interface TargetSpec {
 	/** CR 115.1 "For each opponent, ... up to one target ... that player controls": at most one chosen target per controlling opponent. */
 	perOpponent?: boolean;
 	// --- End Precon Bragos Spirit ---
+	// --- Wave 10 ---
+	/** Chosen targets must all have distinct controllers (*Cloud's Limit Break*). */
+	differentControllers?: boolean;
+	/** Chosen target is picked by `eventPlayer` rather than controller (*Bladegriff Prototype*). */
+	chosenByEventPlayer?: boolean;
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	/** Chosen target must share at least one card type with target at `sharesCardTypeWithTargetIndex` (*The Trickster-God's Heist*). */
+	sharesCardTypeWithTargetIndex?: number;
+	/** Target may exist in any of `zones` (e.g. `['stack', 'battlefield', 'graveyard']` for *Endless Detour*). */
+	zones?: Array<ZoneType | 'stack'>;
+	// --- End Wave 11 ---
 }
 
 // ---- Amounts (replaces dynamicFormula strings) ----------------------------------------------
@@ -798,7 +934,15 @@ export type PlayerRef =
 	/** The player the trigger event was about ("that player": the player dealt damage, the caster). */
 	| { k: 'eventPlayer' }
 	/** The defending player an attacking creature is attacking (CR 508.5, 702.86a). */
-	| { k: 'defendingPlayer' };
+	| { k: 'defendingPlayer' }
+	// --- Wave 10 ---
+	| { k: 'chosenOpponent' }
+	| { k: 'eachLoopPlayer' }
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	| { k: 'playerToYourRight' }
+	| { k: 'controllerOrControllerOfPlaneswalker'; targetIndex: number };
+	// --- End Wave 11 ---
 
 export type Amount =
 	| { k: 'const'; n: number }
@@ -833,7 +977,7 @@ export type Amount =
 	| { k: 'distinctCardTypesInZone'; zone: ZoneType; whose: 'you' | 'opponents' | 'all' }
 	// --- Track P9 ---
 	/** CR 702.43a / 704.8: count of `counter` on the event/source object as it last existed on the battlefield. */
-	| { k: 'lkiCounterCount'; counter: CounterType }
+	| { k: 'lkiCounterCount'; counter: CounterType | 'any' }
 	// --- Track P10 ---
 	/** Result of the most recent die roll or coin-flip streak in the resolving effect ("where X is the result"). */
 	| { k: 'lastRollResult' }
@@ -960,7 +1104,26 @@ export type Amount =
 				| 'destroyedThisWay'
 				| 'sacrificedThisWay'
 				| 'discardedThisWay'
-				| 'exiledThisWay';
+				| 'exiledThisWay'
+				| 'milledThisWay'
+				| 'milledTotalManaValue'
+				| 'opponentsDrewThisWay'
+				| 'punisherDeclinedThisWay'
+				| 'punisherPaidThisWay'
+				| 'discardedHandPlayersThisWay'
+				| 'damageDealtThisWay'
+				| 'opponentsDidThisWay'
+				| 'opponentsDidntThisWay'
+				| 'nonlandRevealedThisWay'
+				| 'landCardsPutIntoGraveyardThisWay'
+				| 'destroyedControlledByPlayerThisWay'
+				| 'creaturesDealtDamageThisWay'
+				| 'drawnThisWay'
+				| 'returnedToHandThisWay'
+				| 'exiledCardsThisWay'
+				| 'landCardsMilledThisWay'
+				| 'convokedCreaturesCount'
+				| 'revealedThisWay';
 	  }
 	/** Non-negative difference `Math.max(0, left - right)` ("where X is 3 minus the number of cards in their hand", "draw cards equal to the difference"). */
 	| { k: 'difference'; left: Amount; right: Amount }
@@ -980,8 +1143,56 @@ export type Amount =
 	| { k: 'targetsTotalManaValue' }
 	// --- End Track P22b ---
 	// --- Track P22c ---
-	| { k: 'conditional'; condition: Condition; then: Amount; else: Amount };
+	| { k: 'conditional'; condition: Condition; then: Amount; else: Amount }
 	// --- End Track P22c ---
+	// --- Wave 9 ---
+	| { k: 'cardsDiscardedThisTurn' }
+	// --- End Wave 9 ---
+	// --- Wave 10 ---
+	| { k: 'opponentsControllingMoreCount'; filter: ObjectFilter }
+	| { k: 'opponentsWithHandMaxCount'; max: number }
+	| { k: 'opponentsDealtCombatDamageBySelfOrSubtypeThisTurn'; subtype: string }
+	| { k: 'attackingCountToPlayer'; player: PlayerRef }
+	| { k: 'fractionalLifeLoss'; player: PlayerRef; denominator: number; round: 'up' | 'down' }
+	| { k: 'totalManaValueOfTargetSpec'; index: number }
+	| { k: 'countersAmongControlled'; filter: ObjectFilter; player: PlayerRef }
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	| { k: 'handSizeDifference'; targetPlayer?: PlayerRef; cap?: number }
+	| { k: 'coinHeadsCount' }
+	| {
+			k: 'playerCounterDifference';
+			player: PlayerRef;
+			counter: 'poison' | 'experience' | 'energy' | 'rad' | 'ticket';
+			target: number;
+	  }
+	| { k: 'distinctColorsAmongControlled' }
+	| { k: 'tokensCreatedThisTurn'; player?: PlayerRef }
+	| { k: 'nontokenCreaturesDiedThisTurn'; controller?: 'you' | 'opponent' | 'any' }
+	| { k: 'cardsPutIntoGraveyardFromHandOrLibraryThisTurn'; player?: PlayerRef }
+	| { k: 'damageDealtToOpponentsThisTurn' }
+	| { k: 'damageDealtToSelfByPlayerThisTurn'; player: PlayerRef }
+	| { k: 'playersLostLifeThisTurnCount' }
+	| { k: 'greatestStatAmongControlledAsCast'; stat: 'power' | 'toughness' | 'manaValue'; filter: ObjectFilter }
+	| { k: 'colorsManaSpentToCast' }
+	| { k: 'lkiTotalCounters'; of: Ref }
+	| { k: 'revealedCostStat'; stat: 'power' | 'toughness' | 'manaValue' }
+	| { k: 'opponentsControllingFilterCount'; filter: ObjectFilter }
+	| { k: 'distinctCounterKindsOn'; of: Ref }
+	| { k: 'totalCountersAmong'; filter: ObjectFilter }
+	| { k: 'ringBearerPower'; player?: PlayerRef }
+	| { k: 'distinctPowersControlled' }
+	| { k: 'sacrificedPermsThisTurn' }
+	// --- End Wave 11 ---
+	// --- Wave 12 ---
+	| { k: 'greatestOpponentCardsDrawnThisTurn' }
+	| { k: 'exiledCardsSharingTypeCount'; owner?: 'you' | 'any' }
+	| { k: 'timesAttackedThisTurn'; of?: Ref }
+	| { k: 'unspentManaTotal'; player?: PlayerRef }
+	| { k: 'greatestBaseToughnessControlled'; filter?: ObjectFilter }
+	| { k: 'greatestControlledCount'; filter: ObjectFilter }
+	| { k: 'countersAmong'; filter: ObjectFilter; counter: CounterType };
+	// --- End Wave 12 ---
 
 // ---- Costs ----------------------------------------------------------------------------------
 
@@ -1340,8 +1551,20 @@ export type Verb =
 	/** CR 500.11: "[Player] skips their next combat phase" (subject players, `amount` phases). */
 	| 'skipCombatPhase'
 	/** CR 101.2: subject players can't cast spells with the same name as `params.castNameLockRef` for `params.duration`. */
-	| 'castNameLock';
+	| 'castNameLock'
 	// --- End Precon Bragos Spirit ---
+	// --- Wave 10 ---
+	| 'forEachPlayerLoop'
+	| 'punisherChoice'
+	| 'partitionKeepByTypes'
+	| 'reselectAttackTarget'
+	| 'endCombatPhase'
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	| 'solveCase'
+	| 'repeatSequence'
+	| 'conditionalSequence';
+	// --- End Wave 11 ---
 
 export type ManaRestriction = 'artifactSpellOrNonSpell';
 
@@ -1388,7 +1611,7 @@ export interface EffectStep {
 	condition?: Condition;
 	bindAs?: BindingName;
 	/** `nextTurn`: "at the beginning of the next turn's upkeep" (not this turn's). */
-	delayed?: { trigger: TriggerDef; effect: EffectStep[]; nextTurn?: boolean };
+	delayed?: { trigger: TriggerDef; effect: EffectStep[]; targets?: TargetSpec[]; nextTurn?: boolean };
 	// --- Wave 6 Shared ---
 	/** CR 603.2h: "Do this only once each turn." */
 	doThisOncePerTurn?: boolean;
@@ -1458,6 +1681,15 @@ export interface EffectParams {
 		// --- Track P22d ---
 		| 'noMaxHandSizeRestOfGame'
 		// --- End Track P22d ---
+		// --- Wave 11 ---
+		| 'cantCastNoncreatureSpellsThisTurn'
+		| 'cantCastInstantsOrSorceriesThisTurn'
+		| 'cantActivateNonManaAbilitiesThisTurn'
+		| 'cantCastAdditionalSpellsThisTurn'
+		| 'creatureSpellsCantBeCounteredThisTurn'
+		| 'nextArtifactSpellGainsSunburst'
+		| 'allPlayersCantCastSpellsThisTurn'
+		// --- End Wave 11 ---
 	>;
 	search?: SearchSpec;
 	to?: ZoneType;
@@ -1510,6 +1742,10 @@ export interface EffectParams {
 		// --- Track P22d ---
 		/** Dynamic resolution-time maximum mana value for kept cards ("with mana value X or less"). */
 		keepMaxManaValue?: Amount;
+		/** Strictly less than `keepMaxManaValue` ("with mana value less than X", *Kiora, Sovereign of the Deep*). */
+		keepMaxMvStrictLt?: boolean;
+		/** Choose-one exile mode where all cards are exiled and ONLY the chosen one gets `playFromExile` (*Fireglass Mentor*). */
+		chooseMode?: 'oneOfExiled';
 		/** Grant cast/play-from-exile permission on kept cards when `keepTo === 'exile'`. */
 		playFromExile?: EffectParams['playFromExile'];
 		/** Attacking defender override for `keepAttacking` ("that player"). */
@@ -1520,6 +1756,11 @@ export interface EffectParams {
 			count: number;
 			to: 'hand' | 'libraryBottom' | 'exile' | 'graveyard';
 			playableThisTurn?: boolean;
+		}>;
+		destinationBuckets?: Array<{
+			filter: ObjectFilter;
+			destination: ZoneType;
+			tapped?: boolean;
 		}>;
 	};
 	/** move to battlefield: enters transformed with its back face up (CR 712.14a / 712.11a). */
@@ -1536,6 +1777,13 @@ export interface EffectParams {
 		spellsOnly?: boolean;
 		withoutPayingManaCost?: boolean;
 		// --- End Track P2 ---
+		// --- Wave 9 ---
+		alternativeManaCost?: string;
+		payLifeEqualManaValue?: boolean;
+		costReductionGeneric?: number;
+		plotted?: boolean;
+		totalMaxMv?: Amount;
+		// --- End Wave 9 ---
 	};
 	/** destroy: prevents regeneration shields (and "can't be regenerated" clauses) from replacing destruction. */
 	cantBeRegenerated?: boolean;
@@ -1711,6 +1959,14 @@ export interface EffectParams {
 		counter: CounterType | 'any';
 		all?: boolean;
 		upTo?: boolean;
+		// --- Wave 11 ---
+		eachKindNotOnDest?: boolean;
+		oneOrMore?: boolean;
+		fromAnyPermanents?: boolean;
+		chooseKindOnPermanent?: boolean;
+		putOrRemoveKind?: boolean;
+		anyNumber?: boolean;
+		// --- End Wave 11 ---
 	};
 	/** putCounters (CR 122.8–9): copy all live or LKI counters from `copyCountersFrom` onto `subject`. */
 	copyCountersFrom?: Selector;
@@ -1816,6 +2072,194 @@ export interface EffectParams {
 	/** move to battlefield: Attach an Aura/Equipment directly to the resolved target permanent ("attached to that creature"). */
 	attachedToSelector?: Selector;
 	// --- End Track P22d ---
+	// --- Wave 9 ---
+	/** copySpell: copy the triggering ability stack item (`eventObject` / `triggerEventStackItem`), e.g. *Firebender Ascension*. */
+	copyEventAbility?: boolean;
+	/** grantGraveyardCast: exile the spell if it would be put into a graveyard as it resolves (*Emet-Selch*). */
+	exileIfWouldEnterGraveyard?: boolean;
+	/** Register a plain-JSON delayed trigger on resolution (until end of turn / until your next turn / next combat). */
+	registerWave9DelayedTrigger?: {
+		duration: 'thisTurn' | 'untilYourNextTurn' | 'nextCombat';
+		subTriggerIndex?: number;
+		bindSubjectAsWatched?: boolean;
+	};
+	/** createToken / copyPermanent: create one tapped-and-attacking token per opponent ('all') or per other opponent ('other'). */
+	perOpponentTappedAttacking?: 'all' | 'other';
+	// --- End Wave 9 ---
+	// --- Wave 10 ---
+	/** forEachPlayerLoop: which players to iterate sequentially. */
+	loopPlayers?:
+		| 'eachOpponent'
+		| 'eachPlayer'
+		| 'eachOtherPlayer'
+		| 'turnOrderStartingWithYou'
+		| 'turnOrderStartingWithNextOpponent'
+		| 'chooseOpponent'
+		| 'chooseRandomOpponent';
+	/** forEachPlayerLoop: sub-steps run per loop player (with `eachLoopPlayer` bound). */
+	loopSteps?: EffectStep[];
+	/** forEachPlayerLoop: choose opponent at random via PRNG. */
+	chooseRandomOpponent?: boolean;
+	/** forEachPlayerLoop: exclude opponents attacked during last combat (*Territorial Hellkite*). */
+	excludeAttackedLastCombat?: boolean;
+	/** punisherChoice: opponent pays `unlessCost` (or executes `unlessEffect`), else `defaultSteps`. */
+	punisher?: {
+		players?: 'eachOpponent' | 'eachPlayer' | 'subjectPlayer';
+		defaultSteps: EffectStep[];
+		unlessCost?: CostDef[];
+		unlessEffect?: EffectStep[];
+		unlessWho: PlayerRef;
+		repeatCount?: Amount;
+		mayFirst?: boolean;
+		mandatoryIfAble?: boolean;
+		trackNotDoneKind?: string;
+		trackDoneKind?: string;
+	};
+	/** partitionKeepByTypes: permanent types or slots kept per player (`['Artifact', 'Creature', 'Enchantment', 'Planeswalker']`, etc.). */
+	partitionTypes?: string[];
+	keepCountPerPlayer?: Amount;
+	partitionChooser?: 'eachPlayer' | 'you';
+	partitionAllTypes?: boolean;
+	partitionNonlandOnly?: boolean;
+	partitionPutVowCounter?: boolean;
+	/** fight: excess damage dealt to opponent's creature generates mana (*The Last Agni Kai*). */
+	excessDamageToMana?: ManaColor;
+	/** damage: excess damage dealt to target creature is dealt to its controller instead if source has trample (*Ram Through*). */
+	excessDamageToControllerIfTrample?: boolean;
+	/** combatRestriction: must attack `mustAttackPlayerRef` this combat if able (*Ruhan*, *Territorial Hellkite*). */
+	mustAttackPlayerRef?: PlayerRef;
+	/** combatRestriction: must attack during its controller's next combat phase (*Trench Behemoth*). */
+	mustAttackNextCombat?: boolean;
+	/** grantPlayer / combatRestriction: until your next turn, opponents' creatures must attack (and avoid you) (*Kardur*, *The Akroan War* II). */
+	untilYourNextTurnCombatDirective?: { mustAttack: boolean; avoidYou?: boolean };
+	/** Override who makes the choice for move / discard / sacrifice (`'opponent'` for *Tasigur*, *Coin of Fate*, *Deliver Unto Evil*). */
+	chooserOverride?: 'opponent' | 'you' | 'eventPlayer';
+	/** damage: target opponent OR a planeswalker they control (*Vial Smasher*, *Soul of Shandalar*). */
+	orPlaneswalkerControlledBy?: PlayerRef;
+	/** Conditional life-loss / mill riders & opponent-choice splits. */
+	splitExiledCostCardsToBottomAndBattlefield?: boolean;
+	leaveChosenInGraveyardRestToHand?: boolean;
+	/** *Soulfire Eruption* per-target top-card exile + damage equal to MV + play until end of next turn. */
+	soulfireExileDamagePerTarget?: boolean;
+	/** Each matching creature deals damage to itself or its controller (*Solar Blaze*, *Rakdos Charm*, *The Akroan War* III). */
+	eachCreatureDealsDamage?: {
+		filter: ObjectFilter;
+		to: 'self' | 'controller';
+		amount: 'power' | Amount;
+	};
+	/** Deal damage to the player or planeswalker `self` is attacking (*Myr Battlesphere*). */
+	damageAttackedTargetBySelf?: boolean;
+	/** Exclude `ctx.eventPlayerId` from `forEachPlayerLoop` (*Vincent, Vengeful Atoner*). */
+	excludeEventPlayer?: boolean;
+	/** Sequential per-player object selection bound to `step.bindAs` (*Druid of Purification*, *Sadistic Shell Game*). */
+	chooseObjectToBind?: { filter: ObjectFilter; optional?: boolean };
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	/** animate: Layer 4 card types to remove ("~ isn't a creature until end of turn", *Weeping Angel*). */
+	removeTypes?: string[];
+	/** animate: true when "It's still a land." is specified (*Druid Class*, *Raging Ravine*). */
+	stillALand?: boolean;
+	/** phaseOut: phased-out permanent can't phase in while you control ~ (*The Phasing of Zhalfir*). */
+	cantPhaseInWhileSourceControlled?: boolean;
+	/** exile: exiled card returns when an opponent becomes the monarch (*Palace Jailer*). */
+	untilOpponentBecomesMonarch?: boolean;
+	/** grantPlayer: creatures entering under opponents' control this turn enter under your control instead (*Gather Specimens*). */
+	stealOpponentEnteringCreaturesUntilEndOfTurn?: boolean;
+	/** grantPlayer: noncreature/filtered spells opponents cast cost N more until your next turn (*Elspeth Conquers Death* II). */
+	opponentsSpellsCostMoreUntilNextTurn?: { noncreatureOnly?: boolean; mana: number };
+	/** grantPlayer: creatures attacking you must pay {tax} each until your next turn (*Summon: Yojimbo* II/III). */
+	attackTaxUntilYourNextTurn?: number;
+	/** grantPlayer: next spell cast by player costs N less (*Mutated Cultist*). */
+	nextSpellCostReductionGeneric?: Amount;
+	/** grantPlayer: next creature spell cast by player enters with N additional +1/+1 counters (*Yuna, Grand Summoner*). */
+	nextCreatureEntersWithPlusCounters?: Amount;
+	/** grantPlayer: add mana at beginning of next main phase (*Mana Drain*). */
+	nextMainPhaseAddMana?: { color: ManaColor; amount: Amount };
+	/** doubleOrTriple: repeat doubling X times (*Exponential Growth*). */
+	repeatFactorCount?: Amount;
+	/** grant: can't be blocked by creatures opponents control (*Rikku, Resourceful Guardian*). */
+	cantBeBlockedByOpponentsCreatures?: boolean;
+	/** combatRestriction: choose odd or even; creatures with MV of that parity can't block this turn (*Twins of Discord*). */
+	chooseOddOrEvenCantBlockThisTurn?: boolean;
+	/** attach: attach an Equipment that was attached to self (LKI) to subject (*Zack Fair*). */
+	attachEquipmentFromSelfLki?: boolean;
+	/** putCounters: choose a counter kind on target permanent and add another of that kind (*Ichormoon Gauntlet*). */
+	chooseCounterOnSubjectAndAddOne?: boolean;
+	/** putCounters: put creatureCounter if creature, else planeswalkerCounter (*Forge of Heroes*, *Elspeth Conquers Death* III). */
+	conditionalCounterOnType?: {
+		creatureCounter: CounterType;
+		planeswalkerCounter: CounterType;
+		playerChooses?: boolean;
+	};
+	/** addMana: add one mana of any of the exiled cards' colors (*Chrome Mox*, *Pit of Offerings*). */
+	addManaFromExiledColors?: boolean;
+	/** addMana: for each color among permanents you control, add one mana of that color (*Faeburrow Elder*). */
+	addManaPerColorControlled?: boolean;
+	/** addMana: add N mana of any type a land you control could produce (*Incubation Druid*). */
+	addManaLandProducedTypes?: boolean;
+	/** addMana: add mana of chosen color equal to devotion / counters (*Nykthos*, *Astral Cornucopia*). */
+	addManaChosenColorAmount?: Amount;
+	/** repeatSequence: steps & loop condition (*Hoarder's Greed*, *Insatiable Frugivore*, *Tyrant of Discord*). */
+	repeatSequence?: { steps: EffectStep[]; condition: Condition; maxIterations?: number };
+	/** conditionalSequence: evaluate `condition` once before running `thenSteps` (or `elseSteps`), CR 608.2c. */
+	conditionalSequence?: { condition: Condition; thenSteps: EffectStep[]; elseSteps?: EffectStep[] };
+	/** grantPlayFromExile: spell cast by an opponent this way costs N more (*Soul Partition*). */
+	castSpellCostTaxForOpponents?: number;
+	/** grantPlayFromExile / castFree: cast any number of spells from bound/exiled cards (*Etali*, *Kefka*, *Gix*). */
+	castAnyNumberFromExiled?: boolean;
+	/** counterSpell: if countered and matches filter, put onto battlefield under your control (*Desertion*). */
+	onCounteredPutUnderYourControlFilter?: ObjectFilter;
+	/** exile: exile all but the bottom card of target player's library (*Nicol Bolas, the Ravager* -12). */
+	exileAllExceptBottom?: boolean;
+	/** grant: exile resolving instants/sorceries instead of putting into graveyard (*Rod of Absorption*) or trigger-level sunburst (*Lux Artillery*). */
+	exileResolvingSpellToLinked?: boolean;
+	grantTriggerSpellSunburst?: boolean;
+	/** castFree: for each creature that convoked this spell (*Lethal Scheme*) -> connive each convoking creature. */
+	forEachConvokingCreatureSteps?: EffectStep[];
+	/** delayedTrigger: return target card and cost-sacrificed creature at next upkeep (*Rescue from the Underworld*). */
+	returnTargetAndSacrificedAtUpkeep?: boolean;
+	/** copySpell: copy this spell for each creature sacrificed to pay its cost (*Plumb the Forbidden*). */
+	copySpellPerSacrificedCost?: boolean;
+	/** grant: pay any amount of {color} and deal that much damage (*Leyline Tyrant*), or pay {X} <= life gained and draw X (*Well of Lost Dreams*). */
+	payAnyManaForDamage?: ManaColor;
+	payUpToLifeGainedManaToDraw?: boolean;
+	/** move: return from graveyard as Adventure (*Hildibrand Manderville*). */
+	grantGraveyardAdventureUntilEndOfNextTurn?: boolean;
+	/** exile: choose a card at random from exiled with self (*Omenpath Journey*) or each graveyard (*Kefka*, *Mysterious Stranger*). */
+	chooseAtRandomFromExiledWithSelf?: boolean;
+	/** grantPlayer: double tokens created under your control this turn. */
+	doubleTokensThisTurn?: boolean;
+	/** createToken: multiply token count by opponents who accepted tempt/offer. */
+	multiplyByOpponentsDidThisWay?: boolean;
+	/** putCounters: add bonus loyalty counter if player controls another Bolas planeswalker. */
+	castBolasBonusLoyalty?: boolean;
+	/** draw: reveal the drawn card(s) to all players. */
+	revealDrawn?: boolean;
+	/** grantPlayer: condition under which self spell can be cast with flash. */
+	flashCastCondition?: Condition;
+	/** exile: exile the card face down (*Ugin, the Ineffable* / *Gonti*). */
+	faceDown?: boolean;
+	/** removeCounters: remove all counters from a target permanent or opponent (*Mutated Cultist*). */
+	removeAllCountersFromTargetOrPlayer?: boolean;
+	/** putCounters: remove a counter instead of adding one (*Clockspinning*). */
+	removeInsteadOfAdd?: boolean;
+	// --- End Wave 11 ---
+	// --- Wave 12 ---
+	/** grantPlayer: grants cascade N times to the next spell controller casts this turn. */
+	nextSpellCascade?: number;
+	// --- End Wave 12 ---
+	// --- Wave 13 ---
+	/** grantPlayer: grants extra loyalty ability activations per planeswalker this turn (*The Chain Veil*). */
+	extraLoyaltyActivationsThisTurn?: number;
+	/** grantPlayer: executes Planechase vote outcome (*Path of the Animist*). */
+	planarAction?: 'planeswalk' | 'chaos' | 'Planeswalk' | 'Chaos ensues';
+	/** copySpell: copies all spells you control then all other activated/triggered abilities you control (*Ulalek*). */
+	copyAllControlledSpellsAndOtherAbilities?: boolean;
+	/** createToken: chooses one creature per opponent, sums their P/T, and creates a colorless Eldrazi token copy (*Benthic Anomaly*). */
+	benthicAnomalyClone?: boolean;
+	/** grant: forces removed attackers to attack next combat if able and not attack caster or their planeswalkers (*Illusionist's Gambit*). */
+	gambitCombatDirective?: boolean;
+	// --- End Wave 13 ---
 }
 
 // --- Track P19a ---
@@ -1842,7 +2286,9 @@ export interface ExileUntilSpec {
 	castFreeCondition?: Condition;
 	fallbackToHand?: boolean;
 	spendManaAsAnyColor?: boolean;
+	withoutPayingManaCost?: boolean;
 	spellsOnly?: boolean;
+	payLifeEqualManaValue?: boolean;
 	restDestination: 'libraryBottomRandom' | 'graveyard' | 'stayExiled';
 }
 // --- End Track P19a ---
@@ -1863,6 +2309,10 @@ export interface CastFreeSpec {
 	filter?: ObjectFilter;
 	upToCount?: number;
 	exileIfPutIntoGraveyard?: boolean;
+	alternativeManaCost?: string;
+	payLifeEqualManaValue?: boolean;
+	totalMaxMv?: Amount;
+	exiledWithSelf?: boolean;
 }
 // --- End Track P16a ---
 
@@ -1886,8 +2336,9 @@ export interface DoubleOrTripleSpec {
 }
 
 export interface ExchangeSpec {
-	kind: 'control' | 'lifeTotals' | 'lifeAndPower' | 'lifeAndToughness';
+	kind: 'control' | 'lifeTotals' | 'lifeAndPower' | 'lifeAndToughness' | 'swapAllControlledCreatures';
 	second?: Selector;
+	duration?: Duration;
 }
 
 export interface GraveyardCastGrantSpec {
@@ -1905,6 +2356,8 @@ export interface VoteSpec {
 	perOptionEffect?: EffectStep[][];
 	/** Effects executed if `options[i]` gets the most votes or is tied for most votes. */
 	perWinningEffect?: EffectStep[][];
+	/** When multiple options tie for the most votes, only `options[tieWinnerIndex]` wins ("or the vote is tied"). */
+	tieWinnerIndex?: number;
 }
 // --- End Track P13 ---
 
@@ -1949,6 +2402,9 @@ export interface TokenSpec {
 	// --- Track P10 ---
 	quotedAbilities?: string[];
 	// --- End Track P10 ---
+	// --- Wave 11 ---
+	legendary?: boolean;
+	// --- End Wave 11 ---
 }
 
 export interface SearchSpec {
@@ -1976,6 +2432,12 @@ export interface SearchSpec {
 	/** Searches target player's / opponent's library instead of `actor`'s library ("Search target opponent's library..."). */
 	searchedPlayer?: PlayerRef;
 	// --- End Track P10 ---
+	// --- Wave 9 ---
+	/** Cast the searched card without paying its mana cost (*Sunforger*). */
+	castFree?: boolean;
+	/** Target's controller searches their own library instead of spell controller. */
+	targetControllerAsActor?: boolean;
+	// --- End Wave 9 ---
 }
 
 export type Selector =
@@ -2154,8 +2616,16 @@ export type EventKind =
 	/** CR 715.2b: A Saga's chapter ability resolved. */
 	| 'sagaChapterResolved'
 	/** CR 702.171c: A creature saddled a Mount. */
-	| 'saddledMount';
+	| 'saddledMount'
 	// --- End Track P22b ---
+	// --- Wave 9 ---
+	/** CR 702.174a: A player promised/gave a gift (*Jolly Gerbils*). */
+	| 'giftGiven'
+	/** CR 603.2: A player created a token (*Rosie Cotton of South Lane*). */
+	| 'tokenCreated'
+	/** CR 603.2: Attacking with a creature caused a triggered ability of that creature to trigger (*Firebender Ascension*). */
+	| 'attackTriggered';
+	// --- End Wave 9 ---
 
 export interface EventFilter {
 	/**
@@ -2282,8 +2752,11 @@ export interface EventFilter {
 		| 'planeswalker'
 		| 'battle'
 		// --- Track P22b ---
-		| 'playerWithMostLife';
+		| 'playerWithMostLife'
 		// --- End Track P22b ---
+		// --- Wave 9 ---
+		| 'anyPlayer';
+		// --- End Wave 9 ---
 	/** attacks: requires at least `coAttackerMin` (default 1) other attacking creatures matching `coAttackerFilter`. */
 	coAttackerFilter?: ObjectFilter;
 	coAttackerMin?: number;
@@ -2358,6 +2831,30 @@ export interface EventFilter {
 	/** clash: matches when the clashing player won/lost (`ev.won`). */
 	won?: boolean;
 	// --- End Track P22b ---
+	// --- Wave 9 ---
+	/** attacks: "Whenever you attack with ~ and/or your commander" (*Ainok Strike Leader*). */
+	orCommander?: boolean;
+	/** zoneChange: multiple source zones ("from your library and/or your graveyard", *Laelia*). */
+	fromZones?: ZoneType[];
+	/** dealtDamage: minimum damage from a single source (*Pain Magnification*). */
+	singleSourceDamageMin?: number;
+	/** attacks: minimum total power among attacking creatures (*Ugin's Mastery*). */
+	attackingTotalPowerMin?: number;
+	/** abilityActivated: ability source permanent is controlled by `ev.playerId` (*Avalanche of Sector 7*). */
+	abilitySourceControlledByEventPlayer?: boolean;
+	/** phaseBegin: enchanted opponent's end step (*Tenuous Truce*). */
+	enchantedOpponentEndStep?: boolean;
+	/** attacks: "When you attack enchanted opponent or a planeswalker they control or when they attack you or a planeswalker you control" (*Tenuous Truce*). */
+	attackEnchantedOrAttackedByEnchanted?: boolean;
+	/** becomesTarget: targeted specifically by an activated ability (*Professor Hojo*). */
+	targetedByActivatedAbility?: boolean;
+	/** attackedAndUnblocked: creature attacks and isn't blocked (*Coveted Jewel*). */
+	attackingUnblocked?: boolean;
+	/** combatDamageBatchPlayer: player relation for combat damage batch (*Mindblade Render*). */
+	combatDamageBatchPlayer?: 'opponent' | 'you' | 'any';
+	/** delayed combat damage trigger: event creature must be one of the delayed entry's `watchedObjectIds` (*Azra Oddsmaker*, *Tamiyo*, *Hunter's Insight*). */
+	watchedBoundObject?: boolean;
+	// --- End Wave 9 ---
 }
 
 export interface TriggerDef {
@@ -2381,7 +2878,7 @@ export interface TriggerDef {
 	// --- End Wave 6 Shared ---
 	// --- Track P19b ---
 	/** CR 603.7a: Event-driven delayed trigger created by a resolving Instant or Sorcery spell. */
-	spellDelayed?: 'nextThisTurn' | 'thisTurn' | 'nextUpkeep';
+	spellDelayed?: 'nextThisTurn' | 'thisTurn' | 'nextUpkeep' | 'untilYourNextTurn';
 	// --- End Track P19b ---
 }
 
@@ -2755,8 +3252,74 @@ export type Condition =
 	| { k: 'selfHaventAddedManaThisTurn' }
 	| { k: 'zoneChangeFromToThisTurn'; from?: ZoneType | 'any'; to: ZoneType; filter: ObjectFilter; min: number }
 	| { k: 'enteredUnderYourControlThisTurnCount'; filter: ObjectFilter; min: number }
-	| { k: 'yourLifeLessThanStarting' };
+	| { k: 'yourLifeLessThanStarting' }
 	// --- End Track P22b ---
+	// --- Wave 9 ---
+	| { k: 'isYourMainPhase' }
+	| { k: 'counterPutOnSelfThisTurn' }
+	| { k: 'playerHadAnotherLandEnterThisTurn' }
+	| { k: 'eventEnteredOrCastFromGraveyardAny' }
+	| { k: 'hasCardsExiledWithSelf' }
+	| { k: 'noSameNameControlledOrInGraveyard' }
+	| { k: 'lkiToughnessLessThan'; max: number }
+	| { k: 'manaSpentGreaterThanSelfPower' }
+	| { k: 'countersAmongFilterAtLeast'; filter: ObjectFilter; min: number }
+	| { k: 'didntActivateLoyaltyThisTurn' }
+	| { k: 'notPutOntoBattlefieldByThisAbility' }
+	| { k: 'anyAttackedPlayerWithMostLife' }
+	| { k: 'additionalCostPaidThisSpell' }
+	// --- End Wave 9 ---
+	// --- Wave 10 ---
+	| { k: 'isFirstCombatPhaseOfTurn' }
+	| { k: 'opponentHasMoreCardsInHandThan'; who: PlayerRef }
+	| { k: 'playerControlsFilter'; player: PlayerRef; filter: ObjectFilter }
+	| { k: 'playerLostLifeThisTurn'; player: PlayerRef }
+	| { k: 'wasDealtCombatDamageBySelfNameThisGame'; player: PlayerRef }
+	| { k: 'playerDidntDiscardNonlandThisWay' }
+	| { k: 'playerDiscardedHandThisWay' }
+	// --- End Wave 10 ---
+	// --- Wave 11 ---
+	| { k: 'createdTokenThisTurn' }
+	| { k: 'sameNameLandsControlledAtLeast'; min: number }
+	| { k: 'attachedPermanentMatches'; colors?: ManaColor[]; untapped?: boolean }
+	| { k: 'playedLandThisTurn' }
+	| { k: 'sourceHasCounter'; counter: CounterType; min?: number }
+	| { k: 'distinctCardTypesAmongSacrificedAtLeast'; min: number }
+	| { k: 'creatureCardMilledThisWay' }
+	| { k: 'landCardMilledThisWay' }
+	| { k: 'returnedFilterToHandThisWay'; filter: ObjectFilter }
+	| { k: 'discardedNonlandThisWay' }
+	| { k: 'discardedCreatureThisWay' }
+	| { k: 'discardedNoncreatureThisWay' }
+	| { k: 'playerHasFewerHandThan'; targetPlayer?: PlayerRef; max?: number }
+	| { k: 'playerHasFewerCountersThan'; counter: 'poison' | 'experience' | 'energy' | 'rad' | 'ticket'; max: number }
+	| { k: 'spellCastFromHand' }
+	| { k: 'spellCastFromGraveyard' }
+	| { k: 'spellCastFromExile' }
+	| { k: 'noSpellCastThisTurn' }
+	| { k: 'notDrawnCardsThisWay' }
+	| { k: 'exiledCountAtLeast'; min: number }
+	| { k: 'didRevealThisWay' }
+	| { k: 'ringBearerAndTemptedAtLeast'; min: number }
+	| { k: 'eventObjectGreatestPowerAmongAll' }
+	| { k: 'wonClashThisWay' }
+	| { k: 'sacrificedNonlandThisWay' }
+	| { k: 'didntPutOntoBattlefieldThisWay' }
+	| { k: 'castTriggerCreatureSpell' }
+	| { k: 'controlAttackingLegendary' }
+	| { k: 'allPlayersCantCastCheck' }
+	| { k: 'selfRemovedFromCombatOrAttached' }
+	| { k: 'eventSpellMatchesFilter'; filter: ObjectFilter }
+	| { k: 'targetHasFewerCountersThan'; counter: 'poison' | 'experience' | 'energy' | 'rad' | 'ticket'; max: number }
+	| { k: 'eventObjectMatchesOrSubtype'; filter: ObjectFilter }
+	| { k: 'didLastOptionalStep' }
+	| { k: 'sourceExiledThisWay' }
+	| { k: 'attackedWithCommanderThisTurn' }
+	| { k: 'controlsFilter'; filter: ObjectFilter }
+	// --- End Wave 11 ---
+	// --- Wave 12 ---
+	| { k: 'firstSpellThisTurnWithManaFrom'; manaSource: 'treasure' };
+	// --- End Wave 12 ---
 
 // ---- Statics and replacements ---------------------------------------------------------------
 
@@ -2839,8 +3402,27 @@ export type LayerMod =
 	// --- End Track P20a ---
 	// --- Track P22a ---
 	/** CR 702.16: Layer 6 grants protection from `source.chosenCardType` ("have protection from the chosen card type", *Serra's Emissary*). */
-	| { k: 'protectionFromChosenCardType' };
+	| { k: 'protectionFromChosenCardType' }
 	// --- End Track P22a ---
+	// --- Wave 12 ---
+	/** CR 613.1c: Layer 3 text/name-changing effect ("named <name>"). */
+	| { k: 'setName'; name: string }
+	/** CR 613.1f: Layer 6 grants all activated (and optionally loyalty) abilities from objects matching `from`. */
+	| {
+			k: 'grantAbilitiesFromObjects';
+			from:
+				| { k: 'exiledWithSelf'; filter: ObjectFilter }
+				| { k: 'exiledCardsWithCounter'; counter: CounterType; owner?: 'you' | 'any'; filter?: ObjectFilter }
+				| { k: 'battlefield'; filter: ObjectFilter };
+			manaAsAnyColor?: boolean;
+			onceEachTurn?: boolean;
+			loyaltyOnly?: boolean;
+	  }
+	/** CR 613.1f: Layer 6 grants each listed keyword that appears on at least one card exiled with source. */
+	| { k: 'copyKeywordsFromExiled'; keywords: string[] }
+	/** CR 613.1d / 613.4b: Layer 4 & 7b copies P/T and creature subtypes from last creature card exiled with source while exiled. */
+	| { k: 'copyStatsAndSubtypesFromLastExiled'; includeSubtypes?: boolean; keepSelfName?: boolean };
+	// --- End Wave 12 ---
 
 export interface CostDelta {
 	/** 'setZero' makes the cost {0}; 'reduce'/'increase' change the generic component. */
@@ -2886,6 +3468,10 @@ export type SpellOrAbilityFilter =
 			targetsSelf?: boolean;
 			targetsAttached?: boolean;
 			targetsFilter?: ObjectFilter;
+			// --- Wave 12 ---
+			/** Matches only the first activation of a matching ability this turn. */
+			firstMatchingThisTurn?: boolean;
+			// --- End Wave 12 ---
 	  }
 	// --- End Track P11 + Track P17b ---
 	/** The spell that has this ability ("This spell costs {1} less to cast ..."); works while it's being cast. */
@@ -2946,8 +3532,14 @@ export type RuleModKind =
 	| 'playerCantGetCounters'
 	| 'immuneToOpponentForcedSacrifice'
 	| 'immuneToOpponentForcedDiscard'
-	| 'playerProtectionFromChosenCardType';
+	| 'playerProtectionFromChosenCardType'
 	// --- End Track P22a ---
+	// --- Wave 12 ---
+	/** Opponents' creatures/permanents can be targeted as though they didn't have hexproof. */
+	| 'ignoreHexproof'
+	/** Ward triggered abilities of permanents your opponents control don't trigger. */
+	| 'suppressWardTriggers';
+	// --- End Wave 12 ---
 
 export type RestrictionKind =
 	| 'cantAttack'
@@ -2967,8 +3559,11 @@ export type RestrictionKind =
 	| 'cantAttackYouOrPlaneswalkers'
 	// --- End Track P17a ---
 	// --- Track P22c ---
-	| 'cantBeCopied';
+	| 'cantBeCopied'
 	// --- End Track P22c ---
+	// --- Wave 12 ---
+	| 'cantBeSacrificed';
+	// --- End Wave 12 ---
 
 // --- Track P8 ---
 export type CombatRuleSpec =
@@ -3025,8 +3620,14 @@ export type CombatRuleSpec =
 	/** CR 508.1c: "~ can't attack unless you control more creatures than defending player" (*Mogg Toady*). */
 	| { kind: 'cantAttackUnlessMoreCreaturesThanDefender' }
 	/** CR 509.1b: "~ can't block unless you control more creatures than attacking player" (*Mogg Toady*). */
-	| { kind: 'cantBlockUnlessMoreCreaturesThanAttacker' };
+	| { kind: 'cantBlockUnlessMoreCreaturesThanAttacker' }
 	// --- End Track P22a ---
+	// --- Wave 12 ---
+	/** CR 302.6 / 508.1: Attached creature can attack as though it had haste. */
+	| { kind: 'canAttackAsThoughHaste' }
+	/** CR 508.1d: Must attack the controller of the Aura/source if able. */
+	| { kind: 'mustAttackAttachedController' };
+	// --- End Wave 12 ---
 
 export type StaticDef =
 	| {
@@ -3133,6 +3734,26 @@ export type StaticDef =
 			slotMode?: 'unlimited' | 'oncePerTurn' | 'perPermanentType';
 			exileIfPutIntoGraveyard?: boolean;
 			// --- End Track P14 ---
+			// --- Wave 12 ---
+			/** Requires the card in exile to have been exiled by this source (`card.exiledBy`). */
+			exiledWithSelf?: boolean;
+			/** Requires cards in exile to have at least one counter of this type (`counters[requireCounter] > 0`). */
+			requireCounter?: CounterType;
+			/** Restricts to cards owned by `'you'` or `'opponents'` (or any if omitted). */
+			cardOwner?: 'you' | 'opponents';
+			/** Allows spending mana as though it were mana of any color/type when casting this way. */
+			spendManaAsAnyColor?: boolean;
+			/** Forces permanent entering the battlefield this way to enter tapped. */
+			entersTapped?: boolean;
+			/** Grants haste until end of turn if the cast spell enters as a creature. */
+			grantHasteUntilEndOfTurn?: boolean;
+			/** Requires card in graveyard to have been put there from anywhere other than battlefield this turn. */
+			putIntoGraveyardFromNonBattlefieldThisTurn?: boolean;
+			/** Alternative cost paid when casting spells via this permission (e.g. `{3}` + sacrifice artifact). */
+			altCostDefs?: CostDef[];
+			/** Allows casting matching spells via this permission as though they had flash. */
+			grantFlash?: boolean;
+			// --- End Wave 12 ---
 			condition?: Condition;
 	  }
 	// --- Track P12 ---
@@ -3204,7 +3825,7 @@ export type StaticDef =
 			k: 'staticDamagePrevention';
 			combatOnly?: boolean;
 			noncombatOnly?: boolean;
-			amount: number | 'all';
+			amount: number | 'all' | 'halfRoundedUp';
 			target: 'self' | 'attachedTo' | 'you' | 'youAndControlled' | 'any' | { filter: ObjectFilter };
 			alsoPreventDealtBy?: boolean;
 			dealtByOnly?: 'self' | 'attachedTo';
@@ -3219,6 +3840,19 @@ export type StaticDef =
 				mode: 'one' | 'thatMany';
 				requireCounterPresent?: boolean;
 			};
+			// --- Wave 12 ---
+			/** Effect run when damage is prevented: put +1/+1 counters per 1 prevented, shuffle damaged creature into library, or reflexive damage trigger. */
+			onPrevented?:
+				| { k: 'putPlusCountersPerDamage' }
+				| { k: 'shuffleTargetIntoLibrary' }
+				| {
+						k: 'reflexiveDamageTrigger';
+						target: TargetSpec;
+						toAmount: 'prevented';
+				  };
+			/** Restricts opponent-facing damage prevention to opponents and permanents they control. */
+			preventTargetOwner?: 'opponent';
+			// --- End Wave 12 ---
 			condition?: Condition;
 	  }
 	// --- End Track P14 ---
@@ -3298,6 +3932,14 @@ export type StaticDef =
 			k: 'spellGrantKeyword';
 			filter: ObjectFilter;
 			keywords: string[];
+			// --- Wave 12 ---
+			/** Optional alternative evoke mana cost when granting evoke (e.g. '{1}{R}' or mana cost reduced by generic). */
+			evokeCost?: string;
+			/** Optional repeat count for cascade ("Cascade, cascade" => 2). */
+			cascadeCount?: number;
+			/** Optional keyword parameter N (e.g. ripple 4 => 4). */
+			paramN?: number;
+			// --- End Wave 12 ---
 			condition?: Condition;
 	  }
 	// --- End Track P17a ---
@@ -3459,8 +4101,34 @@ export type StaticDef =
 			affected: 'self' | 'attachedTo' | ObjectFilter;
 			generic: Amount;
 			condition?: Condition;
-	  };
+	  }
 	// --- End Track P22a ---
+	// --- Wave 12 ---
+	| {
+			/** Permanents/objects matching `filter` can't enter the battlefield from the specified zones. */
+			k: 'cantEnterFromZones';
+			filter: ObjectFilter;
+			zones: ZoneType[];
+			who?: 'all' | 'opponents' | 'you';
+			condition?: Condition;
+	  }
+	| {
+			/** Token creation replacement ("instead create <replacementToken> tokens" / "create one of each"). */
+			k: 'tokenReplacement';
+			mode: 'replaceSpec' | 'oneOfEach';
+			matchSubtypes?: string[];
+			replacementToken?: {
+				name: string;
+				typeLine: string;
+				power: number;
+				toughness: number;
+				colors: ManaColor[];
+				keywords?: string[];
+				isLegendary?: boolean;
+			};
+			condition?: Condition;
+	  };
+	// --- End Wave 12 ---
 
 // --- Track P18b ---
 export type CompanionDeckConditionId =
@@ -3477,7 +4145,7 @@ export type CompanionDeckConditionId =
 // --- End Track P18b ---
 
 export interface EventPattern {
-	event: EventKind | 'draw' | 'damage' | 'lifeGain';
+	event: EventKind | 'draw' | 'damage' | 'lifeGain' | 'proliferate';
 	filter: EventFilter;
 }
 
@@ -3605,6 +4273,60 @@ export interface ReplacementDef {
 				/** CR 614.1a: "If damage would be dealt to ~, put that many <counter> counters on it instead." (*Phytohydra*). */
 				damageToSelfAsPlusCounters?: CounterType;
 				// --- End Track P22a ---
+				// --- Wave 12 ---
+				/** CR 614.1c / 614.12: "~ enters with a <counter> counter on it for each mana from a(n) artifact spent to cast it." */
+				countersPerArtifactMana?: { counter: CounterType };
+				/** CR 614.12: "~ enters with a <counter> counter on it if an opponent was dealt damage this turn / you cast it from hand / ...". */
+				conditionalCounters?: { condition: Condition; counter: CounterType; amount: Amount };
+				/** CR 614.12: Enters with two counter-option counters if `condition`, else one (or `fallbackCount`). */
+				conditionalOrFallbackCounters?: {
+					condition: Condition;
+					counter: CounterType;
+					thenCount: number;
+					elseCount: number;
+				};
+				/** ETB graveyard/battlefield copy of a land card in any graveyard, enters tapped if copied. */
+				copyFromGraveyards?: {
+					filter: ObjectFilter;
+					optional: boolean;
+					tappedIfCopied?: boolean;
+					copyModifications?: CopyModificationSpec;
+				};
+				/** Opponent-draw redirect ("If an opponent would draw a card except the first one they draw in each of their draw steps, instead you draw that card"). */
+				stealOpponentExtraDraws?: boolean;
+				/** Interactive land-or-nonland top-of-library draw replacement (*Abundance*). */
+				abundanceDrawChoice?: boolean;
+				/** Mill replacement scaling / exile-instead / empty-library reanimate (*Out of the Tombs*, etc.). */
+				proliferateMultiplier?: number;
+				/** Die replacement that exiles the dying creature and registers a reflexive pay-{2} create-Pest trigger. */
+				diesExileAndReflexive?: {
+					payManaCost: string;
+					tokenSpec: {
+						name: string;
+						typeLine: string;
+						power: number;
+						toughness: number;
+						colors: ManaColor[];
+						triggerText: string;
+					};
+				};
+				/** ETB discard-any-number for matching keyword counters. */
+				etbDiscardForKeywordCounters?: {
+					keywords: string[];
+				};
+				/** ETB remove any number of counters from matching permanents for +1/+1 counters. */
+				etbRemoveCountersForPlusCounters?: {
+					multiplier: number;
+					filter?: ObjectFilter;
+				};
+				/** Optional ETB exile-from-graveyard-then-copy or choose-empty-library reanimate. */
+				emptyLibraryGraveyardReanimate?: {
+					filter: ObjectFilter;
+					returnOtherCardsToHand?: boolean;
+				};
+				/** Additional battlefield-control bypass for revealFromHandOrEnterTapped ("or you control a Dragon"). */
+				revealUnlessControls?: ObjectFilter;
+				// --- End Wave 12 ---
 		  };
 	/** CR 614.15 / 616.1a: true when this is a self-replacement effect applied before other replacements. */
 	selfReplacement?: boolean;

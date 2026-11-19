@@ -1,0 +1,93 @@
+{
+  "oracleId": "333745d9-e930-439b-94d6-3aeea2877f69",
+  "cardName": "Illusionist's Gambit",
+  "expectedTextHash": "ae7920f5",
+  "compiledVersion": 44,
+  "notes": "Wave 13 override: Opponents turn declare blockers restriction, capture attacking creatures for next combat directive, remove from combat, untap, and extra combat phase.",
+  "faces": [
+    {
+      "name": "Illusionist's Gambit",
+      "characteristics": {
+        "manaCost": "{2}{U}{U}",
+        "types": [
+          "Instant"
+        ],
+        "subtypes": [],
+        "supertypes": [],
+        "colors": [
+          "U"
+        ]
+      },
+      "abilities": [
+        {
+          "kind": "spell",
+          "id": "cast",
+          "additionalCosts": [],
+          "targets": [],
+          "castRestrictions": [
+            "duringOpponentsTurn",
+            "duringBlockers"
+          ],
+          "effect": [
+            {
+              "verb": "grant",
+              "subject": {
+                "k": "none"
+              },
+              "params": {
+                "gambitCombatDirective": true,
+                "duration": "untilEndOfCombat"
+              },
+              "span": {
+                "start": 182,
+                "end": 298
+              }
+            },
+            {
+              "verb": "removeFromCombat",
+              "subject": {
+                "k": "all",
+                "filter": {
+                  "attacking": true,
+                  "types": [
+                    "Creature"
+                  ]
+                }
+              },
+              "bindAs": "removedAttackers",
+              "span": {
+                "start": 67,
+                "end": 110
+              }
+            },
+            {
+              "verb": "untap",
+              "subject": {
+                "k": "binding",
+                "name": "removedAttackers"
+              },
+              "span": {
+                "start": 111,
+                "end": 126
+              }
+            },
+            {
+              "verb": "extraCombatPhase",
+              "subject": {
+                "k": "none"
+              },
+              "span": {
+                "start": 128,
+                "end": 181
+              }
+            }
+          ],
+          "span": {
+            "start": 0,
+            "end": 298
+          }
+        }
+      ]
+    }
+  ]
+}

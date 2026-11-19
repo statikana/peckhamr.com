@@ -800,9 +800,7 @@
 					"Darksteel Mutation",
 					"Verdant Sealing Hymn"
 				],
-				"ptModifiedBy": [
-					"Darksteel Mutation (base 0/1)"
-				],
+				"ptModifiedBy": [],
 				"activeKeywords": [],
 				"lostAllAbilities": {
 					"lost": true,
@@ -837,6 +835,9 @@
 						"kind": "ability",
 						"sources": [
 							"Verdant Sealing Hymn"
+						],
+						"removedBy": [
+							"Darksteel Mutation"
 						]
 					},
 					{

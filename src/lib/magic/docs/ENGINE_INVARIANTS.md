@@ -2,7 +2,7 @@
 
 This document defines the architectural, rules, and engineering invariants of the Magic: The Gathering engine in `src/lib/magic/`. New compiler passes, runtime modules, UI components, AI heuristics, and tests must uphold them.
 
-Each invariant is a rule, not a description of the current code. Where the code doesn't yet meet one, a **Not yet enforced** note names the known gap. Don't widen a gap; close it when you touch that code. Gaps were last checked against the code on 2026-11-12 (see [`audits/`](./audits/README.md)).
+Each invariant is a rule, not a description of the current code. Where the code doesn't yet meet one, a **Not yet enforced** note names the known gap. Don't widen a gap; close it when you touch that code. Gaps were last checked against the code on 2026-11-19 (see [`audits/`](./audits/README.md)).
 
 Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`src/lib/rules.txt`](../../rules.txt).
 
@@ -15,22 +15,22 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
 1. **Zero Runtime `oracleText` Reads (`oracleTextRead = 0`)**
    - Only `src/lib/magic/compiler/` may read `card.oracleText` or parse rules text.
    - Once a card is compiled via `compileCard(card): CardDefinition`, all runtime systems (layers, replacements, triggers, costs, effects, legality checks, AI, and UI) operate on the typed IR in `ir.ts`.
-   - The ratchet (`architecture.test.ts`) enforces this for `oracleText` and regex/substring scans over `.text` (`abilityTextScan`) in runtime files. It exempts `compiler/`, `oracle.ts`, `precons.ts`, `scryfall.ts`, `search.ts`, `types.ts` and tests, and doesn't scan `.svelte` files.
-   - **Not yet enforced:**
-     - Runtime and UI code still read `card.typeLine` strings in many places (`engine.ts`, `runtime/zones.ts`, `runtime/choices.ts`, `runtime/effects.ts`, `ArenaTable.svelte`) instead of evaluated types.
-     - `oracle.ts` reads `oracleText` and `typeLine` outside `compiler/`.
+   - **Enforced:** The ratchet (`architecture.test.ts`) enforces this for `oracleText` and regex/substring scans over `.text` (`abilityTextScan = 0`) in runtime files, and enforces `rawTypeLineRead = 0` across non-test runtime, UI helper, and `.svelte` files (exempting `compiler/`, `oracle.ts`, `precons.ts`, `scryfall.ts`, `search.ts`, `types.ts`, `*.test.ts`, plus Layer 1/4 face, characteristic, and copy-card helpers in `runtime/faces.ts`, `runtime/layers.ts`, `runtime/layersPredicates.ts`, `runtime/copyPreventionAndEffects.ts`).
+   - **Remaining narrow exemptions:** `oracle.ts` is exempt from `oracleTextRead` and still contains `parseLibrarySearchSpec` and a `card.typeLine` check in `matchesLibrarySearchSpec`, though `legacyTextHelperCall` is `0` in `architecture-allowances.json`.
 2. **Zero Card-Name Dispatch (`cardNameComparison = 0`)**
    - No runtime branch, cost check, trigger check, layer rule, replacement effect, mana check, or AI heuristic may branch on `card.name === '...'`.
    - Every card mechanic must be represented as a general IR construct: an `AbilityDef`, `StaticDef` (including `{ k: 'ruleModifier', rule: RuleModKind }`), `ReplacementDef`, `TriggerDef`, `EffectStep` or `CostDef`.
    - Card names are compared at runtime **only** when a game rule semantically compares names:
      - The Legend Rule (`CR 704.5j`) comparing two legendary permanents' evaluated names.
      - Effects or filters that explicitly reference a name: `ObjectFilter.named`, "Partner with [name]" (`CR 702.124j`), "cards named ~".
-   - **Not yet enforced:** deck-construction exceptions are name tables in `scryfall.ts` (`MULTI_COPY_CARDS`, `CAPPED_COPY_CARDS`), and `scryfall.ts` regex-scans `oracleText` for commander and partner text. There is no IR deck-limit property yet.
+   - **Enforced:** Deck-construction copy limits (`Relentless Rats`, `Seven Dwarves`, `Nazgûl`, basic-land exemptions), commander designation (`cardHasCommanderDesignation`), Partner/Background classification, and `normalizeScryfallCard` all derive from compiled IR (`getCardDeckCopyLimit`, `cardAbilities`) and `resolveObjectFaces`. `architecture.test.ts` enforces `scryfallLegacyDeckTables = 0` and `scryfallOracleScan = 0` in `architecture-allowances.json`.
 3. **Rename Invariance (The Synthetic-Card Litmus Test)**
    - Replacing a card's name with an invented name (e.g. `"Glimmerfen Overseer"`) and substituting its self-references in Oracle text must produce an **identical** `CardDefinition` (modulo `name`) and **identical** runtime behavior.
    - Every bug fix and engine feature must be verified with both the canonical printed card and a synthetic card bearing an invented name.
-4. **Pure, Context-Free Compilation**
-   - `compileCard(card)` is a pure, deterministic function of the printed card fields (`name`, `manaCost`, `typeLine`, `oracleText`, `power`, `toughness`, `loyalty`, `colors`, `backFace`) and `COMPILER_VERSION`.
+4. **Pure, Context-Free Compilation & Hash-Gated Overrides**
+   - `compileCard(card)` is a pure, deterministic function of the printed card fields (`layout`, `name`, `manaCost`, `typeLine`, `oracleText`, `power`, `toughness`, `loyalty`, `colors`, `colorIndicator`, `faces`, `backFace` — matching `sourceText(card)` in `compiler/index.ts`) and `COMPILER_VERSION`.
+   - Before `compileFaces`, `compileCardByText` checks `resolveCardOverride(oracleId, textHash, card.name, COMPILER_VERSION)` against statically imported `src/lib/magic/overrides/<oracleId>.json` entries (`38` entries as of `v46`: `27` baseline + `11` Wave 2, Worker-safe with zero `node:fs`, validated by `overrides/overrides.test.ts`). Any hash mismatch on Scryfall oracle updates or renamed/mutated test cards automatically falls back to `compileFaces(card)`.
+   - **Override restraint rule:** `src/lib/magic/overrides/` is reserved strictly for true bespoke one-off prose that resists general compiler grammar rules (`unsupported` abilities are forbidden inside overrides, and overrides must never be bulk-applied to bypass general grammar/runtime work).
    - Compilation never reads `GameState`, commander color identity, or player state. Context-dependent quantities compile to symbolic IR resolved at runtime: `Amount` for numbers ("power equal to the number of Elves you control") and `EffectParams.manaChoice` (`'any' | 'commanderIdentity' | 'opponentLandColors' | ManaColor[]`) for mana colors.
    - Bump `COMPILER_VERSION` (`compiler/index.ts`) whenever the IR produced for the same text could change.
 5. **Honest Support Surface (No Silent Drops)**
@@ -60,7 +60,7 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
    - Characteristic-defining abilities (Changeling `CR 702.73a`, Devoid `CR 702.114a`, and `*/*` / `*/N` / `N/*` / `1+*` P/T CDAs `CR 208.2a`) function in **all zones** (`hand`, `library`, `graveyard`, `exile`, `command`, `stack`, and `battlefield`).
    - Off-battlefield Layer 7a P/T CDAs (`setBasePT`, `setBasePower`, `setBaseToughness`, including `distinctCardTypesInZone` across all zones) are evaluated in `runtime/objectFilter.ts` (`objectPower` / `objectToughness`) as well as on the battlefield in `runtime/layers.ts` (Track P8, `COMPILER_VERSION = 36`).
    - **Not yet enforced:**
-     - Off-battlefield Changeling works in `runtime/objectFilter.ts` and layer breakdowns, while library-search legacy helpers (`oracle.ts`) and some trigger subject checks remain audited separately.
+     - Off-battlefield Changeling works in `runtime/objectFilter.ts` and layer breakdowns, while `oracle.ts` (`TEXT_FREE_ORACLE_EXPORTS` such as `matchesLibrarySearchSpec`, with `legacyTextHelperCall = 0` in `architecture-allowances.json`) and some trigger subject checks remain audited separately.
 6. **Unclamped Signed Characteristics vs Action Clamping (`CR 107.1b, 208.5`)**
    - Evaluated power and toughness can be negative during layer calculation (so a `1/3` with `-3/-0` and `+2/+0` has power `0`, not `2`). Clamping to `0` happens only when an action uses the number for combat damage assignment (`CR 510.1a`), life gain/loss, token/counter creation, or card draw.
    - Non-creature permanents have no power or toughness (`CR 208.3`), even if P/T is printed on the card (e.g. uncrewed Vehicles or creatures turned into non-creature lands).
@@ -77,12 +77,12 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
      - `shuffleLibrary`, `setZoneOrder` and `rearrangeLibrary`;
      - `transferBattlefieldControl`;
      - `removeFromGame` and `mulliganRedraw`.
-   - **Not yet enforced:** `state.stack` isn't managed by `zones.ts`; `engine.ts` and `runtime/effects.ts` push to and splice it directly.
+   - **Not yet enforced (stack-zone scope):** `state.stack` isn't managed by `zones.ts`; `engine.ts`, `runtime/zones.ts`, `runtime/stackResolution.ts`, `runtime/castingAndCosts.ts`, `runtime/turnAndPrompts.ts`, `runtime/triggerStacking.ts`, `runtime/reflexiveManaAndActions.ts`, `runtime/effectsWave5.ts`, `runtime/costsWave6.ts`, `runtime/framesWave7.ts`, and `runtime/framesBattlesAndKeywordsWave5.ts` push to, pop from, and splice it directly.
 2. **New Object Identity on Every Zone Change (`CR 400.7`)**
-   - Whenever an object changes zones, it becomes a new object. It gets a new `objectVersion` and a new `enteredTimestamp`, and transient battlefield state resets: `damageMarked`, `deathtouchDamageMarked`, `tapped`, `counters`, `attachedToId`, `copiableCard`, `isFaceDown`, `transformed`, `usedLoyaltyThisTurn`, `goadedByPlayerIds`, `playableFromExileBy`.
-   - **Exception (`CR 400.7d`, `107.3m`):** a permanent spell resolving from `stack` to `battlefield` keeps information about how it was cast (`enteredWithX`, `castViaSuspend`).
+   - Whenever an object changes zones, it becomes a new object. It gets a new `objectVersion` and a new `enteredTimestamp`, and transient battlefield state resets: `damageMarked`, `deathtouchDamageMarked`, `tapped`, `counters`, `attachedToId`, `copiableCard`, `isFaceDown`, `transformed`, `usedLoyaltyThisTurn`, `goadedByPlayerIds`, `playableFromExileBy`, `summoningSick`.
+   - **Exception (`CR 400.7d`, `107.3m`):** a permanent spell resolving from `stack` to `battlefield` keeps information about how it was cast (`enteredWithX`, `castViaSuspend`) and skips `bumpVersion` while assigning a fresh battlefield `enteredTimestamp`.
    - **Phasing is Not a Zone Change (`CR 702.26d`):** phasing in or out toggles `phasedOut` in place without changing `objectVersion`, firing ETB/LTB triggers, or detaching Auras/Equipment.
-   - **Not yet enforced:** `moveObject` does nothing implicitly. Each caller opts in with `bumpVersion`, `newTimestamp` and `leaveBattlefieldReset`, so a call site that omits a flag skips that part. `leaveBattlefieldReset` doesn't reset `summoningSick`.
+   - **Enforced:** `moveObject` in `runtime/zones.ts` applies CR 400.7 defaults via `withCr400_7Defaults` (`bumpVersion: true` on genuine cross-zone transitions except `stack -> battlefield`, `newTimestamp: true` on all cross-zone transitions, `leaveBattlefieldReset: true` whenever `fromZone === 'battlefield' && dest !== 'battlefield'`), and `leaveBattlefieldReset` resets `obj.summoningSick = false`. Explicit `bumpVersion: false` / `newTimestamp: false` opt-outs are restricted to same-zone reorders and pregame mulligans, locked at `moveObjectResetOptOut = 0` in `architecture.test.ts`.
 3. **Owner-Zone & Controller Invariants (`CR 108.4a, 400.3`)**
    - Cards in `hand`, `graveyard`, or `library` are **always** placed in their `ownerId`'s zone (`CR 400.3`), regardless of who controlled the permanent on the battlefield.
    - In any zone other than `battlefield` or `stack`, `controllerId` is reset to `ownerId` (`CR 108.4a`).
@@ -102,7 +102,7 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
    - Every replaceable game event (zone changes, draws, damage, life gain, counter placement, token creation, untapping) consults the active `ReplacementDef`s **before** mutating state.
    - Self-replacement effects (`CR 614.15`) are chosen first (`CR 616.1a`), then control-changing and copy replacements (`CR 616.1b–c`).
    - Each replacement effect may apply **at most once** to a given event (`CR 614.5`).
-   - **Not yet enforced:** there is no single pipeline. `runtime/replace.ts` has per-domain helpers:
+   - **Not yet enforced:** there is no single pipeline. `runtime/replace.ts` (alongside Wave 5–8 replacement helpers in `runtime/staticsWave6.ts`, `runtime/staticsWave7.ts`, `runtime/staticsWave8.ts`, and `runtime/framesBattlesAndKeywordsWave5.ts`) has per-domain helpers:
      - `resolveZoneChangeReplacements`, `replaceEmptyLibraryDraw`, `cardEntersTapped` and `applySelfEtbReplacements`;
      - `resolveCounterReplacements`;
      - multipliers: `tokenMultiplier`, `counterMultiplier` and `triggerMultiplier`.
@@ -131,7 +131,7 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
    - Simultaneous multi-player instructions ("Each player draws / discards / sacrifices...") iterate players in APNAP order (`CR 101.4`).
 4. **Priority & Mana Pool Emptying (`CR 106.4, 500.2, 500.5`)**
    - Every step in which players receive priority (`upkeep`, `draw`, `main1`, `begin_combat`, `declare_attackers`, `declare_blockers`, `first_strike_damage`, `combat_damage`, `end_combat`, `main2`, `end_step`) waits until `state.stack.length === 0` and all active players pass priority in succession before advancing (`CR 500.2`).
-   - Special actions (`play_land`, `suspend_card`) require priority and clear `passedPriorityPlayerIds` (`CR 117.3c`).
+   - Special actions (`play_land`, `suspend_card`, `hand_special_action`, `turn_face_up`, `unlock_room_door`, `cast_preparation_copy`, `companion_to_hand`) require priority and clear `passedPriorityPlayerIds` (`CR 117.3c`).
    - Every player's mana pool empties at the end of **every** step and phase (`CR 106.4 / 500.5`).
 5. **Stack Resolution Lifecycle & Target Re-Validation (`CR 608.2b, 608.2c, 608.2n, 725.1b`)**
    - A resolving `StackItem` remains on `state.stack` until all of its `EffectStep` instructions and any interactive prompts have finished (`CR 608.2n`), ensuring "End the turn" (`CR 725.1b`) exiles the resolving spell itself.
@@ -174,7 +174,8 @@ Identifiers are from `ir.ts`, `types.ts` and `runtime/`; CR numbers are from [`s
      - `runtime/layerCache.test.ts`, `layerCache.scope.test.ts` and `layerCache.phase6d.test.ts`;
      - `layers.snapshot.test.ts`;
      - the `MAGIC_LAYER_CACHE_CHECK=1` debug mode.
+   - **Bitmask width (`BigInt`):** `runtime/layersPredicates.ts` and `runtime/layers.ts` track read dependencies in `layerReads` using arbitrary-width `bigint` flags (`READ_* = 1n << Nn`), widened from 32-bit signed integers in Wave 2 Stage 1A so additional flags never overflow 32-bit signed shifts.
    - See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.4 for how the cache is keyed.
 4. **Monotonic Architecture Ratchet (`architecture.test.ts` & `architecture-allowances.json`)**
-   - The six ratchet categories (`cardNameComparison`, `oracleTextRead`, `directZoneMutation`, `legacyTextHelperCall`, `cardNameInCode`, `abilityTextScan`) are at **`0`** in every scanned file and may only go down.
-   - The ratchet doesn't scan `compiler/`, `oracle.ts`, `precons.ts`, `scryfall.ts`, `search.ts`, `types.ts`, tests or `.svelte` files for the text/zone/helper rules. `cardNameInCode` checks precon card names only. A `0` is therefore not proof that §1 holds everywhere; see the gaps listed there.
+   - All ten ratchet categories (`cardNameComparison`, `oracleTextRead`, `directZoneMutation`, `legacyTextHelperCall`, `cardNameInCode`, `abilityTextScan`, `rawTypeLineRead`, `moveObjectResetOptOut`, `scryfallLegacyDeckTables`, `scryfallOracleScan`) are at **`0`** and may only go down. `architecture.test.ts` also enforces a `<= 6,000` line ceiling across `engine.ts` and all non-test `runtime/*.ts` modules.
+   - Note on scope: `oracleTextRead`/`abilityTextScan` still exempt `compiler/`, `oracle.ts`, `precons.ts`, `scryfall.ts`, `search.ts`, `types.ts` (while `scryfallOracleScan` guards `scryfall.ts` directly), `rawTypeLineRead` also scans UI helpers and `.svelte` files while exempting Layer 1/4 printed/copy characteristic helpers, and `cardNameInCode` checks precon card names. See §1.1–§1.2 for details.

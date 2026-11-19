@@ -46,6 +46,7 @@ import {
 	parseDevotionColorList,
 	parseObjectPhrase
 } from './costs.ts';
+import { parseP18bActivateOnlySentence } from './card.ts';
 import { parseEffects } from './effects.ts';
 import { staticallyInterpretable, triggerTargetsSupported } from './interpretable.ts';
 import { splitSentences } from './normalize.ts';
@@ -55,6 +56,21 @@ import {
 	parseTriggerHeader,
 	runtimeTriggerProblem
 } from './triggers.ts';
+import {
+	tryParseWave9Condition,
+	tryParseWave9CountAmount,
+	tryParseWave9Sentence,
+	tryParseWave9WholeStatic,
+	type Wave9StaticHelpers
+} from './staticsWave9.ts';
+
+function wave9Helpers(): Wave9StaticHelpers {
+	return {
+		parseCountAmount,
+		parseObjectPhraseWithQualifiers,
+		parseStaticCondition
+	};
+}
 
 export type StaticItem =
 	| { kind: 'static'; static: StaticDef }
@@ -755,7 +771,7 @@ function parseCountAmount(text: string): Amount | null {
 	if (/^the number of dungeons you(?:'ve| have) completed$/i.test(t)) {
 		return { k: 'dungeonsCompleted', player: { k: 'you' } };
 	}
-	if (/^the number of colors among permanents you control$/i.test(t)) {
+	if (/^the number of colors? among permanents you control$/i.test(t)) {
 		return { k: 'colorsAmongPermanents', player: { k: 'you' } };
 	}
 	const colsAmongSub = t.match(/^the number of colors among (.+?) you control$/i);
@@ -1045,6 +1061,8 @@ function parseCountAmount(text: string): Amount | null {
 		const f = parseGraveyardCardFilter(graveOpp[1]);
 		return f ? { k: 'count', of: { ...f, zone: 'graveyard', controller: 'opponent' } } : null;
 	}
+	const w9Amt = tryParseWave9CountAmount(t, wave9Helpers());
+	if (w9Amt) return w9Amt;
 	const m = t.match(/^the number of (.+?)( on the battlefield)?$/i);
 	if (!m) return null;
 	const defCtrl = m[1].match(/^(.+) defending player controls$/i);
@@ -1324,12 +1342,73 @@ function parseGrantedActivatedAbility(quoted: string): ActivatedAbility | null {
 	const effectText = trimmed.slice(colon + 1);
 	if (!costText || !effectText.trim()) return null;
 
-	const cost = parseCost(costText, 0);
+	const loyMatch = costText.match(/^\[([+−-]?)(\d+|X)\]$/i);
+	let cost = loyMatch ? { defs: [] as CostDef[], unparsed: [] as Span[] } : parseCost(costText, 0);
+	let isLoyaltyGranted = false;
+	if (loyMatch) {
+		isLoyaltyGranted = true;
+		const sign = loyMatch[1] === '−' || loyMatch[1] === '-' ? '-' : '+';
+		if (loyMatch[2].toUpperCase() === 'X') {
+			cost = { defs: [{ k: 'loyalty', delta: 0, isX: true, sign }], unparsed: [] };
+		} else {
+			const val = parseInt(loyMatch[2], 10);
+			cost = { defs: [{ k: 'loyalty', delta: sign === '-' ? -val : val }], unparsed: [] };
+		}
+	}
 	if (cost.unparsed.length > 0) return null;
 
-	const effect = parseEffects(effectText, colon + 1, 'activated');
 	const rawSentences = splitSentences(effectText, colon + 1);
-	const sentences = rawSentences.map((s) => s.text.toLowerCase());
+	let sorcery = isLoyaltyGranted;
+	const activationRestrictions: ActivationRestriction[] = [];
+	const addRestriction = (tag: ActivationRestriction) => {
+		if (!activationRestrictions.includes(tag)) activationRestrictions.push(tag);
+	};
+	const activationConditions: Condition[] = [];
+	const parseBlankSpans: Span[] = [];
+	for (const rs of rawSentences) {
+		const sTrim = rs.text.trim();
+		const sLower = sTrim.toLowerCase();
+		if (/^(?:activate|equip) only as a sorcery\.?$/.test(sLower)) {
+			sorcery = true;
+			parseBlankSpans.push(rs.span);
+			continue;
+		}
+		const condSpec = parseActivatedIfConditionSentence(rs.text);
+		if (condSpec) {
+			activationConditions.push(condSpec.condition);
+			if (condSpec.extra === 'as a sorcery') sorcery = true;
+			else if (condSpec.extra === 'once each turn') addRestriction('onceEachTurn');
+			else if (condSpec.extra === 'during your turn') addRestriction('duringYourTurn');
+			else if (condSpec.extra === 'during your upkeep') addRestriction('duringYourUpkeep');
+			else if (condSpec.extra === 'during combat') addRestriction('duringCombat');
+			parseBlankSpans.push(rs.span);
+			continue;
+		}
+		const p18bActOnly = parseP18bActivateOnlySentence(sTrim);
+		if (p18bActOnly) {
+			if (p18bActOnly.explicitZone) return null;
+			if (p18bActOnly.sorcery) sorcery = true;
+			for (const r of p18bActOnly.restrictions) addRestriction(r);
+			for (const c of p18bActOnly.conditions) activationConditions.push(c);
+			parseBlankSpans.push(rs.span);
+		}
+	}
+
+	let cleanedEffectText = effectText;
+	if (parseBlankSpans.length > 0) {
+		let rebuilt = '';
+		let cursor = 0;
+		for (const sp of parseBlankSpans) {
+			const relStart = Math.max(0, sp.start - (colon + 1));
+			const relEnd = Math.min(effectText.length, sp.end - (colon + 1));
+			rebuilt += effectText.slice(cursor, relStart) + ' '.repeat(Math.max(0, relEnd - relStart));
+			cursor = relEnd;
+		}
+		rebuilt += effectText.slice(cursor);
+		cleanedEffectText = rebuilt;
+	}
+
+	const effect = parseEffects(cleanedEffectText, colon + 1, 'activated');
 	const isMana =
 		effect.steps.length > 0 &&
 		effect.targets.length === 0 &&
@@ -1339,35 +1418,6 @@ function parseGrantedActivatedAbility(quoted: string): ActivatedAbility | null {
 				s.verb === 'addMana' ||
 				(s.verb === 'freezeUntap' && s.subject.k === 'self' && !s.condition && !s.optional)
 		);
-	let sorcery = sentences.some((s) => /^(?:activate|equip) only as a sorcery\.?$/.test(s));
-
-	const activationRestrictions: ActivationRestriction[] = [];
-	const addRestriction = (tag: ActivationRestriction) => {
-		if (!activationRestrictions.includes(tag)) activationRestrictions.push(tag);
-	};
-	if (sentences.some((s) => /^activate only once each turn\.?$/.test(s))) {
-		addRestriction('onceEachTurn');
-	}
-	if (sentences.some((s) => /^activate only during your turn\.?$/.test(s))) {
-		addRestriction('duringYourTurn');
-	}
-	if (sentences.some((s) => /^activate only during your upkeep\.?$/.test(s))) {
-		addRestriction('duringYourUpkeep');
-	}
-	if (sentences.some((s) => /^activate only during combat\.?$/.test(s))) {
-		addRestriction('duringCombat');
-	}
-	const activationConditions: Condition[] = [];
-	for (const rs of rawSentences) {
-		const condSpec = parseActivatedIfConditionSentence(rs.text);
-		if (!condSpec) continue;
-		activationConditions.push(condSpec.condition);
-		if (condSpec.extra === 'as a sorcery') sorcery = true;
-		else if (condSpec.extra === 'once each turn') addRestriction('onceEachTurn');
-		else if (condSpec.extra === 'during your turn') addRestriction('duringYourTurn');
-		else if (condSpec.extra === 'during your upkeep') addRestriction('duringYourUpkeep');
-		else if (condSpec.extra === 'during combat') addRestriction('duringCombat');
-	}
 	const activationCondition: Condition | undefined =
 		activationConditions.length === 1
 			? activationConditions[0]
@@ -1828,7 +1878,7 @@ const replacements: Production = (s, span) => {
 	}
 	// --- Track P11: Static damage modification (CR 614.7a) & life-gain modification (CR 119.6) ---
 	const dmgMod = s.match(
-		/^if (.+?) would deal (?:(noncombat|combat) )?damage(?: to (a permanent or player|any target|an opponent or a permanent an opponent controls|the chosen player or a permanent they control|an opponent))?, (?:it|that source) deals (double that damage|twice that much damage|triple that damage|that much damage plus (\S+))(?: to that (?:permanent or player|player or permanent|player))?(?: instead)?$/i
+		/^if (.+?) would deal (?:(noncombat|combat) )?damage(?: to (a permanent or player|any target|an opponent or a permanent an opponent controls|the chosen player or a permanent they control|an opponent))?, (?:it|that source) deals (double that damage|twice that much damage|triple that damage|that much damage plus (?:an amount of damage equal to (.+?)|(\S+)))(?: to that (?:permanent or player|player or permanent|player))?(?: instead)?$/i
 	);
 	if (dmgMod) {
 		const sourceSpec = parseDamageSourcePhrase(dmgMod[1]);
@@ -1894,8 +1944,8 @@ const replacements: Production = (s, span) => {
 					}
 				];
 			}
-			if (dmgMod[5]) {
-				const addAmt = count(dmgMod[5]);
+			if (dmgMod[5] || dmgMod[6]) {
+				const addAmt = dmgMod[5] ? parseCountAmount(dmgMod[5]) : count(dmgMod[6]);
 				if (addAmt) {
 					const inner = {
 						mode: 'add' as const,
@@ -5038,7 +5088,12 @@ const topOfLibraryAndGraveyardPlay: Production = (s, span) => {
 		'infect'
 	]);
 	const parseSpellKwList = (raw: string): string[] | 'flash' | null => {
-		const lowRaw = raw.trim().toLowerCase();
+		const lowRaw = raw
+			.trim()
+			.replace(/^["“]|["”]$/g, '')
+			.replace(/\.$/, '')
+			.trim()
+			.toLowerCase();
 		if (lowRaw === 'flash') return 'flash';
 		if (lowRaw === 'cascade, cascade') return ['cascade', 'cascade'];
 		const toks = lowRaw.split(/,\s*and\s+|\s+and\s+|,\s*/).map((x) => x.trim()).filter(Boolean);
@@ -5255,6 +5310,19 @@ function parseCompanionTokenPhrase(raw: string): TokenSpec | null {
 			keywords: [],
 			quotedAbilities: [
 				'{1}, {T}, Sacrifice this artifact: Target creature you control explores. Activate only as a sorcery.'
+			]
+		};
+	}
+	if (low === 'mutagen') {
+		return {
+			name: 'Mutagen',
+			power: 0,
+			toughness: 0,
+			colors: [],
+			typeLine: 'Artifact — Mutagen',
+			keywords: [],
+			quotedAbilities: [
+				'{1}, {T}, Sacrifice this token: Put a +1/+1 counter on target creature. Activate only as a sorcery.'
 			]
 		};
 	}
@@ -8604,7 +8672,7 @@ function parseStaticCondition(
 		};
 	}
 
-	// Threshold: "seven or more cards are in your graveyard" / "there are seven or more cards in your graveyard"
+	// Threshold: "seven or more cards are in your graveyard" / "there are fewer than eight cards in your graveyard"
 	const gyCards = t.match(/^(?:there are )?(\S+) or more cards(?: are)? in your graveyard$/i);
 	if (gyCards) {
 		const cnt = count(gyCards[1]);
@@ -8613,6 +8681,18 @@ function parseStaticCondition(
 				k: 'compare',
 				left: { k: 'cardsIn', zone: 'graveyard', of: { k: 'you' } },
 				op: '>=',
+				right: cnt
+			};
+		}
+	}
+	const gyFewer = t.match(/^(?:there are )?fewer than (\S+) cards?(?: are)? in your graveyard$/i);
+	if (gyFewer) {
+		const cnt = count(gyFewer[1]);
+		if (cnt && cnt.k === 'const') {
+			return {
+				k: 'compare',
+				left: { k: 'cardsIn', zone: 'graveyard', of: { k: 'you' } },
+				op: '<',
 				right: cnt
 			};
 		}
@@ -9035,7 +9115,7 @@ function parseStaticCondition(
 	}
 	// --- End Track P14 ---
 
-	return null;
+	return tryParseWave9Condition(t, wave9Helpers());
 }
 
 function parseUnlessEtbCondition(clause: string): Condition | null {
@@ -9109,7 +9189,7 @@ function parseSentence(sentence: string, span: Span, depth = 0): StaticItem[] | 
 	let s = sentence.replace(/’/g, "'").replace(/\.$/, '').trim();
 	// Strip optional raw CR 207.2c ability-word prefix if caller bypassed normalize.ts
 	const abilityWordPrefix = s.match(
-		/^(?:Threshold|Metalcraft|Delirium|Ferocious|Formidable|Spell mastery|Coven|Fateful hour|Hellbent|Domain|Morbid|Raid|Revolt|Undergrowth|Chroma|Constellation|Lieutenant|Descend 4|Descend 8|Fathomless descent|Corrupted|Ascend|Max speed|Void|Celebration|Adamant|Valiant|Speed)\s*—\s*/i
+		/^(?:Threshold|Metalcraft|Delirium|Ferocious|Formidable|Spell mastery|Coven|Fateful hour|Hellbent|Domain|Morbid|Raid|Revolt|Undergrowth|Chroma|Constellation|Lieutenant|Descend 4|Descend 8|Fathomless descent|Corrupted|Ascend|Max speed|Void|Celebration|Adamant|Valiant|Speed|Pray)\s*—\s*/i
 	);
 	if (abilityWordPrefix) {
 		s = s.slice(abilityWordPrefix[0].length).trim();
@@ -9178,7 +9258,11 @@ function parseSentence(sentence: string, span: Span, depth = 0): StaticItem[] | 
 			s = duringOtherTurnPrefix[1].charAt(0).toUpperCase() + duringOtherTurnPrefix[1].slice(1);
 		} else {
 			const duringTurnSuffix = s.match(/^(.+?)(?<!untap)\s+during your turn$/i);
-			if (duringTurnSuffix && !/^you may play\b/i.test(duringTurnSuffix[1])) {
+			if (
+				duringTurnSuffix &&
+				!/^you may play\b/i.test(duringTurnSuffix[1]) &&
+				!/your opponents can't cast spells$/i.test(duringTurnSuffix[1])
+			) {
 				addCond({ k: 'isTurnOf', player: { k: 'you' } });
 				s = duringTurnSuffix[1];
 			} else {
@@ -9254,6 +9338,12 @@ function parseSentence(sentence: string, span: Span, depth = 0): StaticItem[] | 
 		return items;
 	}
 
+	const w9Sentence = tryParseWave9Sentence(s, span, depth, wave9Helpers());
+	if (w9Sentence) {
+		if (condition && !withCondition(w9Sentence, condition)) return null;
+		return w9Sentence;
+	}
+
 	// --- Track P17a: Conditional "If <cond>, <rest>" fallback (e.g. Force of Negation, Snuff Out, conditional Flash/grants) ---
 	const ifPrefix = !/\binstead$/i.test(s) ? s.match(/^If ([^,]+),\s+(.+)$/i) : null;
 	if (ifPrefix && depth < 3) {
@@ -9292,7 +9382,11 @@ function parseSentence(sentence: string, span: Span, depth = 0): StaticItem[] | 
 function parseStaticAbilityInner(text: string, offset = 0, depth = 0): StaticParse {
 	const items: StaticItem[] = [];
 	const unparsed: Span[] = [];
-	const sentences = splitSentences(text, offset);
+	const wholeW9 = tryParseWave9WholeStatic(text, offset, text.length, wave9Helpers());
+	if (wholeW9) {
+		items.push(...wholeW9);
+	}
+	const sentences = wholeW9 ? [] : splitSentences(text, offset);
 	const entersSelf: EventPattern = { event: 'zoneChange', filter: { object: 'self', to: 'battlefield' } };
 
 	for (let idx = 0; idx < sentences.length; idx++) {

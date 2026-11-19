@@ -61,6 +61,8 @@ import {
 import {
 	getActiveCombatRulesForPermanent
 } from './staticsLayersAndRestrictions.ts';
+import { handlePreventedDamageRiderWave9 } from './replaceWave9.ts';
+import { moveObject, shuffleLibrary } from './zones.ts';
 
 // ---- 1. Devotion (CR 700.5a–b) --------------------------------------------------------------
 
@@ -704,6 +706,18 @@ export function collectWave5ZoneCastOptions(
 		for (let ei = 0; ei < entries.length; ei++) {
 			const { abTag, sourceName, staticDef: st } = entries[ei];
 			if (st.zone !== fromZone || st.affects === 'self' || st.allowSpells === false) continue;
+			if (
+				st.exiledWithSelf ||
+				st.requireCounter ||
+				st.cardOwner ||
+				st.putIntoGraveyardFromNonBattlefieldThisTurn ||
+				st.grantHasteUntilEndOfTurn ||
+				st.grantFlash ||
+				st.spendManaAsAnyColor ||
+				st.entersTapped
+			) {
+				continue;
+			}
 			if (fromZone === 'library' && (!st.slotMode || st.slotMode === 'unlimited')) continue;
 			if (st.duringYourTurnOnly && !isYourTurn) continue;
 			const pCtx: FilterContext = { state, controllerId: actorId, source: perm };
@@ -980,6 +994,12 @@ export function applyStaticDamagePreventionWave5(
 						opts.targetPerm !== undefined &&
 						matchesObjectFilter(opts.targetPerm, def.dealtByTargetFilter, fctx);
 				}
+				if (matchesEvent && typeof def.target === 'object' && 'filter' in def.target) {
+					matchesEvent =
+						opts.targetKind === 'permanent' &&
+						opts.targetPerm !== undefined &&
+						matchesObjectFilter(opts.targetPerm, { ...def.target.filter, zone: 'battlefield' }, fctx);
+				}
 			} else if (def.dealtByOnly === 'attachedTo') {
 				matchesEvent =
 					Boolean(staticPerm.attachedToId) && opts.sourceInstanceId === staticPerm.attachedToId;
@@ -1060,7 +1080,12 @@ export function applyStaticDamagePreventionWave5(
 					}
 				}
 				if (!unpreventable) {
-					const prevented = def.amount === 'all' ? rem : Math.min(rem, def.amount);
+					const prevented =
+						def.amount === 'all'
+							? rem
+							: def.amount === 'halfRoundedUp'
+								? Math.ceil(rem / 2)
+								: Math.min(rem, def.amount);
 					rem = Math.max(0, rem - prevented);
 				}
 				return;
@@ -1068,8 +1093,31 @@ export function applyStaticDamagePreventionWave5(
 
 			// 4. Standard static damage prevention
 			if (!unpreventable) {
-				const prevented = def.amount === 'all' ? rem : Math.min(rem, def.amount);
+				const prevented =
+					def.amount === 'all'
+						? rem
+						: def.amount === 'halfRoundedUp'
+							? Math.ceil(rem / 2)
+							: Math.min(rem, def.amount);
 				rem = Math.max(0, rem - prevented);
+				if (prevented > 0 && def.onPrevented) {
+					handlePreventedDamageRiderWave9(
+						state,
+						staticPerm,
+						controllerId,
+						opts.targetKind,
+						opts.targetPerm,
+						prevented,
+						def.onPrevented,
+						{
+							shuffleIntoLibrary: (s, perm) => {
+								moveObject(s, perm, 'library', { from: 'anyBattlefield' });
+								const owner = s.players.find((pl) => pl.playerId === perm.ownerId);
+								if (owner) shuffleLibrary(s, owner);
+							}
+						}
+					);
+				}
 			}
 		},
 		'staticDamagePrevention'

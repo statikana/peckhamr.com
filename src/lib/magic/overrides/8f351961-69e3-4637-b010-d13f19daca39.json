@@ -1,0 +1,124 @@
+{
+  "oracleId": "8f351961-69e3-4637-b010-d13f19daca39",
+  "cardName": "Bigger on the Inside",
+  "expectedTextHash": "a855a569",
+  "compiledVersion": 44,
+  "notes": "Wave 13 override: Enchant artifact or land + Layer 6 grantAbility giving two mana of any one color and cascade on target player next spell.",
+  "faces": [
+    {
+      "name": "Bigger on the Inside",
+      "characteristics": {
+        "manaCost": "{3}{R}{G}",
+        "types": [
+          "Enchantment"
+        ],
+        "subtypes": [
+          "Aura"
+        ],
+        "supertypes": [],
+        "colors": [
+          "G",
+          "R"
+        ]
+      },
+      "abilities": [
+        {
+          "kind": "keyword",
+          "keyword": {
+            "name": "enchant",
+            "param": "artifact or land",
+            "enchantFilter": {
+              "types": [
+                "Artifact",
+                "Land"
+              ]
+            }
+          },
+          "span": {
+            "start": 0,
+            "end": 24
+          }
+        },
+        {
+          "kind": "static",
+          "static": {
+            "k": "continuous",
+            "layer": "6",
+            "affected": "attachedTo",
+            "mod": {
+              "k": "grantAbility",
+              "ability": {
+                "kind": "activated",
+                "id": "act_0",
+                "cost": [
+                  {
+                    "k": "tapSelf"
+                  }
+                ],
+                "targets": [
+                  {
+                    "kind": "player",
+                    "filter": {},
+                    "player": {
+                      "relation": "any"
+                    },
+                    "min": 1,
+                    "max": 1
+                  }
+                ],
+                "effect": [
+                  {
+                    "verb": "addMana",
+                    "subject": {
+                      "k": "none"
+                    },
+                    "amount": {
+                      "k": "const",
+                      "n": 2
+                    },
+                    "params": {
+                      "manaChoice": "any"
+                    },
+                    "actor": {
+                      "k": "target",
+                      "index": 0
+                    },
+                    "span": {
+                      "start": 53,
+                      "end": 97
+                    }
+                  },
+                  {
+                    "verb": "grantPlayer",
+                    "subject": {
+                      "k": "target",
+                      "index": 0
+                    },
+                    "params": {
+                      "nextSpellCascade": 1
+                    },
+                    "span": {
+                      "start": 99,
+                      "end": 135
+                    }
+                  }
+                ],
+                "timing": "instant",
+                "isMana": false,
+                "text": "{T}: Target player adds two mana of any one color. The next spell they cast this turn has cascade.",
+                "span": {
+                  "start": 49,
+                  "end": 136
+                }
+              }
+            }
+          },
+          "span": {
+            "start": 25,
+            "end": 149
+          }
+        }
+      ]
+    }
+  ]
+}

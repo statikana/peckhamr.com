@@ -297,8 +297,16 @@ export interface PermanentView {
 	canBeAttackedAsBattle: boolean;
 	roomDoors: RoomDoorView[];
 	attachments: CardInstance[];
+	attachmentDetails: PermanentAttachmentView[];
 	host: CardInstance | null;
 	actableSummary: PermanentActableSummary;
+}
+
+export interface PermanentAttachmentView {
+	instanceId: string;
+	name: string;
+	isEquipment: boolean;
+	isAura: boolean;
 }
 
 export interface RestrictedManaEntry {
@@ -2099,6 +2107,7 @@ function buildViewModelStateSignature(gameState: GameState, viewerId: string): s
 				perm.isMonstrous ?? false,
 				perm.usedLoyaltyThisTurn,
 				(perm.activatedAbilityIdsThisTurn ?? []).join(','),
+				(perm.usedOncePerGameAbilityIds ?? []).join(','),
 				(perm.goadedByPlayerIds ?? []).join(','),
 				perm.saddledThisTurn ?? false,
 				(perm.grantedKeywords ?? []).join(','),
@@ -2699,6 +2708,7 @@ function computeBoardViewModelInner(
 				canBeAttackedAsBattle,
 				roomDoors,
 				attachments,
+				attachmentDetails: [],
 				host,
 				actableSummary
 			};
@@ -2739,6 +2749,23 @@ function computeBoardViewModelInner(
 			pv.cantBlockAttackerNames = cantBlkIds.map(
 				(aid) => permanentsById[aid]?.displayCard.name ?? activeById.get(aid)?.card.name ?? aid
 			);
+		}
+		if (pv.attachments.length > 0) {
+			pv.attachmentDetails = pv.attachments.map((att) => {
+				const attPv = permanentsById[att.instanceId];
+				const isEquipment = attPv
+					? attPv.evaluated.hasSubType('Equipment') || attPv.subtypes.includes('Equipment')
+					: false;
+				const isAura = attPv
+					? attPv.evaluated.hasSubType('Aura') || attPv.subtypes.includes('Aura')
+					: false;
+				return {
+					instanceId: att.instanceId,
+					name: attPv?.displayCard.name ?? att.card.name,
+					isEquipment,
+					isAura
+				};
+			});
 		}
 	}
 

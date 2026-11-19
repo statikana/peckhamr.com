@@ -28,12 +28,12 @@ import { getKeywordSpec } from '../keywords.ts';
 import { resolveCardOverride } from '../overrides/index.ts';
 import { getCardFaces } from '../scryfall.ts';
 import { compileFaces } from './card.ts';
-import { parseAbilityEffectText } from './effects.ts';
+import { compileQuotedAbilityString, parseAbilityEffectText } from './effects.ts';
 import { hashText, normalizeFace, printedText } from './normalize.ts';
 import { runtimeTriggers } from './triggers.ts';
 
 /** Bump whenever the IR produced for the same text could change. */
-export const COMPILER_VERSION = 41;
+export const COMPILER_VERSION = 46;
 
 const CACHE = new Map<string, CardDefinition>();
 
@@ -259,7 +259,7 @@ export function abilityById(card: ScryfallCard, id: string, faceIndex = 0): Abil
 	);
 }
 
-/** A granted activated ability inside a `grantAbility` static on `card`, by its compile-time id (`granted_0`, ...). */
+/** A granted activated ability inside a `grantAbility` static or native ability on `card`, by its compile-time id (`granted_0`, `act_0`, `loyalty_0`, ...). */
 export function grantedAbilityById(
 	card: ScryfallCard,
 	localId: string,
@@ -278,6 +278,13 @@ export function grantedAbilityById(
 				return a.static.mod.ability;
 			}
 		}
+	}
+	if (faceIndex !== undefined) {
+		return abilityById(card, localId, faceIndex);
+	}
+	for (let fi = 0; fi < faces.length; fi++) {
+		const hit = abilityById(card, localId, fi);
+		if (hit) return hit;
 	}
 	return undefined;
 }
@@ -314,9 +321,24 @@ export function compiledTriggerEffect(
 	chosenModes?: number[]
 ): CompiledEffect | null {
 	if (grantedKeyword || abilityIndex === -1) {
-		const spec = getKeywordSpec(grantedKeyword ?? 'prowess');
+		const rawKw = (grantedKeyword ?? 'prowess').trim();
+		let spec = getKeywordSpec(rawKw);
+		let n: number | undefined;
+		if (!spec) {
+			const m = /^(.+?)\s+(\d+)$/.exec(rawKw);
+			if (m) {
+				spec = getKeywordSpec(m[1]!);
+				n = Number.parseInt(m[2]!, 10);
+			}
+		}
 		if (spec?.status === 'implemented' && spec.implementation?.kind === 'trigger') {
-			return spec.implementation.buildTriggers({ name: spec.name }, abilityIndex, { start: 0, end: 0 })[0]?.effect ?? null;
+			return (
+				spec.implementation.buildTriggers(
+					{ name: spec.name, ...(n !== undefined ? { n } : {}) },
+					abilityIndex,
+					{ start: 0, end: 0 }
+				)[0]?.effect ?? null
+			);
 		}
 		return null;
 	}
@@ -325,6 +347,84 @@ export function compiledTriggerEffect(
 		return expandModalEffects(t.effect.modal, chosenModes);
 	}
 	return t?.effect ?? null;
+}
+
+/**
+ * The compiled effect of a Layer 6 granted triggered ability from `grantSourceCard`, by face and
+ * ability index (mirroring `resolveGrantedRuntimeTrigger` without importing `runtime/`).
+ */
+export function grantedTriggerEffect(
+	grantSourceCard: ScryfallCard,
+	grantFaceIndex = 0,
+	grantAbilityIndex = 0,
+	chosenModes?: number[]
+): CompiledEffect | null {
+	const def = compileCard(grantSourceCard);
+	const face = def.faces[grantFaceIndex] ?? def.faces[0];
+	if (!face) return null;
+	const ab = face.abilities[grantAbilityIndex];
+	let granted: AbilityDef | undefined;
+	if (
+		ab &&
+		ab.kind === 'static' &&
+		ab.static.k === 'continuous' &&
+		ab.static.mod.k === 'grantAbility' &&
+		ab.static.mod.ability.kind === 'triggered'
+	) {
+		granted = ab.static.mod.ability;
+	} else {
+		for (const cand of face.abilities) {
+			if (
+				cand.kind === 'static' &&
+				cand.static.k === 'continuous' &&
+				cand.static.mod.k === 'grantAbility' &&
+				cand.static.mod.ability.kind === 'triggered'
+			) {
+				granted = cand.static.mod.ability;
+				break;
+			}
+		}
+	}
+	if (!granted || granted.kind !== 'triggered') return null;
+	const base = effectOf(granted);
+	if (base?.modal && chosenModes) {
+		return expandModalEffects(base.modal, chosenModes);
+	}
+	return base;
+}
+
+export function isGrantedOrBackupAbilityId(abilityId: string | undefined): boolean {
+	return Boolean(
+		abilityId && (abilityId.startsWith('granted:') || abilityId.startsWith('backup_act:'))
+	);
+}
+
+export function localAbilityIdFromPrefixed(abilityId: string): string {
+	const m = /^(?:granted|backup_act):[^:]+:(.+)$/.exec(abilityId);
+	return m ? m[1] : abilityId.slice(abilityId.lastIndexOf(':') + 1);
+}
+
+export function resolveActivatedAbilityIr(
+	card: ScryfallCard,
+	abilityId: string,
+	faceIndex = 0,
+	grantSourceCard?: ScryfallCard,
+	grantFaceIndex?: number,
+	grantedAbilityText?: string
+): AbilityDef | undefined {
+	if (grantedAbilityText) {
+		return compileQuotedAbilityString(grantedAbilityText, card.name).find(
+			(d) => d.kind === 'activated'
+		);
+	}
+	if (grantSourceCard && isGrantedOrBackupAbilityId(abilityId)) {
+		return grantedAbilityById(
+			grantSourceCard,
+			localAbilityIdFromPrefixed(abilityId),
+			grantFaceIndex
+		);
+	}
+	return abilityById(card, abilityId, faceIndex);
 }
 
 /**
@@ -338,15 +438,34 @@ export function resolveCompiledDelayedSteps(eff: CompiledDelayedEffect): Compile
 		const spell = compileSpellEffects(eff.sourceCard, faceIdx, eff.fused ?? false);
 		root = spell?.modal && eff.chosenModes ? expandModalEffects(spell.modal, eff.chosenModes) : spell;
 	} else if (eff.abilityKind === 'activated') {
-		if (eff.abilityId) {
-			const base =
-				eff.grantSourceCard && eff.abilityId.startsWith('granted:')
-					? effectOf(grantedAbilityById(eff.grantSourceCard, eff.abilityId.slice(eff.abilityId.lastIndexOf(':') + 1)))
-					: effectOf(abilityById(eff.sourceCard, eff.abilityId, faceIdx));
+		if (eff.abilityId || eff.grantedAbilityText) {
+			const base = effectOf(
+				resolveActivatedAbilityIr(
+					eff.sourceCard,
+					eff.abilityId ?? '',
+					faceIdx,
+					eff.grantSourceCard,
+					eff.grantFaceIndex,
+					eff.grantedAbilityText
+				)
+			);
 			root = base?.modal && eff.chosenModes ? expandModalEffects(base.modal, eff.chosenModes) : base;
 		}
 	} else if (eff.abilityKind === 'triggered') {
-		if (eff.grantedKeyword || eff.abilityIndex !== undefined) {
+		if (eff.grantedAbilityText) {
+			const quoted = compileQuotedAbilityString(eff.grantedAbilityText, eff.sourceCard.name).find(
+				(d) => d.kind === 'triggered'
+			);
+			const base = effectOf(quoted);
+			root = base?.modal && eff.chosenModes ? expandModalEffects(base.modal, eff.chosenModes) : base;
+		} else if (eff.grantSourceCard && eff.grantAbilityIndex !== undefined) {
+			root = grantedTriggerEffect(
+				eff.grantSourceCard,
+				eff.grantFaceIndex ?? 0,
+				eff.grantAbilityIndex,
+				eff.chosenModes
+			);
+		} else if (eff.grantedKeyword || eff.abilityIndex !== undefined) {
 			root = compiledTriggerEffect(
 				eff.sourceCard,
 				eff.abilityIndex ?? -1,
@@ -358,6 +477,7 @@ export function resolveCompiledDelayedSteps(eff: CompiledDelayedEffect): Compile
 	}
 	if (!root || eff.stepPath.length === 0) return null;
 	let steps: EffectStep[] = root.steps;
+	let activeTargets: TargetSpec[] = root.targets;
 	// --- Precon Bragos Spirit: negative tags descend into inline branches (die-roll rows, coin flips),
 	// matching `stepPathPrefix` from the runtime's inline branch runner (resolveReflexiveSpecFromCompiled) ---
 	let branchHost: EffectStep | undefined;
@@ -384,11 +504,24 @@ export function resolveCompiledDelayedSteps(eff: CompiledDelayedEffect): Compile
 			branchHost = step;
 			continue;
 		}
+		if (i + 1 < eff.stepPath.length && eff.stepPath[i + 1] >= 0) {
+			if (step.delayed && !step.params?.reflexiveTrigger) {
+				steps = step.delayed.effect;
+				if (step.delayed.targets) activeTargets = step.delayed.targets;
+				continue;
+			}
+			if (step.params?.reflexiveTrigger) {
+				steps = step.params.reflexiveTrigger.effect;
+				activeTargets = step.params.reflexiveTrigger.targets;
+				continue;
+			}
+		}
 		if (!step.delayed) return null;
 		steps = step.delayed.effect;
+		if (step.delayed.targets) activeTargets = step.delayed.targets;
 	}
 	// --- End Precon Bragos Spirit ---
-	return { steps, targets: root.targets, unparsed: [] };
+	return { steps, targets: activeTargets, unparsed: [] };
 }
 
 function shiftRef(ref: Ref, offset: number): Ref {
@@ -534,6 +667,23 @@ function shiftStepTargets(step: EffectStep, offset: number, stepOffset = 0): Eff
 											: {})
 									}
 								}
+							: {}),
+						...(step.params.conditionalSequence
+							? {
+									conditionalSequence: {
+										condition: shiftCondition(step.params.conditionalSequence.condition, offset),
+										thenSteps: step.params.conditionalSequence.thenSteps.map((s) =>
+											shiftStepTargets(s, offset, 0)
+										),
+										...(step.params.conditionalSequence.elseSteps
+											? {
+													elseSteps: step.params.conditionalSequence.elseSteps.map((s) =>
+														shiftStepTargets(s, offset, 0)
+													)
+												}
+											: {})
+									}
+								}
 							: {})
 					}
 				}
@@ -575,19 +725,43 @@ export function getAbilityModal(
 	card: ScryfallCard,
 	abilityId: string,
 	faceIndex = 0,
-	grantSourceCard?: ScryfallCard
+	grantSourceCard?: ScryfallCard,
+	grantFaceIndex?: number,
+	grantedAbilityText?: string
 ): ModalDef | undefined {
-	if (grantSourceCard && abilityId.startsWith('granted:')) {
-		const localId = abilityId.slice(abilityId.lastIndexOf(':') + 1);
-		const ab = grantedAbilityById(grantSourceCard, localId);
-		return ab?.kind === 'activated' ? ab.modal : undefined;
-	}
-	const ab = abilityById(card, abilityId, faceIndex);
+	const ab = resolveActivatedAbilityIr(
+		card,
+		abilityId,
+		faceIndex,
+		grantSourceCard,
+		grantFaceIndex,
+		grantedAbilityText
+	);
 	return ab?.kind === 'activated' ? ab.modal : undefined;
 }
 
 /** Human-readable bullet descriptions for a `ModalDef` without leaking raw `oracleText` into runtime/UI. */
-export function describeModalModes(card: ScryfallCard, modal: ModalDef, faceIndex = 0): string[] {
+export function describeModalModes(
+	card: ScryfallCard,
+	modal: ModalDef,
+	faceIndex = 0,
+	grantedAbilityText?: string
+): string[] {
+	if (grantedAbilityText) {
+		const rawQ = grantedAbilityText.trim();
+		const trimmed =
+			(rawQ.startsWith('“') && rawQ.endsWith('”')) || (rawQ.startsWith('"') && rawQ.endsWith('"'))
+				? rawQ.slice(1, -1).trim()
+				: rawQ;
+		const expanded = trimmed.replace(/~/g, card.name);
+		const normText = expanded ? normalizeFace(card.name, expanded).text : '';
+		return modal.modes.map((mode, idx) => {
+			if (!normText || mode.span.end <= mode.span.start) return `Mode ${idx + 1}`;
+			const raw = normText.slice(mode.span.start, mode.span.end).replace(/^•\s*/, '').trim();
+			if (!raw) return `Mode ${idx + 1}`;
+			return printedText(raw, card.name, expanded);
+		});
+	}
 	const face = getCardFaces(card)[faceIndex] ?? getCardFaces(card)[0];
 	const faceName = face?.name ?? card.name;
 	const oracleText = face?.oracleText ?? '';
@@ -627,10 +801,16 @@ export function compiledStackItemEffects(item: StackItem): CompiledEffect | null
 	if (item.kind !== 'activated') return null;
 	const faceIdx = item.faceIndex ?? 0;
 	if (item.abilityId) {
-		const base =
-			item.grantSourceCard && item.abilityId.startsWith('granted:')
-				? effectOf(grantedAbilityById(item.grantSourceCard, item.abilityId.slice(item.abilityId.lastIndexOf(':') + 1)))
-				: effectOf(abilityById(item.card, item.abilityId, faceIdx));
+		const base = effectOf(
+			resolveActivatedAbilityIr(
+				item.card,
+				item.abilityId,
+				faceIdx,
+				item.grantSourceCard,
+				item.grantFaceIndex,
+				item.grantedAbilityText
+			)
+		);
 		if (base?.modal && item.chosenModes) {
 			return expandModalEffects(base.modal, item.chosenModes);
 		}

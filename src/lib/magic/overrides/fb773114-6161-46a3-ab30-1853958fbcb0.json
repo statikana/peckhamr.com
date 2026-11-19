@@ -1,0 +1,283 @@
+{
+  "oracleId": "fb773114-6161-46a3-ab30-1853958fbcb0",
+  "cardName": "Bello, Bard of the Brambles",
+  "expectedTextHash": "3130c7b2",
+  "compiledVersion": 44,
+  "notes": "Wave 13 override: Continuous Layer 4/6/7b animation for MV>=4 non-Equipment artifacts and non-Aura enchantments during your turn.",
+  "faces": [
+    {
+      "name": "Bello, Bard of the Brambles",
+      "characteristics": {
+        "manaCost": "{1}{R}{G}",
+        "types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Raccoon",
+          "Bard"
+        ],
+        "supertypes": [
+          "Legendary"
+        ],
+        "colors": [
+          "G",
+          "R"
+        ],
+        "power": 3,
+        "toughness": 3
+      },
+      "abilities": [
+        {
+          "kind": "static",
+          "static": {
+            "k": "continuous",
+            "layer": "4",
+            "affected": {
+              "zone": "battlefield",
+              "controller": "you",
+              "manaValue": {
+                "op": ">=",
+                "value": {
+                  "k": "const",
+                  "n": 4
+                }
+              },
+              "anyOf": [
+                {
+                  "types": [
+                    "Artifact"
+                  ],
+                  "notSubtypes": [
+                    "Equipment"
+                  ]
+                },
+                {
+                  "types": [
+                    "Enchantment"
+                  ],
+                  "notSubtypes": [
+                    "Aura"
+                  ]
+                }
+              ]
+            },
+            "mod": {
+              "k": "addTypes",
+              "types": [
+                "Creature"
+              ],
+              "subtypes": [
+                "Elemental"
+              ]
+            },
+            "condition": {
+              "k": "isTurnOf",
+              "player": {
+                "k": "you"
+              }
+            }
+          },
+          "span": {
+            "start": 0,
+            "end": 264
+          }
+        },
+        {
+          "kind": "static",
+          "static": {
+            "k": "continuous",
+            "layer": "7b",
+            "affected": {
+              "zone": "battlefield",
+              "controller": "you",
+              "manaValue": {
+                "op": ">=",
+                "value": {
+                  "k": "const",
+                  "n": 4
+                }
+              },
+              "anyOf": [
+                {
+                  "types": [
+                    "Artifact"
+                  ],
+                  "notSubtypes": [
+                    "Equipment"
+                  ]
+                },
+                {
+                  "types": [
+                    "Enchantment"
+                  ],
+                  "notSubtypes": [
+                    "Aura"
+                  ]
+                }
+              ]
+            },
+            "mod": {
+              "k": "setBasePT",
+              "power": {
+                "k": "const",
+                "n": 4
+              },
+              "toughness": {
+                "k": "const",
+                "n": 4
+              }
+            },
+            "condition": {
+              "k": "isTurnOf",
+              "player": {
+                "k": "you"
+              }
+            }
+          },
+          "span": {
+            "start": 0,
+            "end": 264
+          }
+        },
+        {
+          "kind": "static",
+          "static": {
+            "k": "continuous",
+            "layer": "6",
+            "affected": {
+              "zone": "battlefield",
+              "controller": "you",
+              "manaValue": {
+                "op": ">=",
+                "value": {
+                  "k": "const",
+                  "n": 4
+                }
+              },
+              "anyOf": [
+                {
+                  "types": [
+                    "Artifact"
+                  ],
+                  "notSubtypes": [
+                    "Equipment"
+                  ]
+                },
+                {
+                  "types": [
+                    "Enchantment"
+                  ],
+                  "notSubtypes": [
+                    "Aura"
+                  ]
+                }
+              ]
+            },
+            "mod": {
+              "k": "addKeywords",
+              "keywords": [
+                "indestructible",
+                "haste"
+              ]
+            },
+            "condition": {
+              "k": "isTurnOf",
+              "player": {
+                "k": "you"
+              }
+            }
+          },
+          "span": {
+            "start": 0,
+            "end": 264
+          }
+        },
+        {
+          "kind": "static",
+          "static": {
+            "k": "continuous",
+            "layer": "6",
+            "affected": {
+              "zone": "battlefield",
+              "controller": "you",
+              "manaValue": {
+                "op": ">=",
+                "value": {
+                  "k": "const",
+                  "n": 4
+                }
+              },
+              "anyOf": [
+                {
+                  "types": [
+                    "Artifact"
+                  ],
+                  "notSubtypes": [
+                    "Equipment"
+                  ]
+                },
+                {
+                  "types": [
+                    "Enchantment"
+                  ],
+                  "notSubtypes": [
+                    "Aura"
+                  ]
+                }
+              ]
+            },
+            "mod": {
+              "k": "grantAbility",
+              "ability": {
+                "kind": "triggered",
+                "trigger": {
+                  "event": "dealsDamage",
+                  "filter": {
+                    "object": "self",
+                    "combat": true,
+                    "damageTo": "player"
+                  }
+                },
+                "targets": [],
+                "effect": [
+                  {
+                    "verb": "draw",
+                    "subject": {
+                      "k": "player",
+                      "filter": {
+                        "relation": "you"
+                      }
+                    },
+                    "amount": {
+                      "k": "const",
+                      "n": 1
+                    },
+                    "span": {
+                      "start": 44,
+                      "end": 55
+                    }
+                  }
+                ],
+                "text": "Whenever ~ deals combat damage to a player, draw a card.",
+                "span": {
+                  "start": 0,
+                  "end": 56
+                }
+              }
+            },
+            "condition": {
+              "k": "isTurnOf",
+              "player": {
+                "k": "you"
+              }
+            }
+          },
+          "span": {
+            "start": 0,
+            "end": 264
+          }
+        }
+      ]
+    }
+  ]
+}

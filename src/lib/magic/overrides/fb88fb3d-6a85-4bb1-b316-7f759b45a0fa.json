@@ -1,0 +1,102 @@
+{
+  "oracleId": "fb88fb3d-6a85-4bb1-b316-7f759b45a0fa",
+  "cardName": "The Chain Veil",
+  "expectedTextHash": "63533634",
+  "compiledVersion": 44,
+  "notes": "Wave 13 override: End-step loyalty check trigger + {4}, {T} extra loyalty activation ability.",
+  "faces": [
+    {
+      "name": "The Chain Veil",
+      "characteristics": {
+        "manaCost": "{4}",
+        "types": [
+          "Artifact"
+        ],
+        "subtypes": [],
+        "supertypes": [
+          "Legendary"
+        ],
+        "colors": []
+      },
+      "abilities": [
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "phaseBegin",
+            "filter": {
+              "phase": "end_step"
+            },
+            "scope": "controller_turn"
+          },
+          "condition": {
+            "k": "didntActivateLoyaltyThisTurn"
+          },
+          "targets": [],
+          "effect": [
+            {
+              "verb": "loseLife",
+              "subject": {
+                "k": "player",
+                "filter": {
+                  "relation": "you"
+                }
+              },
+              "amount": {
+                "k": "const",
+                "n": 2
+              },
+              "span": {
+                "start": 105,
+                "end": 120
+              }
+            }
+          ],
+          "text": "At the beginning of your end step, if you didn't activate a loyalty ability of a planeswalker this turn, you lose 2 life.",
+          "span": {
+            "start": 0,
+            "end": 121
+          }
+        },
+        {
+          "kind": "activated",
+          "id": "act_1",
+          "cost": [
+            {
+              "k": "mana",
+              "cost": "{4}"
+            },
+            {
+              "k": "tapSelf"
+            }
+          ],
+          "targets": [],
+          "effect": [
+            {
+              "verb": "grantPlayer",
+              "subject": {
+                "k": "player",
+                "filter": {
+                  "relation": "you"
+                }
+              },
+              "params": {
+                "extraLoyaltyActivationsThisTurn": 1
+              },
+              "span": {
+                "start": 132,
+                "end": 298
+              }
+            }
+          ],
+          "timing": "instant",
+          "isMana": false,
+          "text": "{4}, {T}: For each planeswalker you control, you may activate one of its loyalty abilities once this turn as though none of its loyalty abilities have been activated this turn.",
+          "span": {
+            "start": 122,
+            "end": 298
+          }
+        }
+      ]
+    }
+  ]
+}

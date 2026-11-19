@@ -24,12 +24,54 @@ import {
 } from '../types.ts';
 import { effectiveSpellManaCost } from './costs.ts';
 import {
+	getBoardSnapshot,
+	invalidateLayerCache,
 	layerCacheCheckStats,
 	noteLayerInputsChanged,
 	setLayerCacheCheck,
 	withStableLayerInputs,
 	withoutLayerCache
 } from './layerCache.ts';
+import {
+	READ_ACTIVE_PLAYER,
+	READ_ALL_COUNTERS,
+	READ_CHOSEN_CARD_NAME,
+	READ_COMBAT,
+	READ_COMMANDER_CAST_COUNT,
+	READ_ENERGY,
+	READ_EXILE,
+	READ_GRAVEYARDS,
+	READ_HIDDEN_ZONES,
+	READ_KEYWORD_COUNTERS,
+	READ_LIFE,
+	READ_MONARCH,
+	READ_P10_SUSPECT,
+	READ_P12,
+	READ_P13,
+	READ_P14,
+	READ_P15,
+	READ_P16A,
+	READ_P16B,
+	READ_P17A,
+	READ_P17B,
+	READ_P18A,
+	READ_P18B,
+	READ_P19A,
+	READ_P20A,
+	READ_P20B,
+	READ_P22A,
+	READ_P22B,
+	READ_P22C,
+	READ_TAPPED,
+	READ_TURN_HISTORY,
+	READ_ZONE_SIZES,
+	buildDynamicFingerprint,
+	dynamicFingerprintMatches,
+	getLayerReads,
+	noteLayerRead,
+	resetLayerReads,
+	setExtraLayerReadHookForTest
+} from './layers.ts';
 import { hasRestriction } from './replace.ts';
 import { matchTriggers } from './triggers.ts';
 
@@ -138,7 +180,11 @@ function assertBoardFresh(state: GameState, label: string): void {
 	}
 }
 
-afterEach(() => setLayerCacheCheck(null));
+afterEach(() => {
+	setLayerCacheCheck(null);
+	setExtraLayerReadHookForTest(null);
+	resetLayerReads(0n);
+});
 
 describe('Phase 6d: read-tracked dynamic fingerprint', () => {
 	it('a tapped filter makes tapping re-evaluate; without one, tapping does not change results', () => {
@@ -418,3 +464,165 @@ describe('Phase 6d: compileCard per-card memo and subtype memo', () => {
 		assert.equal(ev.hasSubType('Faerie'), false);
 	});
 });
+
+describe('Phase 6d / Wave 2: BigInt read-tracking bitmask (> 32 flags)', () => {
+	it('all 32 built-in READ_* constants are distinct positive bigint powers of two without sign-bit overflow', () => {
+		const flags = [
+			READ_TAPPED,
+			READ_LIFE,
+			READ_ZONE_SIZES,
+			READ_GRAVEYARDS,
+			READ_ACTIVE_PLAYER,
+			READ_COMMANDER_CAST_COUNT,
+			READ_EXILE,
+			READ_ENERGY,
+			READ_MONARCH,
+			READ_COMBAT,
+			READ_ALL_COUNTERS,
+			READ_HIDDEN_ZONES,
+			READ_TURN_HISTORY,
+			READ_P10_SUSPECT,
+			READ_KEYWORD_COUNTERS,
+			READ_CHOSEN_CARD_NAME,
+			READ_P12,
+			READ_P13,
+			READ_P14,
+			READ_P15,
+			READ_P16A,
+			READ_P16B,
+			READ_P17A,
+			READ_P17B,
+			READ_P18A,
+			READ_P18B,
+			READ_P19A,
+			READ_P22B,
+			READ_P20A,
+			READ_P20B,
+			READ_P22C,
+			READ_P22A
+		];
+		assert.equal(flags.length, 32);
+		assert.equal(READ_TAPPED, 1n << 0n);
+		assert.equal(READ_P22A, 1n << 31n);
+		assert.ok(READ_P22A > 0n, 'READ_P22A must be positive (no 32-bit signed negative hack)');
+		let combined = 0n;
+		for (let bit = 0; bit < flags.length; bit++) {
+			const f = flags[bit];
+			assert.equal(typeof f, 'bigint');
+			assert.equal(f, 1n << BigInt(bit), `bit ${bit}`);
+			assert.equal(combined & f, 0n, `bit ${bit} must not collide`);
+			combined |= f;
+		}
+		assert.equal(combined, (1n << 32n) - 1n);
+	});
+
+	it('tracks flags above bit 31 (1n << 32n, 1n << 40n, 1n << 63n, 1n << 95n) alongside bits 0 and 31 without overflow', () => {
+		const FLAG_32 = 1n << 32n;
+		const FLAG_40 = 1n << 40n;
+		const FLAG_63 = 1n << 63n;
+		const FLAG_95 = 1n << 95n;
+
+		resetLayerReads(0n);
+		assert.equal(getLayerReads(), 0n);
+
+		noteLayerRead(READ_TAPPED);
+		noteLayerRead(READ_P22A);
+		noteLayerRead(FLAG_32);
+		noteLayerRead(FLAG_40);
+		noteLayerRead(FLAG_63);
+		noteLayerRead(FLAG_95);
+
+		const reads = getLayerReads();
+		assert.equal((reads & READ_TAPPED) !== 0n, true);
+		assert.equal((reads & READ_P22A) !== 0n, true);
+		assert.equal((reads & FLAG_32) !== 0n, true);
+		assert.equal((reads & FLAG_40) !== 0n, true);
+		assert.equal((reads & FLAG_63) !== 0n, true);
+		assert.equal((reads & FLAG_95) !== 0n, true);
+		// Ensure unrelated low/high bits remain zero
+		assert.equal((reads & READ_LIFE) === 0n, true);
+		assert.equal((reads & (1n << 33n)) === 0n, true);
+		assert.equal((reads & (1n << 64n)) === 0n, true);
+	});
+
+	it('buildDynamicFingerprint and dynamicFingerprintMatches do not collide >32-bit flags with bits 0..31', () => {
+		const b = new Board();
+		const cub = b.add(BEAR);
+		const snap = getBoardSnapshot(b.state);
+		const FLAG_32 = 1n << 32n; // In 32-bit JS, (1 << 32) === 1 === READ_TAPPED
+		const FLAG_40 = 1n << 40n; // In 32-bit JS, (1 << 40) === 256 === READ_MONARCH
+		const FLAG_63 = 1n << 63n; // In 32-bit JS, (1 << 63) === -2147483648 === READ_P22A
+
+		// Fingerprint with only >32-bit flags must NOT record or check READ_TAPPED, READ_MONARCH, or READ_P22A.
+		const highOnlyReads = FLAG_32 | FLAG_40 | FLAG_63;
+		const fpHigh = buildDynamicFingerprint(b.state, snap, highOnlyReads);
+		assert.equal(fpHigh[1], highOnlyReads);
+		assert.equal(dynamicFingerprintMatches(b.state, snap, fpHigh), true);
+
+		// Mutate tapped, monarch, and life — none of those are in highOnlyReads, so fpHigh still matches.
+		cub.tapped = !cub.tapped;
+		b.state.monarchPlayerId = b.players[1];
+		b.state.players[0].life = 17;
+		assert.equal(dynamicFingerprintMatches(b.state, snap, fpHigh), true);
+
+		// Now combine bit 0, bit 31, and bits 32/40/63: mutating tapped or life invalidates cleanly.
+		const mixedReads = READ_TAPPED | READ_P22A | FLAG_32 | FLAG_40 | FLAG_63;
+		const fpMixed = buildDynamicFingerprint(b.state, snap, mixedReads);
+		assert.equal(fpMixed[1], mixedReads);
+		assert.equal(dynamicFingerprintMatches(b.state, snap, fpMixed), true);
+
+		cub.tapped = !cub.tapped;
+		assert.equal(dynamicFingerprintMatches(b.state, snap, fpMixed), false);
+
+		const fpMixed2 = buildDynamicFingerprint(b.state, snap, mixedReads);
+		assert.equal(dynamicFingerprintMatches(b.state, snap, fpMixed2), true);
+		b.state.players[0].life = 12;
+		assert.equal(dynamicFingerprintMatches(b.state, snap, fpMixed2), false);
+	});
+
+	it('cache tracks >32-bit read flags (1n << 32n, 1n << 40n, 1n << 63n) and invalidates when tracked input mutates', () => {
+		setLayerCacheCheck(true);
+		const b = new Board();
+		const cub = b.add(BEAR);
+		const sentry = b.add(SENTRY);
+		let trackedCounter = 0;
+
+		for (const highFlag of [1n << 32n, 1n << 40n, 1n << 63n]) {
+			invalidateLayerCache(b.state);
+			const combinedFlag = highFlag | READ_TAPPED;
+			setExtraLayerReadHookForTest({
+				flag: combinedFlag,
+				read: () => trackedCounter
+			});
+			try {
+				// Populate cache via evaluatePermanent.
+				assert.equal(evaluatePermanent(b.state, cub).power, 2);
+				const snap = getBoardSnapshot(b.state);
+				const cachedBefore = snap.memo.get('phase6_board_layer_cache') as { dynamicFingerprint: unknown[] };
+				assert.ok(cachedBefore, 'board layer cache entry exists in WeakMap snapshot');
+				const recordedReads = cachedBefore.dynamicFingerprint[1] as bigint;
+				assert.equal((recordedReads & highFlag) !== 0n, true, 'high flag recorded in dynamicFingerprint');
+				assert.equal((recordedReads & READ_TAPPED) !== 0n, true);
+				assert.equal(dynamicFingerprintMatches(b.state, snap, cachedBefore.dynamicFingerprint), true);
+
+				// Re-evaluating with unchanged input reuses the cached entry.
+				assert.equal(evaluatePermanent(b.state, sentry).power, 0);
+				assert.equal(snap.memo.get('phase6_board_layer_cache'), cachedBefore);
+
+				// Mutating the >32-bit-tracked input invalidates the fingerprint and rebuilds cache.
+				trackedCounter += 1;
+				assert.equal(dynamicFingerprintMatches(b.state, snap, cachedBefore.dynamicFingerprint), false);
+				assert.equal(evaluatePermanent(b.state, cub).power, 2);
+				const cachedAfter = snap.memo.get('phase6_board_layer_cache') as { dynamicFingerprint: unknown[] };
+				assert.notEqual(cachedAfter, cachedBefore, 'cache rebuilt after >32-bit tracked input changed');
+				assert.equal(dynamicFingerprintMatches(b.state, snap, cachedAfter.dynamicFingerprint), true);
+
+				// Ensure GameState remains strictly JSON-serializable without BigInt or dynamicFingerprint leakage.
+				assert.doesNotThrow(() => JSON.stringify(b.state));
+			} finally {
+				setExtraLayerReadHookForTest(null);
+			}
+		}
+	});
+});
+

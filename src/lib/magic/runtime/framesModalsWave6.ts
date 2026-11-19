@@ -389,7 +389,10 @@ export function getPermanentMaxLoyaltyActivationsPerTurn(
 	perm: CardInstance,
 	losesAllAbilities: boolean
 ): number {
-	if (losesAllAbilities || perm.isFaceDown) return 1;
+	if (losesAllAbilities || perm.isFaceDown) {
+		const ctrl = state.players.find((pl) => pl.playerId === perm.controllerId);
+		return 1 + (ctrl?.extraLoyaltyActivationsThisTurn ?? 0);
+	}
 	const card = effectiveCardForObject(perm);
 	let max = 1;
 	for (const ab of activeAbilityDefs(card, instanceFaceOptions(perm, 'battlefield'))) {
@@ -397,8 +400,8 @@ export function getPermanentMaxLoyaltyActivationsPerTurn(
 			if (ab.static.max > max) max = ab.static.max;
 		}
 	}
-	void state;
-	return max;
+	const ctrl = state.players.find((pl) => pl.playerId === perm.controllerId);
+	return max + (ctrl?.extraLoyaltyActivationsThisTurn ?? 0);
 }
 
 // ---- Companion (CR 702.139, CR 116.2g) ------------------------------------------------------
@@ -470,20 +473,17 @@ function cardFrontCharacteristicsForDeckCheck(card: ScryfallCard): {
 } {
 	const faces = getCardFaces(card);
 	const front = faces[0];
-	const typeLine = front?.typeLine ?? card.typeLine;
-	const dashIdx = typeLine.indexOf('—');
-	const left = (dashIdx >= 0 ? typeLine.slice(0, dashIdx) : typeLine).trim();
-	const right = dashIdx >= 0 ? typeLine.slice(dashIdx + 1).trim() : '';
-	const words = left.split(/\s+/).filter(Boolean);
-	const types = words.filter(
-		(w) =>
-			PERMANENT_CARD_TYPES.has(w) ||
-			w === 'Instant' ||
-			w === 'Sorcery' ||
-			w === 'Kindred' ||
-			w === 'Tribal'
-	).map((w) => (w === 'Tribal' ? 'Kindred' : w));
-	const subtypes = right ? splitSubtypes(right) : [];
+	const frontView = resolveObjectFaces(card, { zone: 'library', faceIndex: 0 });
+	const types = frontView.types
+		.map((w) => (w === 'Tribal' ? 'Kindred' : w))
+		.filter(
+			(w) =>
+				PERMANENT_CARD_TYPES.has(w) ||
+				w === 'Instant' ||
+				w === 'Sorcery' ||
+				w === 'Kindred'
+		);
+	const subtypes = [...frontView.subtypes];
 	const manaCost = front?.manaCost ?? card.manaCost ?? '';
 	// CR 712.8a / 709.4b: Split cards in deck have combined mana value; MDFCs/DFCs/Adventures use front face.
 	const isSplit = card.layout === 'split';

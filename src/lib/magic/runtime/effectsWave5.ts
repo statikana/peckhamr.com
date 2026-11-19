@@ -2358,9 +2358,17 @@ export function executeCouncilVote(
 	if (spec.perWinningEffect) {
 		const maxVotes = Math.max(...tallies);
 		if (maxVotes > 0) {
+			const winners: number[] = [];
 			for (let optIdx = 0; optIdx < spec.options.length; optIdx++) {
+				if (tallies[optIdx] === maxVotes) winners.push(optIdx);
+			}
+			const isTie = winners.length > 1;
+			for (const optIdx of winners) {
+				if (isTie && spec.tieWinnerIndex !== undefined && optIdx !== spec.tieWinnerIndex) {
+					continue;
+				}
 				const steps = spec.perWinningEffect[optIdx];
-				if (tallies[optIdx] === maxVotes && steps?.length) {
+				if (steps?.length) {
 					if (!runInlineSteps(steps)) return 'PAUSED';
 				}
 			}

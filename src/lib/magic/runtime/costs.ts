@@ -13,12 +13,18 @@
  * Zone changes go through runtime/zones.ts `moveObject`.
  */
 import { nextRandom } from './random.ts';
-import { grantedAbilityById } from '../compiler/index.ts';
-import { activeAbilityDefs, instanceFaceOptions, resolveObjectFaces } from './faces.ts';
+import {
+	activeAbilityDefs,
+	instanceFaceOptions,
+	resolveEffectiveActivatedAbilityDef,
+	resolveObjectFaces,
+	type ResolveObjectFacesOptions
+} from './faces.ts';
 import type {
 	AbilityDef,
 	Amount,
 	CostDef,
+	EffectStep,
 	KeywordDef,
 	ObjectFilter,
 	// --- Track P18b ---
@@ -84,7 +90,6 @@ import {
 import { exertPermanent } from './tuckFreezeChosen.ts';
 import { moveObject, tapPermanent, type MoveResult, type PlayerZone } from './zones.ts';
 // --- Track P10 ---
-import { resolveQuotedAbilityDefs } from './reflexiveManaAndActions.ts';
 // --- End Track P10 ---
 import { effectiveCardForObject } from '../scryfall.ts';
 // --- Track P12 ---
@@ -152,6 +157,10 @@ import {
 	planP22bSpecialCostPart
 } from './triggersWave8.ts';
 // --- End Track P22b ---
+import {
+	canSpendManaAsAnyColorForActivatedAbilityWave9,
+	getFirstMatchingTargetedAbilityReductionWave9
+} from './staticsWave9.ts';
 
 export type { SerializedPlannedCost };
 export {
@@ -187,9 +196,16 @@ function abilitiesOf(card: ScryfallCard, faceIndex = 0, fused = false): AbilityD
 export function activatedAbilityCost(
 	card: ScryfallCard,
 	ab: Pick<EffectiveActivatedAbility, 'id' | 'loyaltyCost' | 'manaCost' | 'requiresTap' | 'lifeCost' | 'requiresSacrificeSelf'> &
-		Partial<Pick<EffectiveActivatedAbility, 'cost' | 'costComplete' | 'faceIndex'>>
+		Partial<
+			Pick<
+				EffectiveActivatedAbility,
+				'cost' | 'costComplete' | 'faceIndex' | 'grantSourceCard' | 'grantFaceIndex' | 'grantedAbilityText'
+			>
+		>
 ): CostSource {
 	if (ab.cost) return { defs: ab.cost, complete: ab.costComplete ?? true };
+	const effIr = resolveEffectiveActivatedAbilityDef(card, undefined, ab);
+	if (effIr) return { defs: effIr.cost, complete: true };
 	const rawMatch = ab.id.match(/^f(\d+):(.+)$/);
 	const faceIndex = rawMatch ? Number(rawMatch[1]) : (ab.faceIndex ?? 0);
 	const baseId = rawMatch ? rawMatch[2] : ab.id;
@@ -836,6 +852,14 @@ function effectiveSpellManaCostInner(
 		}
 	}
 
+	if (player.opponentsSpellsCostMoreUntilNextTurn?.length) {
+		const isNoncreatureSpell = !resolveObjectFaces(card, stackFaceOpts).types.includes('Creature');
+		for (const tax of player.opponentsSpellsCostMoreUntilNextTurn) {
+			if (tax.noncreatureOnly && !isNoncreatureSpell) continue;
+			if (tax.mana > 0) genericIncrease += tax.mana;
+		}
+	}
+
 	const parseOpts =
 		hasColoredReduction || coloredOnly || minTotalMana > 0
 			? {
@@ -969,7 +993,7 @@ function effectiveAbilityManaCostInner(
 		modControllerId: string,
 		ctx: FilterContext
 	) => {
-		if (mod.affects.k !== 'ability') return;
+		if (mod.affects.k !== 'ability' || mod.affects.firstMatchingThisTurn) return;
 		// --- Track P17b & P18b ---
 		if (
 			!ctx.source ||
@@ -1166,6 +1190,20 @@ function effectiveAbilityManaCostInner(
 	}
 	// --- End Track P20b ---
 
+	// --- Wave 12 ---
+	if (!isManaAb && chosenTargets && chosenTargets.length > 0) {
+		const w9Red = getFirstMatchingTargetedAbilityReductionWave9(
+			state,
+			actorId,
+			chosenTargets.map((t) => t.id)
+		);
+		if (w9Red > 0) {
+			genericReduction += w9Red;
+			anyModifierApplied = true;
+		}
+	}
+	// --- End Wave 12 ---
+
 	const parseOpts =
 		hasColoredReduction || coloredOnly || minTotalMana > 0
 			? {
@@ -1176,25 +1214,55 @@ function effectiveAbilityManaCostInner(
 				}
 			: undefined;
 
+	let req = forceZeroCost
+		? parseManaCost(extraColoredIncreaseStr, 0, genericIncrease, genericReduction, parseOpts)
+		: parseManaCost(
+				`${baseManaCost === '{0}' ? '' : baseManaCost}${extraColoredIncreaseStr}`,
+				xValue,
+				genericIncrease,
+				genericReduction,
+				parseOpts
+			);
+	if (sourcePerm && canSpendManaAsAnyColorForActivatedAbilityWave9(state, actorId, sourcePerm)) {
+		const coloredTotal =
+			req.colored.W + req.colored.U + req.colored.B + req.colored.R + req.colored.G;
+		if (coloredTotal > 0) {
+			req = {
+				...req,
+				colored: { W: 0, U: 0, B: 0, R: 0, G: 0, C: req.colored.C },
+				generic: req.generic + coloredTotal
+			};
+		}
+	}
 	if (forceZeroCost) {
 		return {
 			manaCost: '{0}',
-			requirement: parseManaCost(extraColoredIncreaseStr, 0, genericIncrease, genericReduction, parseOpts)
+			requirement: req
 		};
 	}
-	const req = parseManaCost(
-		`${baseManaCost === '{0}' ? '' : baseManaCost}${extraColoredIncreaseStr}`,
-		xValue,
-		genericIncrease,
-		genericReduction,
-		parseOpts
-	);
 	let effectiveManaCost = baseManaCost;
 	if (anyModifierApplied) {
 		const formatted = formatManaRequirement(req, xValue === 0 && req.hasX);
 		effectiveManaCost = formatted === '{0}' && !baseManaCost ? '' : formatted;
 	}
 	return { manaCost: effectiveManaCost, requirement: req };
+}
+
+function activeAddManaAmountFromEffect(effect: EffectStep[], condCtx?: FilterContext): Amount | null {
+	const activeAddSteps = effect.filter(
+		(e) => e.verb === 'addMana' && (!e.condition || !condCtx || evaluateCondition(e.condition, condCtx))
+	);
+	if (activeAddSteps.length === 0) {
+		return effect.some((e) => e.verb === 'addMana') ? { k: 'const', n: 0 } : null;
+	}
+	if (!activeAddSteps.some((s) => s.amount && s.amount.k !== 'const')) return null;
+	if (activeAddSteps.length === 1) return activeAddSteps[0].amount!;
+	return {
+		k: 'sum',
+		args: activeAddSteps.map((s) =>
+			s.amount ?? { k: 'const', n: Array.isArray(s.params?.mana) ? s.params.mana.length : 1 }
+		)
+	};
 }
 
 /**
@@ -1207,49 +1275,16 @@ export function manaAbilityAmount(
 		Partial<
 			Pick<
 				EffectiveActivatedAbility,
-				'manaAmount' | 'grantSourceCard' | 'faceIndex' | 'grantedAbilityText'
+				'manaAmount' | 'grantSourceCard' | 'grantFaceIndex' | 'faceIndex' | 'grantedAbilityText'
 			>
-		>
+		>,
+	condCtx?: FilterContext,
+	faceOpts?: ResolveObjectFacesOptions
 ): Amount | null {
 	if (ab.manaAmount) return ab.manaAmount;
-	// --- Track P10 ---
-	if (ab.grantedAbilityText) {
-		const quoted = resolveQuotedAbilityDefs(ab.grantedAbilityText, card.name).find(
-			(d) => d.kind === 'activated'
-		);
-		const step = quoted?.kind === 'activated' ? quoted.effect.find((e) => e.verb === 'addMana') : undefined;
-		return step?.amount && step.amount.k !== 'const' ? step.amount : null;
-	}
-	// --- End Track P10 ---
-	if (
-		ab.grantSourceCard &&
-		(ab.id.startsWith('granted:') ||
-			// --- Track P12 ---
-			ab.id.startsWith('backup_act:'))
-		// --- End Track P12 ---
-	) {
-		const localId = ab.id.slice(ab.id.lastIndexOf(':') + 1);
-		const granted =
-			grantedAbilityById(ab.grantSourceCard, localId) ??
-			// --- Track P12 ---
-			activeAbilityDefs(ab.grantSourceCard, { zone: 'battlefield', faceIndex: ab.faceIndex ?? 0 }).find(
-				(a) => a.kind === 'activated' && a.id === localId
-			);
-			// --- End Track P12 ---
-		if (granted?.kind !== 'activated') return null;
-		const step = granted.effect.find((e) => e.verb === 'addMana');
-		return step?.amount && step.amount.k !== 'const' ? step.amount : null;
-	}
-	const prefixed = /^f(\d+):(.+)$/.exec(ab.id);
-	const faceIndex = prefixed ? Number(prefixed[1]) : (ab.faceIndex ?? 0);
-	const rawId = prefixed ? prefixed[2] : ab.id;
-	const abilities = activeAbilityDefs(card, { zone: 'battlefield', faceIndex });
-	const ir =
-		abilities.find((a) => a.kind === 'activated' && a.id === rawId) ??
-		(rawId === 'mana_tap' ? abilities.find((a) => a.kind === 'activated' && a.isMana && !a.intrinsic) : undefined);
-	if (ir?.kind !== 'activated') return null;
-	const step = ir.effect.find((e) => e.verb === 'addMana');
-	return step?.amount && step.amount.k !== 'const' ? step.amount : null;
+	const ir = resolveEffectiveActivatedAbilityDef(card, faceOpts, ab);
+	if (!ir) return null;
+	return activeAddManaAmountFromEffect(ir.effect, condCtx);
 }
 
 // ---- Describing costs (display only) ---------------------------------------------------------
@@ -1422,6 +1457,8 @@ export interface CostContext {
 		// --- Track P15 ---
 		capturedPhyrexianLifePaidCount?: number;
 		// --- End Track P15 ---
+		spentManaGrantsUncounterable?: boolean;
+		spentManaCommanderBonusCounters?: number;
 	};
 	// --- End Track P10 ---
 	// --- Track P17b ---
@@ -1591,7 +1628,10 @@ function objectCandidates(def: ObjectCostDef, ctx: CostContext, used: Set<string
 		case 'sacrifice':
 			if (def.filter === 'self') return null;
 			return ctx.player.battlefield.filter(
-				(c) => free(c) && matchesObjectFilter(c, { ...(def.filter as ObjectFilter), controller: 'you' }, fctx)
+				(c) =>
+					free(c) &&
+					!hasRestriction(ctx.state, c, 'cantBeSacrificed') &&
+					matchesObjectFilter(c, { ...(def.filter as ObjectFilter), controller: 'you' }, fctx)
 			);
 		case 'discard': {
 			if (def.filter === 'self') return null;
@@ -1797,7 +1837,10 @@ function checkSimple(def: CostDef, ctx: CostContext): string | null {
 			// --- End Track P11 ---
 		}
 		case 'sacrifice':
-			if (def.filter === 'self' && !sourceOnBattlefield(ctx)) return `${name} must be on the battlefield to be sacrificed.`;
+			if (def.filter === 'self') {
+				if (!sourceOnBattlefield(ctx)) return `${name} must be on the battlefield to be sacrificed.`;
+				if (hasRestriction(ctx.state, src, 'cantBeSacrificed')) return `${name} can't be sacrificed.`;
+			}
 			return null;
 		case 'discard':
 			if (def.filter === 'self') {

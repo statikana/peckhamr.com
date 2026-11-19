@@ -304,6 +304,13 @@ export function recordP19bTreasureManaAdded(
 	if (isPermanentTreasureForManaP19b(state, perm)) {
 		player.treasureManaInPool = (player.treasureManaInPool ?? 0) + amountAdded;
 	}
+	const isArtifactSource =
+		perm.zone === 'battlefield' && !perm.phasedOut
+			? evaluatePermanent(state, perm).isArtifact
+			: resolveObjectFaces(effectiveCardForObject(perm), instanceFaceOptions(perm)).types.includes('Artifact');
+	if (isArtifactSource) {
+		player.artifactManaInPool = (player.artifactManaInPool ?? 0) + amountAdded;
+	}
 }
 
 export function totalUnrestrictedAndRestrictedPoolCount(player: PlayerGameState): number {
@@ -336,21 +343,37 @@ export function recordP19bManaDeduction(
 	isSpell: boolean
 ): void {
 	const spent = Math.max(0, poolBefore - poolAfter);
-	if (spent <= 0 || !player.treasureManaInPool || player.treasureManaInPool <= 0) return;
-	const usedTreasure = Math.min(player.treasureManaInPool, spent);
-	if (player.treasureManaInPool - usedTreasure > 0) {
-		player.treasureManaInPool = player.treasureManaInPool - usedTreasure;
-	} else {
-		delete player.treasureManaInPool;
+	if (spent <= 0) return;
+	if (player.treasureManaInPool && player.treasureManaInPool > 0) {
+		const usedTreasure = Math.min(player.treasureManaInPool, spent);
+		if (player.treasureManaInPool - usedTreasure > 0) {
+			player.treasureManaInPool = player.treasureManaInPool - usedTreasure;
+		} else {
+			delete player.treasureManaInPool;
+		}
+		if (isSpell && usedTreasure > 0) {
+			player.spentTreasureManaOnCurrentSpell = true;
+		}
 	}
-	if (isSpell && usedTreasure > 0) {
-		player.spentTreasureManaOnCurrentSpell = true;
+	if (player.artifactManaInPool && player.artifactManaInPool > 0) {
+		const usedArtifact = Math.min(player.artifactManaInPool, spent);
+		if (player.artifactManaInPool - usedArtifact > 0) {
+			player.artifactManaInPool = player.artifactManaInPool - usedArtifact;
+		} else {
+			delete player.artifactManaInPool;
+		}
+		if (isSpell && usedArtifact > 0) {
+			player.spentArtifactManaOnCurrentSpellCount =
+				(player.spentArtifactManaOnCurrentSpellCount ?? 0) + usedArtifact;
+		}
 	}
 }
 
 export function clearP19bPlayerManaPoolTracking(player: PlayerGameState): void {
 	delete player.treasureManaInPool;
 	delete player.spentTreasureManaOnCurrentSpell;
+	delete player.artifactManaInPool;
+	delete player.spentArtifactManaOnCurrentSpellCount;
 }
 
 export function clearP19bEndOfTurnState(state: GameState): void {
@@ -365,6 +388,12 @@ export function clearP19bEndOfTurnState(state: GameState): void {
 		delete p.spellsCastFromHandThisTurn;
 		delete p.treasureManaInPool;
 		delete p.spentTreasureManaOnCurrentSpell;
+		delete p.artifactManaInPool;
+		delete p.spentArtifactManaOnCurrentSpellCount;
+		delete p.spellsCastWithTreasureManaThisTurn;
+		delete p.activatedTargetedOwnCreatureAbilityThisTurn;
+		delete p.nextSpellCascadeCount;
+		delete p.extraLoyaltyActivationsThisTurn;
 		delete p.lifeGainEventsThisTurn;
 		delete p.lifeLossEventsThisTurn;
 		delete p.enteredBattlefieldThisTurnCards;

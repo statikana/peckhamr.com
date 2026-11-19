@@ -75,7 +75,7 @@ import {
 } from './faces.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
 import { evaluatePermanent } from './layers.ts';
-import { objectPower, type FilterContext } from './objectFilter.ts';
+import { evaluateAmount, objectPower, type FilterContext } from './objectFilter.ts';
 import { playerLifeTotalCantChange } from './replace.ts';
 import { allocateTimestamp, moveObject } from './zones.ts';
 // --- Track P22b ---
@@ -451,6 +451,8 @@ export function collectBackupGrantedAbilityGroups(
 	sourceInstanceId: string;
 	sourceCard: ScryfallCard;
 	sourceName: string;
+	faceIndex: number;
+	timestamp: number;
 }> {
 	const timed = state.timedContinuousEffects;
 	if (!timed || timed.length === 0) return [];
@@ -459,6 +461,8 @@ export function collectBackupGrantedAbilityGroups(
 		sourceInstanceId: string;
 		sourceCard: ScryfallCard;
 		sourceName: string;
+		faceIndex: number;
+		timestamp: number;
 	}> = [];
 	for (const eff of timed) {
 		if (!eff.backupGrant) continue;
@@ -479,7 +483,9 @@ export function collectBackupGrantedAbilityGroups(
 				abilities,
 				sourceInstanceId: String(eff.timestamp),
 				sourceCard: eff.backupGrant.sourceCard,
-				sourceName: eff.sourceName
+				sourceName: eff.sourceName,
+				faceIndex: eff.backupGrant.faceIndex,
+				timestamp: eff.timestamp
 			});
 		}
 	}
@@ -728,7 +734,7 @@ export function applyWave4EtbCountersAndSetup(
 
 	// CR 702.44a: Sunburst
 	const abilities = activeAbilityDefs(card, instanceFaceOptions(obj));
-	if (abilities.some((a) => a.kind === 'keyword' && keywordNameOf(a.keyword) === 'sunburst')) {
+	if (abilities.some((a) => a.kind === 'keyword' && keywordNameOf(a.keyword) === 'sunburst') || obj.grantedSunburst) {
 		const colorsSpent = obj.manaColorsSpent?.length ?? 0;
 		if (colorsSpent > 0) {
 			const isCreature = face.types.includes('Creature');
@@ -2100,7 +2106,7 @@ export function attachWave4TagToBaseRuntimeTrigger(
 	abilities: readonly AbilityDef[]
 ): Wave4RuntimeTrigger {
 	const srcAb = abilities[rt.abilityIndex];
-	if (srcAb?.kind === 'triggered' && srcAb.text?.startsWith('To solve — ')) {
+	if (srcAb?.kind === 'triggered' && srcAb.effect.some((s) => s.verb === 'solveCase')) {
 		return { ...rt, effectSupported: true, wave4Tag: 'case_solve' };
 	}
 	if (srcAb?.kind !== 'keyword') return rt;
@@ -2348,9 +2354,51 @@ export function resolveWave4StackItem(
 
 	if (item.kind !== 'triggered' || !item.wave4Tag) return 'none';
 
+	const resolveDynamicKeywordN = (kwName: 'mobilize' | 'firebending', fallbackN: number): number => {
+		const srcPerm = findPermanentAcrossPlayers(state, item.sourceInstanceId)?.inst;
+		const faceOpts = srcPerm ? instanceFaceOptions(srcPerm, 'battlefield') : { zone: 'battlefield' as const, faceIndex: item.faceIndex ?? 0 };
+		const innateKw = activeAbilityDefs(item.card, faceOpts).find(
+			(a): a is Extract<AbilityDef, { kind: 'keyword' }> =>
+				a.kind === 'keyword' && a.keyword.name.toLowerCase() === kwName && Boolean(a.keyword.dynamicAmount)
+		);
+		let dynAmt = innateKw?.keyword.dynamicAmount;
+		if (!dynAmt && srcPerm) {
+			for (const p of state.players) {
+				for (const att of p.battlefield) {
+					if (att.phasedOut || att.attachedToId !== srcPerm.instanceId) continue;
+					const attDefs = activeAbilityDefs(effectiveCardForObject(att), instanceFaceOptions(att, 'battlefield'));
+					for (const a of attDefs) {
+						if (
+							a.kind === 'static' &&
+							a.static.k === 'continuous' &&
+							a.static.affected === 'attachedTo' &&
+							a.static.mod.k === 'grantAbility' &&
+							a.static.mod.ability.kind === 'keyword' &&
+							a.static.mod.ability.keyword.name.toLowerCase() === kwName &&
+							a.static.mod.ability.keyword.dynamicAmount
+						) {
+							dynAmt = a.static.mod.ability.keyword.dynamicAmount;
+							break;
+						}
+					}
+					if (dynAmt) break;
+				}
+				if (dynAmt) break;
+			}
+		}
+		if (dynAmt) {
+			return Math.max(
+				0,
+				evaluateAmount(dynAmt, { state, controllerId: controller.playerId, source: srcPerm })
+			);
+		}
+		return Math.max(1, fallbackN);
+	};
+
 	switch (item.wave4Tag) {
 		case 'mobilize': {
-			const n = Math.max(1, item.wave4N ?? 1);
+			const n = resolveDynamicKeywordN('mobilize', item.wave4N ?? 1);
+			if (n <= 0) return 'done';
 			const tokens = host.createTokens(
 				state,
 				controller,
@@ -2404,7 +2452,8 @@ export function resolveWave4StackItem(
 		}
 
 		case 'firebending': {
-			const n = Math.max(1, item.wave4N ?? 1);
+			const n = resolveDynamicKeywordN('firebending', item.wave4N ?? 1);
+			if (n <= 0) return 'done';
 			controller.manaPool.R += n;
 			controller.firebendingRedMana = (controller.firebendingRedMana ?? 0) + n;
 			host.addLog(

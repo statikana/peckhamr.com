@@ -13,6 +13,7 @@ import {
 	getCastOptions,
 	getEffectiveActivatedAbilities
 } from '../engine.ts';
+import { PRECON_DECKS, STAPLE_CARDS } from '../precons.ts';
 import { effectiveAbilityManaCost, effectiveSpellManaCost } from './costs.ts';
 import { noteLayerInputsChanged } from './layerCache.ts';
 import {
@@ -1504,4 +1505,404 @@ describe('Wave 7 — Track P20b: Exotic Activated Costs, Strive, Spend Restricti
 			assert.equal(p1.battlefield.some((c) => c.instanceId === cmdInst.instanceId), true);
 		});
 	});
+
+	describe('Slice P20b.4 — Spell & ability removeCounters removedCounterCount propagation (CR 107.3, CR 707.10)', () => {
+		const catalog = new Map<string, ScryfallCard>();
+		for (const d of PRECON_DECKS) {
+			for (const e of d.cards) catalog.set(e.card.name, e.card);
+		}
+		for (const v of Object.values(STAPLE_CARDS)) {
+			if (Array.isArray(v)) {
+				for (const c of v) catalog.set(c.name, c);
+			} else if (v && typeof v === 'object' && 'name' in v) {
+				catalog.set((v as ScryfallCard).name, v as ScryfallCard);
+			}
+		}
+		function realCard(name: string): ScryfallCard {
+			const c = catalog.get(name);
+			assert.ok(c, `Expected canonical card '${name}'`);
+			return c;
+		}
+		function cloneRenamed(base: ScryfallCard, newName: string): ScryfallCard {
+			const shortComma = base.name.split(',')[0].trim();
+			const shortOf = base.name.split(/\s+of\s+/i)[0].trim();
+			const newShort = newName.split(',')[0].split(/\s+of\s+/i)[0].trim();
+			let nextText = base.oracleText.split(base.name).join(newName);
+			for (const short of [shortComma, shortOf]) {
+				if (short && short !== base.name && short.length >= 3) {
+					nextText = nextText.replace(
+						new RegExp(`\\b${short.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'),
+						newShort
+					);
+				}
+			}
+			return synthCard({
+				...base,
+				id: undefined,
+				oracleId: undefined,
+				name: newName,
+				oracleText: nextText
+			});
+		}
+
+		it('13. Cost-paid oneOrMore among removeCounters spell & cost-reduction spell bind removedCounterCount without overwriting xValue (canonical + cloneRenamed)', () => {
+			const baseDrain = synthCard({
+				name: 'Counter Drain Blast',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				colors: ['R'],
+				oracleText:
+					'As an additional cost to cast this spell, remove one or more +1/+1 counters from among creatures you control.\nCounter Drain Blast deals damage to any target equal to the number of counters removed this way.'
+			});
+			const basePitch = synthCard({
+				name: 'Counter Surge Volley',
+				manaCost: '{4}{R}',
+				cmc: 5,
+				typeLine: 'Sorcery',
+				colors: ['R'],
+				oracleText:
+					'As an additional cost to cast this spell, remove one or more +1/+1 counters from among creatures you control.\nThis spell costs {1} less to cast for each counter removed this way.\nCounter Surge Volley deals damage to any target equal to the number of counters removed this way.'
+			});
+
+			for (const [drainCard, pitchCard] of [
+				[baseDrain, basePitch],
+				[
+					cloneRenamed(baseDrain, 'Aether Siphon Burst'),
+					cloneRenamed(basePitch, 'Voltaic Siphon Barrage')
+				]
+			] as const) {
+				// A. oneOrMore among removeCounters spell
+				{
+					const { state, p1, p2 } = setupGame();
+					const bear = putPerm(state, p1, synthCard({ name: 'Counter Bear', power: '2', toughness: '2' }));
+					addCountersToPermanent(state, bear, '+1/+1', 4);
+					const sp = putInZone(state, p1, 'hand', drainCard);
+					giveMana(p1, { R: 1 });
+					const res = applyGameAction(state, p1.playerId, {
+						type: 'cast_spell',
+						instanceId: sp.instanceId,
+						targets: [playerTarget(p2)],
+						costPayment: { counterDistribution: { [bear.instanceId]: 3 } }
+					});
+					assert.equal(res.ok, true, res.error ?? '');
+					assert.equal(bear.counters['+1/+1'], 1);
+					assert.equal(state.stack[0]?.removedCounterCount, 3);
+					assert.equal(state.stack[0]?.xValue, 0, 'CR 107.3: non-X spell must keep xValue === 0');
+					resolveAllStack(state);
+					assert.equal(p2.life, 17);
+				}
+
+				// B. Cost-reduction + removeCounters + countersRemovedThisWay
+				{
+					const { state, p1, p2 } = setupGame();
+					const bear = putPerm(state, p1, synthCard({ name: 'Fuel Bear', power: '2', toughness: '2' }));
+					addCountersToPermanent(state, bear, '+1/+1', 4);
+					const sp = putInZone(state, p1, 'hand', pitchCard);
+					// {4}{R} reduced by 3 counters -> {1}{R}
+					giveMana(p1, { R: 1, C: 1 });
+					const res = applyGameAction(state, p1.playerId, {
+						type: 'cast_spell',
+						instanceId: sp.instanceId,
+						targets: [playerTarget(p2)],
+						costPayment: { counterDistribution: { [bear.instanceId]: 3 } }
+					});
+					assert.equal(res.ok, true, res.error ?? '');
+					assert.equal(bear.counters['+1/+1'], 1);
+					assert.equal(state.stack[0]?.removedCounterCount, 3);
+					assert.equal(state.stack[0]?.xValue, 0);
+					resolveAllStack(state);
+					assert.equal(p2.life, 17);
+				}
+			}
+		});
+
+		it('14. Interactive cost_choice & mid-PendingCostPayment JSON round-trip preserve removedCounterCount (canonical + cloneRenamed)', () => {
+			const baseChoiceSpell = synthCard({
+				name: 'Interactive Counter Blast',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				colors: ['R'],
+				oracleText:
+					'As an additional cost to cast this spell, remove one or more +1/+1 counters from among creatures you control.\nInteractive Counter Blast deals damage to any target equal to the number of counters removed this way.'
+			});
+			const baseCompoundSpell = synthCard({
+				name: 'Sacrifice and Drain',
+				manaCost: '{B}{R}',
+				cmc: 2,
+				typeLine: 'Sorcery',
+				colors: ['B', 'R'],
+				oracleText:
+					'As an additional cost to cast this spell, sacrifice a creature and remove one or more +1/+1 counters from among creatures you control.\nSacrifice and Drain deals damage to any target equal to the number of counters removed this way.'
+			});
+
+			for (const [choiceSpell, compoundSpell] of [
+				[baseChoiceSpell, baseCompoundSpell],
+				[
+					cloneRenamed(baseChoiceSpell, 'Chosen Shard Bolt'),
+					cloneRenamed(baseCompoundSpell, 'Blood and Shard Ritual')
+				]
+			] as const) {
+				// A. Interactive cost_choice (2 creatures, no pre-supplied costPayment)
+				{
+					const { state, p1, p2 } = setupGame();
+					const b1 = putPerm(state, p1, synthCard({ name: 'Bear One', power: '2', toughness: '2' }));
+					const b2 = putPerm(state, p1, synthCard({ name: 'Bear Two', power: '2', toughness: '2' }));
+					addCountersToPermanent(state, b1, '+1/+1', 2);
+					addCountersToPermanent(state, b2, '+1/+1', 2);
+					const sp = putInZone(state, p1, 'hand', choiceSpell);
+					giveMana(p1, { R: 1 });
+					const castRes = applyGameAction(state, p1.playerId, {
+						type: 'cast_spell',
+						instanceId: sp.instanceId,
+						targets: [playerTarget(p2)]
+					});
+					assert.equal(castRes.ok, true, castRes.error ?? '');
+					assert.equal(state.pendingPrompts.length, 1);
+					const prm = state.pendingPrompts[0]!;
+					assert.equal(prm.kind, 'cost_choice');
+					const ansRes = applyGameAction(state, p1.playerId, {
+						type: 'cost_choice',
+						promptId: prm.id,
+						instanceIds: [b1.instanceId, b2.instanceId]
+					});
+					assert.equal(ansRes.ok, true, ansRes.error ?? '');
+					assert.equal(state.stack[0]?.removedCounterCount, 2);
+					resolveAllStack(state);
+					assert.equal(p2.life, 18);
+				}
+
+				// B. Compound sacrifice + removeCounters paused on zone_replacement_choice + JSON round-trip
+				{
+					const { state: s0, p1, p2 } = setupGame();
+					const martyr = putPerm(
+						s0,
+						p1,
+						synthCard({
+							name: 'Shifted Martyr',
+							power: '1',
+							toughness: '1',
+							oracleText:
+								"If Shifted Martyr would be put into a graveyard from anywhere, exile it instead.\nIf Shifted Martyr would be put into a graveyard from anywhere, shuffle it into its owner's library instead."
+						})
+					);
+					const counterHolder = putPerm(
+						s0,
+						p1,
+						synthCard({ name: 'Counter Holder', power: '2', toughness: '2' })
+					);
+					addCountersToPermanent(s0, counterHolder, '+1/+1', 4);
+					const sp = putInZone(s0, p1, 'hand', compoundSpell);
+					giveMana(p1, { B: 1, R: 1 });
+
+					const castRes = applyGameAction(s0, p1.playerId, {
+						type: 'cast_spell',
+						instanceId: sp.instanceId,
+						targets: [playerTarget(p2)],
+						costPayment: {
+							objects: [[martyr.instanceId]],
+							counterDistribution: { [counterHolder.instanceId]: 3 }
+						}
+					});
+					assert.equal(castRes.ok, true, castRes.error ?? '');
+					assert.ok(s0.pendingCostPayment, 'paused mid-PendingCostPayment');
+					assert.equal(s0.pendingCostPayment?.removedCounterCount, 3);
+					assert.equal(s0.pendingPrompts.length, 1);
+					assert.equal(s0.pendingPrompts[0]!.choice?.kind, 'chooseReplacement');
+
+					const roundTripped = JSON.parse(JSON.stringify(s0)) as GameState;
+					const rPrm = roundTripped.pendingPrompts[0]!;
+					assert.ok(rPrm.choice?.kind === 'chooseReplacement');
+					const optId = rPrm.choice.options[0]!.id;
+					const resumeRes = applyGameAction(roundTripped, p1.playerId, {
+						type: 'choice',
+						promptId: rPrm.id,
+						answer: { kind: 'chooseReplacement', id: optId }
+					});
+					assert.equal(resumeRes.ok, true, resumeRes.error ?? '');
+					assert.equal(roundTripped.pendingCostPayment, undefined);
+					assert.equal(roundTripped.stack.length, 1);
+					assert.equal(roundTripped.stack[0]?.removedCounterCount, 3);
+					assert.equal(roundTripped.stack[0]?.xValue, 0);
+					resolveAllStack(roundTripped);
+					assert.equal(roundTripped.players[1]!.life, 17);
+				}
+			}
+		});
+
+		it('15. Fixed-count single-permanent removeCounters (spell & activate_ability) and removeAll (activate_ability) bind exact removedCounterCount (canonical + cloneRenamed)', () => {
+			const baseFixedSpell = synthCard({
+				name: 'Fixed Counter Bolt',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Sorcery',
+				colors: ['R'],
+				oracleText:
+					'As an additional cost to cast this spell, remove two +1/+1 counters from a creature you control.\nFixed Counter Bolt deals damage to any target equal to the number of counters removed this way.'
+			});
+			const baseFixedAb = synthCard({
+				name: 'Fixed Counter Cannon',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Artifact',
+				oracleText:
+					'{T}, Remove two +1/+1 counters from a creature you control: Fixed Counter Cannon deals damage to any target equal to the number of counters removed this way.'
+			});
+			const baseRemoveAllAb = synthCard({
+				name: 'Discharge Core',
+				manaCost: '{2}',
+				cmc: 2,
+				typeLine: 'Artifact',
+				oracleText:
+					'{T}, Remove all charge counters from Discharge Core: Discharge Core deals damage to any target equal to the number of counters removed this way.'
+			});
+
+			for (const [fixedSpell, fixedAbCard, removeAllCard] of [
+				[baseFixedSpell, baseFixedAb, baseRemoveAllAb],
+				[
+					cloneRenamed(baseFixedSpell, 'Measured Spark'),
+					cloneRenamed(baseFixedAb, 'Measured Turret'),
+					cloneRenamed(baseRemoveAllAb, 'Overload Capacitor')
+				]
+			] as const) {
+				// A. Fixed-count single-permanent spell
+				{
+					const { state, p1, p2 } = setupGame();
+					const bear = putPerm(state, p1, synthCard({ name: 'Bear', power: '2', toughness: '2' }));
+					addCountersToPermanent(state, bear, '+1/+1', 4);
+					const sp = putInZone(state, p1, 'hand', fixedSpell);
+					giveMana(p1, { R: 1 });
+					const res = applyGameAction(state, p1.playerId, {
+						type: 'cast_spell',
+						instanceId: sp.instanceId,
+						targets: [playerTarget(p2)]
+					});
+					assert.equal(res.ok, true, res.error ?? '');
+					assert.equal(bear.counters['+1/+1'], 2);
+					assert.equal(state.stack[0]?.removedCounterCount, 2);
+					resolveAllStack(state);
+					assert.equal(p2.life, 18);
+				}
+
+				// B. Fixed-count single-permanent activated ability
+				{
+					const { state, p1, p2 } = setupGame();
+					const bear = putPerm(state, p1, synthCard({ name: 'Bear', power: '2', toughness: '2' }));
+					addCountersToPermanent(state, bear, '+1/+1', 4);
+					const cannon = putPerm(state, p1, fixedAbCard);
+					const ab = findAbility(state, p1, cannon);
+					const res = applyGameAction(state, p1.playerId, {
+						type: 'activate_ability',
+						instanceId: cannon.instanceId,
+						abilityId: ab.id,
+						targets: [playerTarget(p2)]
+					});
+					assert.equal(res.ok, true, res.error ?? '');
+					assert.equal(bear.counters['+1/+1'], 2);
+					assert.equal(state.stack[0]?.removedCounterCount, 2);
+					resolveAllStack(state);
+					assert.equal(p2.life, 18);
+				}
+
+				// C. removeAll self activated ability
+				{
+					const { state, p1, p2 } = setupGame();
+					const core = putPerm(state, p1, removeAllCard);
+					addCountersToPermanent(state, core, 'charge', 5);
+					const ab = findAbility(state, p1, core);
+					const res = applyGameAction(state, p1.playerId, {
+						type: 'activate_ability',
+						instanceId: core.instanceId,
+						abilityId: ab.id,
+						targets: [playerTarget(p2)]
+					});
+					assert.equal(res.ok, true, res.error ?? '');
+					assert.equal(core.counters.charge, 0);
+					assert.equal(state.stack[0]?.removedCounterCount, 5);
+					resolveAllStack(state);
+					assert.equal(p2.life, 15);
+				}
+			}
+		});
+
+		it('16. CR 707.10: Copying a removeCounters spell on the stack preserves removedCounterCount on the copy (canonical Reverberate + cloneRenamed)', () => {
+			const baseDrain = synthCard({
+				name: 'Counter Drain Blast',
+				manaCost: '{R}',
+				cmc: 1,
+				typeLine: 'Instant',
+				colors: ['R'],
+				oracleText:
+					'As an additional cost to cast this spell, remove one or more +1/+1 counters from among creatures you control.\nCounter Drain Blast deals damage to any target equal to the number of counters removed this way.'
+			});
+			const realReverb = realCard('Reverberate');
+
+			for (const [drainCard, copySpellCard] of [
+				[baseDrain, realReverb],
+				[
+					cloneRenamed(baseDrain, 'Channeled Ember Blast'),
+					cloneRenamed(realReverb, 'Echoing Fork')
+				]
+			] as const) {
+				const { state, p1, p2 } = setupGame();
+				const bear = putPerm(state, p1, synthCard({ name: 'Bear', power: '2', toughness: '2' }));
+				addCountersToPermanent(state, bear, '+1/+1', 4);
+				const sp = putInZone(state, p1, 'hand', drainCard);
+				const reverb = putInZone(state, p1, 'hand', copySpellCard);
+				giveMana(p1, { R: 3 });
+
+				assert.equal(
+					applyGameAction(state, p1.playerId, {
+						type: 'cast_spell',
+						instanceId: sp.instanceId,
+						targets: [playerTarget(p2)],
+						costPayment: { counterDistribution: { [bear.instanceId]: 3 } }
+					}).ok,
+					true
+				);
+				const origStk = state.stack[0]!;
+				assert.equal(origStk.removedCounterCount, 3);
+
+				const copyRes = applyGameAction(state, p1.playerId, {
+					type: 'cast_spell',
+					instanceId: reverb.instanceId,
+					targets: [{ kind: 'stack', id: origStk.id, label: origStk.title }]
+				});
+				assert.equal(copyRes.ok, true, copyRes.error ?? '');
+				// Resolve Reverberate -> creates spell copy on top of stack
+				for (
+					let guard = 0;
+					guard < 10 &&
+					(state.pendingPrompts.length > 0 || state.stack[1]?.card.name === copySpellCard.name);
+					guard++
+				) {
+					if (state.pendingPrompts.length > 0) {
+						const prm = state.pendingPrompts[0]!;
+						if (prm.choice?.kind === 'yesNo') {
+							assert.equal(
+								applyGameAction(state, prm.playerId, {
+									type: 'choice',
+									promptId: prm.id,
+									answer: { kind: 'yesNo', yes: false }
+								}).ok,
+								true
+							);
+						} else {
+							throw new Error(`Unexpected prompt kind: ${prm.choice?.kind}`);
+						}
+						continue;
+					}
+					const pr = state.players[state.priorityPlayerIndex]!;
+					assert.equal(applyGameAction(state, pr.playerId, { type: 'pass_priority' }).ok, true);
+				}
+				assert.equal(state.stack.length, 2);
+				assert.equal(state.stack[1]?.isCopy, true);
+				assert.equal(state.stack[1]?.removedCounterCount, 3);
+				resolveAllStack(state);
+				assert.equal(p2.life, 14, 'Both copy and original deal 3 damage (20 -> 17 -> 14)');
+			}
+		});
+	});
 });
+

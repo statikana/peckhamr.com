@@ -1,0 +1,176 @@
+{
+  "oracleId": "e0cef79c-ad47-4cbc-9d73-a913e487ccb7",
+  "cardName": "Garruk, Cursed Huntsman",
+  "expectedTextHash": "31a93c7b",
+  "compiledVersion": 44,
+  "notes": "Wave 13 override: 0 loyalty ability creates two 2/2 black and green Wolf tokens with Garruk-loyalty dies trigger, plus -3 and -6.",
+  "faces": [
+    {
+      "name": "Garruk, Cursed Huntsman",
+      "characteristics": {
+        "manaCost": "{4}{B}{G}",
+        "types": [
+          "Planeswalker"
+        ],
+        "subtypes": [
+          "Garruk"
+        ],
+        "supertypes": [
+          "Legendary"
+        ],
+        "colors": [
+          "B",
+          "G"
+        ],
+        "loyalty": 5
+      },
+      "abilities": [
+        {
+          "kind": "activated",
+          "id": "loyalty_0",
+          "cost": [
+            {
+              "k": "loyalty",
+              "delta": 0
+            }
+          ],
+          "targets": [],
+          "effect": [
+            {
+              "verb": "createToken",
+              "subject": {
+                "k": "none"
+              },
+              "amount": {
+                "k": "const",
+                "n": 2
+              },
+              "params": {
+                "token": {
+                  "name": "Wolf",
+                  "power": 2,
+                  "toughness": 2,
+                  "colors": [
+                    "B",
+                    "G"
+                  ],
+                  "typeLine": "Token Creature — Wolf",
+                  "keywords": [],
+                  "quotedAbilities": [
+                    "When this token dies, put a loyalty counter on each Garruk you control."
+                  ]
+                }
+              },
+              "span": {
+                "start": 3,
+                "end": 119
+              }
+            }
+          ],
+          "timing": "sorcery",
+          "isMana": false,
+          "text": "0: Create two 2/2 black and green Wolf creature tokens with \"When ~ dies, put a loyalty counter on each ~ you control.\"",
+          "span": {
+            "start": 0,
+            "end": 119
+          }
+        },
+        {
+          "kind": "activated",
+          "id": "loyalty_1",
+          "cost": [
+            {
+              "k": "loyalty",
+              "delta": -3
+            }
+          ],
+          "targets": [
+            {
+              "kind": "object",
+              "filter": {
+                "types": [
+                  "Creature"
+                ],
+                "zone": "battlefield"
+              },
+              "min": 1,
+              "max": 1
+            }
+          ],
+          "effect": [
+            {
+              "verb": "destroy",
+              "subject": {
+                "k": "target",
+                "index": 0
+              },
+              "span": {
+                "start": 124,
+                "end": 147
+              }
+            },
+            {
+              "verb": "draw",
+              "subject": {
+                "k": "player",
+                "filter": {
+                  "relation": "you"
+                }
+              },
+              "amount": {
+                "k": "const",
+                "n": 1
+              },
+              "span": {
+                "start": 149,
+                "end": 160
+              }
+            }
+          ],
+          "timing": "sorcery",
+          "isMana": false,
+          "text": "−3: Destroy target creature. Draw a card.",
+          "span": {
+            "start": 120,
+            "end": 161
+          }
+        },
+        {
+          "kind": "activated",
+          "id": "loyalty_2",
+          "cost": [
+            {
+              "k": "loyalty",
+              "delta": -6
+            }
+          ],
+          "targets": [],
+          "effect": [
+            {
+              "verb": "createEmblem",
+              "subject": {
+                "k": "none"
+              },
+              "params": {
+                "emblemAbilities": [
+                  "Creatures you control get +3/+3 and have trample."
+                ]
+              },
+              "span": {
+                "start": 166,
+                "end": 240
+              }
+            }
+          ],
+          "timing": "sorcery",
+          "isMana": false,
+          "text": "−6: You get an emblem with \"Creatures you control get +3/+3 and have trample.\"",
+          "span": {
+            "start": 162,
+            "end": 240
+          }
+        }
+      ]
+    }
+  ]
+}

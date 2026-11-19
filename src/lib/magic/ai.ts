@@ -1,4 +1,4 @@
-import { abilityById, compileSpellEffects, effectOf } from './compiler/index.ts';
+import { compileSpellEffects, effectOf, resolveActivatedAbilityIr } from './compiler/index.ts';
 import { effectiveCardForObject } from './scryfall.ts';
 import {
 	activeAbilityDefs,
@@ -1375,7 +1375,16 @@ export function executeBotStep(
 					for (const ab of abilities) {
 						if (ab.isManaAbility || ab.modal || ab.requiresTarget || ab.manaCost !== '') continue;
 						if (!checkAbilityActivationLegality(state, bot.playerId, perm, ab).ok) continue;
-						const eff = effectOf(abilityById(perm.card, ab.id, ab.faceIndex ?? 0));
+						const eff = effectOf(
+							resolveActivatedAbilityIr(
+								perm.card,
+								ab.id,
+								ab.faceIndex ?? 0,
+								ab.grantSourceCard,
+								ab.grantFaceIndex,
+								ab.grantedAbilityText
+							)
+						);
 						if (!eff?.steps.some((s) => s.verb === 'animate')) continue;
 						const payment = chooseBotAbilityCostPayment(state, bot, perm, ab);
 						if (!payment) continue;
@@ -1540,7 +1549,16 @@ function tryBotGraveyardActivatedAbility(
 				if (!isMainPhase && ab.sorcerySpeedOnly) continue;
 				if (!checkAbilityActivationLegality(state, bot.playerId, cardInst, ab).ok) continue;
 
-				const eff = effectOf(abilityById(cardInst.card, ab.id, ab.faceIndex ?? 0));
+				const eff = effectOf(
+					resolveActivatedAbilityIr(
+						cardInst.card,
+						ab.id,
+						ab.faceIndex ?? 0,
+						ab.grantSourceCard,
+						ab.grantFaceIndex,
+						ab.grantedAbilityText
+					)
+				);
 				const returnsSelfToHand = Boolean(
 					eff?.steps.some(
 						(s) => s.verb === 'move' && s.subject?.k === 'self' && s.params?.to === 'hand'

@@ -7,6 +7,7 @@
 	} from '../../compiler/support.ts';
 	import ManaSymbol from '../../ManaSymbol.svelte';
 	import ManaText from '../../ManaText.svelte';
+	import { resolveObjectFaces } from '../../runtime/faces.ts';
 	import { matchesScryfallQuery } from '../../search.ts';
 	import type { MagicDeck, ScryfallCard } from '../../types.ts';
 
@@ -120,6 +121,11 @@
 		);
 	});
 
+	function cardHeaderTypes(card: ScryfallCard): string {
+		const view = resolveObjectFaces(card);
+		return [...view.supertypes, ...view.types].join(' ');
+	}
+
 	const sortedInspectedCards = $derived.by(() => {
 		if (!deck) return [];
 		const raw = (deck.cards || []).filter((entry) =>
@@ -128,7 +134,7 @@
 		if (inspectSortBy === 'none') return raw;
 		const dir = inspectSortDir === 'desc' ? -1 : 1;
 		const colorRank = (card: ScryfallCard): number => {
-			if (card.typeLine.includes('Land') && (!card.colors || card.colors.length === 0)) {
+			if (resolveObjectFaces(card).types.includes('Land') && (!card.colors || card.colors.length === 0)) {
 				return 7;
 			}
 			const cols = card.colors?.length ? card.colors : card.colorIdentity || [];
@@ -138,7 +144,7 @@
 			return order[cols[0]] ?? 6;
 		};
 		const typeRank = (card: ScryfallCard): number => {
-			const t = card.typeLine;
+			const t = resolveObjectFaces(card).types;
 			if (t.includes('Land')) return 0;
 			if (t.includes('Creature')) return 1;
 			if (t.includes('Planeswalker')) return 2;
@@ -152,8 +158,8 @@
 		return [...raw].sort((a, b) => {
 			let cmp = 0;
 			if (inspectSortBy === 'cmc') {
-				const aLand = a.card.typeLine.includes('Land') ? 0 : 1;
-				const bLand = b.card.typeLine.includes('Land') ? 0 : 1;
+				const aLand = resolveObjectFaces(a.card).types.includes('Land') ? 0 : 1;
+				const bLand = resolveObjectFaces(b.card).types.includes('Land') ? 0 : 1;
 				if (aLand !== bLand) cmp = aLand - bLand;
 				else if (a.card.cmc !== b.card.cmc) cmp = a.card.cmc - b.card.cmc;
 				else cmp = a.card.name.localeCompare(b.card.name);
@@ -730,7 +736,7 @@
 									</button>
 								{/if}
 								<span class="inspect-card-sub"
-									>{cmd.typeLine.split('—')[0].trim()}</span
+									>{cardHeaderTypes(cmd)}</span
 								>
 								{#if unsupportedCount(cmd) > 0}
 									<span
@@ -820,7 +826,7 @@
 									</button>
 								{/if}
 								<span class="inspect-card-sub"
-									>{entry.card.typeLine.split('—')[0].trim()}</span
+									>{cardHeaderTypes(entry.card)}</span
 								>
 								{#if unsupportedCount(entry.card) > 0}
 									<span

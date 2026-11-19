@@ -460,6 +460,9 @@ export function getAttackTaxGeneric(
 			total += parseInt(m[1], 10);
 		}
 	}
+	for (const tax of defender.attackTaxUntilNextTurn ?? []) {
+		total += tax.tax;
+	}
 	return total;
 }
 
@@ -639,6 +642,48 @@ export function checkGlobalCastPermissionsAndRestrictions(
 		};
 	}
 	// --- End Track P22a ---
+	if (state.allPlayersCantCastSpellsThisTurn) {
+		return {
+			allowedAsThoughFlash,
+			grantsFlash: allowedAsThoughFlash,
+			blocked: true,
+			ok: false,
+			error: 'Illegal Cast: Players can\'t cast spells this turn.'
+		};
+	}
+	if (actor.cantCastAdditionalSpellsThisTurn) {
+		return {
+			allowedAsThoughFlash,
+			grantsFlash: allowedAsThoughFlash,
+			blocked: true,
+			ok: false,
+			error: 'Illegal Cast: You can\'t cast additional spells this turn.'
+		};
+	}
+	if (spellInst) {
+		const spellChars = activeCharacteristics(effectiveCardForObject(spellInst), instanceFaceOptions(spellInst));
+		if (actor.cantCastNoncreatureSpellsThisTurn && !spellChars.types.includes('Creature')) {
+			return {
+				allowedAsThoughFlash,
+				grantsFlash: allowedAsThoughFlash,
+				blocked: true,
+				ok: false,
+				error: 'Illegal Cast: You can\'t cast noncreature spells this turn.'
+			};
+		}
+		if (
+			actor.cantCastInstantsOrSorceriesThisTurn &&
+			(spellChars.types.includes('Instant') || spellChars.types.includes('Sorcery'))
+		) {
+			return {
+				allowedAsThoughFlash,
+				grantsFlash: allowedAsThoughFlash,
+				blocked: true,
+				ok: false,
+				error: 'Illegal Cast: Players can\'t cast instant or sorcery spells this turn.'
+			};
+		}
+	}
 
 	return {
 		allowedAsThoughFlash,
@@ -681,6 +726,15 @@ export function checkGlobalAbilityActivationRestrictions(
 		};
 	}
 	// --- End Track P11 ---
+	if (!isManaAbility) {
+		const actor = state.players.find((pl) => pl.playerId === actorId);
+		if (actor?.cantActivateNonManaAbilitiesThisTurn) {
+			return {
+				ok: false,
+				error: `Illegal Activation: You can't activate non-mana activated abilities this turn.`
+			};
+		}
+	}
 	const evalPerm = perm.zone === 'battlefield' ? evaluatePermanent(state, perm) : null;
 	const innateTypes = evalPerm
 		? null
@@ -929,6 +983,14 @@ function hasRestrictionInner(
  */
 export function spellCannotBeCountered(state: GameState, item: StackItem): boolean {
 	if (item.kind !== 'spell' || !item.card) return false;
+	if (item.cantBeCounteredByMana) return true;
+	const ctrl = state.players.find((pl) => pl.playerId === item.controllerId);
+	if (
+		ctrl?.creatureSpellsCantBeCounteredThisTurn &&
+		activeCharacteristics(item.card, { faceIndex: item.faceIndex }).types.includes('Creature')
+	) {
+		return true;
+	}
 	const stackObj: CardInstance = {
 		instanceId: item.sourceInstanceId,
 		card: item.card,
@@ -1462,6 +1524,7 @@ export interface SelfEtbChoiceSpec {
 	// --- Track P8 ---
 	payLifeOrEnterTapped?: number;
 	revealFromHandOrEnterTapped?: ObjectFilter;
+	revealUnlessControls?: ObjectFilter;
 	// --- Track P11 ---
 	chooseCardName?: { nonlandOnly?: boolean };
 	chooseCounter?: CounterType[];
@@ -1479,6 +1542,10 @@ export interface SelfEtbChoiceSpec {
 	chooseSubTypeOptions?: string[];
 	lookAtOpponentHandBeforeCardName?: boolean;
 	// --- End Track P22a ---
+	// --- Wave 13 ---
+	etbDiscardForKeywordCounters?: { keywords: string[] };
+	etbRemoveCountersForPlusCounters?: { multiplier: number; filter?: ObjectFilter };
+	// --- End Wave 13 ---
 }
 
 /**
@@ -1501,6 +1568,7 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 	// --- Track P8 ---
 	let payLifeOrEnterTapped: number | undefined;
 	let revealFromHandOrEnterTapped: ObjectFilter | undefined;
+	let revealUnlessControls: ObjectFilter | undefined;
 	// --- Track P11 ---
 	let chooseCardName: { nonlandOnly?: boolean } | undefined;
 	let chooseCounter: CounterType[] | undefined;
@@ -1520,6 +1588,10 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 	let chooseSubTypeOptions: string[] | undefined;
 	let lookAtOpponentHandBeforeCardName: boolean | undefined;
 	// --- End Track P22a ---
+	// --- Wave 13 ---
+	let etbDiscardForKeywordCounters: { keywords: string[] } | undefined;
+	let etbRemoveCountersForPlusCounters: { multiplier: number; filter?: ObjectFilter } | undefined;
+	// --- End Wave 13 ---
 	for (const ability of abilities) {
 		if (ability.kind !== 'replacement') continue;
 		const rep = ability.replacement;
@@ -1540,6 +1612,9 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		}
 		if (rep.with.revealFromHandOrEnterTapped) {
 			revealFromHandOrEnterTapped = rep.with.revealFromHandOrEnterTapped;
+		}
+		if (rep.with.revealUnlessControls) {
+			revealUnlessControls = rep.with.revealUnlessControls;
 		}
 		// --- Track P11 ---
 		if (rep.with.chooseCardName) {
@@ -1580,12 +1655,28 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 			lookAtOpponentHandBeforeCardName = true;
 		}
 		// --- End Track P22a ---
+		// --- Wave 13 ---
+		if (rep.with.etbDiscardForKeywordCounters) {
+			etbDiscardForKeywordCounters = {
+				keywords: [...rep.with.etbDiscardForKeywordCounters.keywords]
+			};
+		}
+		if (rep.with.etbRemoveCountersForPlusCounters) {
+			etbRemoveCountersForPlusCounters = {
+				multiplier: rep.with.etbRemoveCountersForPlusCounters.multiplier,
+				...(rep.with.etbRemoveCountersForPlusCounters.filter
+					? { filter: rep.with.etbRemoveCountersForPlusCounters.filter }
+					: {})
+			};
+		}
+		// --- End Wave 13 ---
 	}
 	if (
 		!chooseSubType &&
 		!chooseColor &&
 		payLifeOrEnterTapped === undefined &&
 		!revealFromHandOrEnterTapped &&
+		!revealUnlessControls &&
 		!chooseCardName &&
 		!chooseCounter &&
 		!choosePlayer &&
@@ -1597,8 +1688,10 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		!chooseTwoPlayers &&
 		!chooseObjectOnBattlefield &&
 		!chooseSubTypeOptions &&
-		!lookAtOpponentHandBeforeCardName
+		!lookAtOpponentHandBeforeCardName &&
 		// --- End Track P22a ---
+		!etbDiscardForKeywordCounters &&
+		!etbRemoveCountersForPlusCounters
 	) {
 		return null;
 	}
@@ -1607,6 +1700,7 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		...(chooseColor ? { chooseColor } : {}),
 		...(payLifeOrEnterTapped !== undefined ? { payLifeOrEnterTapped } : {}),
 		...(revealFromHandOrEnterTapped ? { revealFromHandOrEnterTapped } : {}),
+		...(revealUnlessControls ? { revealUnlessControls } : {}),
 		...(chooseCardName ? { chooseCardName } : {}),
 		...(chooseCounter ? { chooseCounter } : {}),
 		...(choosePlayer ? { choosePlayer } : {}),
@@ -1618,8 +1712,10 @@ export function selfEtbChoiceSpec(state: GameState, perm: CardInstance): SelfEtb
 		...(chooseTwoPlayers ? { chooseTwoPlayers } : {}),
 		...(chooseObjectOnBattlefield ? { chooseObjectOnBattlefield } : {}),
 		...(chooseSubTypeOptions ? { chooseSubTypeOptions } : {}),
-		...(lookAtOpponentHandBeforeCardName ? { lookAtOpponentHandBeforeCardName } : {})
+		...(lookAtOpponentHandBeforeCardName ? { lookAtOpponentHandBeforeCardName } : {}),
 		// --- End Track P22a ---
+		...(etbDiscardForKeywordCounters ? { etbDiscardForKeywordCounters } : {}),
+		...(etbRemoveCountersForPlusCounters ? { etbRemoveCountersForPlusCounters } : {})
 	};
 }
 
@@ -1773,6 +1869,65 @@ export function applySelfEtbReplacements(state: GameState, perm: CardInstance): 
 				} else {
 					const mult = counterMultiplier(state, perm, cType);
 					perm.counters[cType] = (perm.counters[cType] ?? 0) + baseAmount * mult;
+				}
+			}
+		}
+		if (rep.with.countersPerArtifactMana) {
+			const artCount = perm.artifactManaSpentCount ?? 0;
+			if (artCount > 0) {
+				const cType = rep.with.countersPerArtifactMana.counter;
+				if (placeCounters) {
+					const prevZone = perm.zone;
+					perm.zone = 'battlefield';
+					try {
+						placeCounters(state, perm, cType, artCount);
+					} finally {
+						perm.zone = prevZone;
+					}
+				} else {
+					const mult = counterMultiplier(state, perm, cType);
+					perm.counters[cType] = (perm.counters[cType] ?? 0) + artCount * mult;
+				}
+			}
+		}
+		if (rep.with.conditionalCounters) {
+			const cc = rep.with.conditionalCounters;
+			if (evalReplaceCondition(cc.condition, ctx)) {
+				const amt = Math.max(0, evalReplaceAmount(cc.amount, ctx));
+				if (amt > 0) {
+					if (placeCounters) {
+						const prevZone = perm.zone;
+						perm.zone = 'battlefield';
+						try {
+							placeCounters(state, perm, cc.counter, amt);
+						} finally {
+							perm.zone = prevZone;
+						}
+					} else {
+						const mult = counterMultiplier(state, perm, cc.counter);
+						perm.counters[cc.counter] = (perm.counters[cc.counter] ?? 0) + amt * mult;
+					}
+				}
+			}
+		}
+		if (rep.with.conditionalOrFallbackCounters) {
+			const cfc = rep.with.conditionalOrFallbackCounters;
+			const amt = Math.max(
+				0,
+				evalReplaceCondition(cfc.condition, ctx) ? cfc.thenCount : cfc.elseCount
+			);
+			if (amt > 0) {
+				if (placeCounters) {
+					const prevZone = perm.zone;
+					perm.zone = 'battlefield';
+					try {
+						placeCounters(state, perm, cfc.counter, amt);
+					} finally {
+						perm.zone = prevZone;
+					}
+				} else {
+					const mult = counterMultiplier(state, perm, cfc.counter);
+					perm.counters[cfc.counter] = (perm.counters[cfc.counter] ?? 0) + amt * mult;
 				}
 			}
 		}

@@ -1,4 +1,4 @@
-import { cardManaSteps as compiledCardManaSteps, compileCard } from './compiler/index.ts';
+import { compileCard } from './compiler/index.ts';
 import {
 	activeAbilityDefs,
 	activeCharacteristics,
@@ -7,11 +7,12 @@ import {
 	type ResolveObjectFacesOptions
 } from './runtime/faces.ts';
 import { displayAbilityText } from './compiler/support.ts';
-import type { ActivatedAbility, CostDef, EffectStep, ModalDef, SpellAbility, TargetSpec, UnsupportedAbility } from './ir.ts';
+import type { ActivatedAbility, Amount, CostDef, EffectStep, ModalDef, SpellAbility, TargetSpec, UnsupportedAbility } from './ir.ts';
 import { buildReconfigureUnattachAbility, getKeywordSpec } from './keywords.ts';
 import { describeCost, effectiveAbilityManaCost } from './runtime/costs.ts';
 import { hasChooseAllModesOptionalCost, isCastConditionMet } from './runtime/kicker.ts';
-import { evaluateCondition as evaluateFilterCondition } from './runtime/objectFilter.ts';
+import { evaluateAmount, evaluateCondition as evaluateFilterCondition, type FilterContext } from './runtime/objectFilter.ts';
+import { getCardFaces } from './scryfall.ts';
 // --- Track P7 ---
 import { activeTimedLayer1aForPermanent } from './runtime/layerCache.ts';
 // --- End Track P7 ---
@@ -34,7 +35,10 @@ import {
 	evaluatePermanent,
 	getAttachedAbilityStrippingAuraSources,
 	inspectCardContinuousBreakdown,
+	isTimedContinuousEffectActiveForState,
 	permanentHasLostAllAbilities,
+	permanentRetainsInnateManaAbilities,
+	timedLayer6AbilitySurvivesRemoval,
 	type AttributedKeywordOrEffect,
 	type CardContinuousBreakdown,
 	type EvaluatedPermanent
@@ -50,6 +54,7 @@ import type {
 	CardInstance,
 	CastOption,
 	EffectiveActivatedAbility,
+	GamePhase,
 	GameState,
 	ManaColor,
 	PlayerGameState,
@@ -353,108 +358,647 @@ export function getSpellTargetRequirement(
 	return nonModalSpecs.length > 0 ? targetRequirementFromSpecs(nonModalSpecs) : NO_TARGET_REQUIREMENT;
 }
 
-/**
- * Colors of mana that lands controlled by `actor`'s opponents could produce (Exotic Orchard,
- * Fellwar Stone).
- */
-function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor[] {
-	const found = new Set<ManaColor>();
-	for (const opp of state.players) {
-		if (opp.playerId === actor.playerId || opp.lost) continue;
-		const oppCmdId = Array.from(
-			new Set(opp.command.flatMap((c) => c.card.colorIdentity || []))
-		) as ManaColor[];
-		for (const oppPerm of opp.battlefield) {
-			if (oppPerm.phasedOut) continue;
-			const oppEval = evaluatePermanent(state, oppPerm);
-			if (!oppEval.isLand) continue;
-			// --- Track P7 ---
-			const oppCard =
-				activeTimedLayer1aForPermanent(state, oppPerm)?.card ??
-				oppPerm.copiableCard ??
-				oppPerm.card;
-			// --- End Track P7 ---
-			if (!oppEval.losesAllAbilities) {
-				for (const s of compiledCardManaSteps(oppCard)) {
-					const choice = s.params?.manaChoice;
-					const cols: ManaColor[] =
-						choice === 'any'
-							? ['W', 'U', 'B', 'R', 'G']
-							: choice === 'commanderIdentity'
-								? oppCmdId
-								: choice === 'chosenColor'
-									? oppPerm.chosenColor
-										? [oppPerm.chosenColor]
-										: []
-									: Array.isArray(choice)
-										? choice
-										: s.params?.manaWithChosenColor
-											? [
-													...s.params.manaWithChosenColor,
-													...(oppPerm.chosenColor ? [oppPerm.chosenColor] : [])
-												]
-											: s.params?.manaBundles
-												? s.params.manaBundles.flat()
-												: s.params?.manaCombinationColors
-													? s.params.manaCombinationColors === 'any'
-														? ['W', 'U', 'B', 'R', 'G']
-														: s.params.manaCombinationColors
-													: (s.params?.mana ?? []);
-					for (const c of cols) if (c !== 'C') found.add(c);
+export function filterActiveEffectSteps(steps: EffectStep[], condCtx?: FilterContext): EffectStep[] {
+	return condCtx
+		? steps.filter((s) => !s.condition || evaluateFilterCondition(s.condition, condCtx))
+		: steps;
+}
+
+const FIVE_MANA_COLORS: readonly ManaColor[] = ['W', 'U', 'B', 'R', 'G'];
+const ALL_MANA_TYPES_ORDER: readonly ManaColor[] = ['W', 'U', 'B', 'R', 'G', 'C'];
+const BASIC_LAND_COLORS: ReadonlyArray<[string, ManaColor]> = [
+	['Plains', 'W'],
+	['Island', 'U'],
+	['Swamp', 'B'],
+	['Mountain', 'R'],
+	['Forest', 'G']
+];
+
+const COMBAT_PHASES_SET: ReadonlySet<GamePhase> = new Set<GamePhase>([
+	'begin_combat',
+	'declare_attackers',
+	'declare_blockers',
+	'first_strike_damage',
+	'combat_damage',
+	'end_combat'
+]);
+
+const PRE_ATTACKER_PHASES_SET: ReadonlySet<GamePhase> = new Set<GamePhase>([
+	'upkeep',
+	'draw',
+	'main1',
+	'begin_combat'
+]);
+
+interface ExtractedManaPotential {
+	direct: Set<ManaColor>;
+	hasOppLandColors: boolean;
+	hasCtrlLandTypes: boolean;
+	hasCtrlLandColors: boolean;
+}
+
+export function effectiveBattlefieldCardAndFaceOpts(
+	state: GameState,
+	perm: CardInstance
+): {
+	timedLayer1a: ReturnType<typeof activeTimedLayer1aForPermanent>;
+	effectiveCard: ScryfallCard;
+	effectiveFaceOpts: ResolveObjectFacesOptions;
+} {
+	const timedLayer1a = activeTimedLayer1aForPermanent(state, perm);
+	const effectiveCard =
+		timedLayer1a?.card ?? perm.copiableState?.card ?? perm.copiableCard ?? perm.card;
+	const baseFaceOpts = instanceFaceOptions(perm, 'battlefield');
+	const effectiveFaceOpts: ResolveObjectFacesOptions = timedLayer1a
+		? {
+				...baseFaceOpts,
+				copiableState: timedLayer1a,
+				faceIndex: timedLayer1a.faceIndex ?? 0,
+				isSingleFaceCopy: timedLayer1a.isSingleFaceCopy,
+				prototyped: Boolean(timedLayer1a.prototyped)
+			}
+		: baseFaceOpts;
+	return { timedLayer1a, effectiveCard, effectiveFaceOpts };
+}
+
+function commanderColorsOfPlayer(player: PlayerGameState): ManaColor[] {
+	const set = new Set<ManaColor>();
+	for (const col of player.commanderColorIdentity ?? []) {
+		if (col !== 'C') set.add(col);
+	}
+	const zones: Array<readonly CardInstance[]> = [
+		player.command,
+		player.battlefield,
+		player.graveyard,
+		player.exile,
+		player.hand,
+		player.library
+	];
+	for (const z of zones) {
+		for (const c of z) {
+			if (!c.isCommander || c.ownerId !== player.playerId) continue;
+			for (const col of c.card.colorIdentity ?? []) {
+				if (col !== 'C') set.add(col);
+			}
+		}
+	}
+	return FIVE_MANA_COLORS.filter((c) => set.has(c));
+}
+
+function exiledLinkedColors(
+	state: GameState,
+	sourceInstanceId: string,
+	sourceObjectVersion: number
+): ManaColor[] {
+	const out = new Set<ManaColor>();
+	for (const p of state.players) {
+		for (const ex of p.exile) {
+			if (
+				ex.exiledBy?.sourceInstanceId !== sourceInstanceId ||
+				(ex.exiledBy.sourceObjectVersion ?? 1) !== sourceObjectVersion
+			) {
+				continue;
+			}
+			const faces = getCardFaces(ex.card);
+			const f0 = faces[0];
+			const cols = f0?.colors && f0.colors.length > 0 ? f0.colors : (ex.card.colors ?? []);
+			for (const c of cols) {
+				if (FIVE_MANA_COLORS.includes(c)) out.add(c);
+			}
+		}
+	}
+	return FIVE_MANA_COLORS.filter((c) => out.has(c));
+}
+
+function controlledPermanentColors(state: GameState, controllerId: string): ManaColor[] {
+	const out = new Set<ManaColor>();
+	const player = state.players.find((p) => p.playerId === controllerId);
+	if (!player) return [];
+	for (const perm of player.battlefield) {
+		if (perm.phasedOut) continue;
+		const ev = evaluatePermanent(state, perm);
+		for (const c of ev.colors) {
+			if (FIVE_MANA_COLORS.includes(c)) out.add(c);
+		}
+	}
+	return FIVE_MANA_COLORS.filter((c) => out.has(c));
+}
+
+function isAbilityCurrentlyActivatableForMana(
+	state: GameState,
+	controllerId: string,
+	perm: CardInstance,
+	ab: ActivatedAbility | UnsupportedAbility,
+	condCtx: FilterContext,
+	abIdOverride?: string
+): boolean {
+	if (ab.grantCondition && !evaluateFilterCondition(ab.grantCondition, condCtx)) return false;
+	if (ab.activationCondition && !evaluateFilterCondition(ab.activationCondition, condCtx)) {
+		return false;
+	}
+	const restrictions = ab.activationRestrictions;
+	if (!restrictions || restrictions.length === 0) return true;
+	const effId = abIdOverride ?? ab.id;
+	if (
+		restrictions.includes('onceEachTurn') &&
+		effId &&
+		perm.activatedAbilityIdsThisTurn?.includes(effId)
+	) {
+		return false;
+	}
+	if (
+		restrictions.includes('oncePerGame') &&
+		effId &&
+		perm.usedOncePerGameAbilityIds?.includes(effId)
+	) {
+		return false;
+	}
+	const activePlayerId = state.players[state.activePlayerIndex]?.playerId;
+	if (restrictions.includes('duringYourTurn') && activePlayerId !== controllerId) return false;
+	if (restrictions.includes('duringOpponentsTurn') && activePlayerId === controllerId) return false;
+	if (
+		restrictions.includes('duringYourUpkeep') &&
+		(activePlayerId !== controllerId || state.phase !== 'upkeep')
+	) {
+		return false;
+	}
+	if (restrictions.includes('duringCombat') && !COMBAT_PHASES_SET.has(state.phase)) return false;
+	if (restrictions.includes('beforeAttackers') && !PRE_ATTACKER_PHASES_SET.has(state.phase)) {
+		return false;
+	}
+	if (
+		restrictions.includes('afterAttackers') &&
+		(!state.combat?.active ||
+			(state.phase !== 'declare_attackers' &&
+				state.phase !== 'declare_blockers' &&
+				state.phase !== 'first_strike_damage' &&
+				state.phase !== 'combat_damage' &&
+				state.phase !== 'end_combat'))
+	) {
+		return false;
+	}
+	if (
+		restrictions.includes('beforeBlockers') &&
+		state.phase !== 'begin_combat' &&
+		state.phase !== 'declare_attackers'
+	) {
+		return false;
+	}
+	if (restrictions.includes('duringBlockers') && state.phase !== 'declare_blockers') {
+		return false;
+	}
+	if (
+		restrictions.includes('afterBlockers') &&
+		(!state.combat?.blockersDeclared ||
+			(state.phase !== 'declare_blockers' &&
+				state.phase !== 'first_strike_damage' &&
+				state.phase !== 'combat_damage' &&
+				state.phase !== 'end_combat'))
+	) {
+		return false;
+	}
+	if (
+		restrictions.includes('afterCombat') &&
+		state.phase !== 'main2' &&
+		state.phase !== 'end_step'
+	) {
+		return false;
+	}
+	return true;
+}
+
+function amountIsDeterminableWithoutCost(a: Amount): boolean {
+	switch (a.k) {
+		case 'x':
+		case 'countersRemovedThisWay':
+		case 'tappedCostPower':
+		case 'stormCount':
+		case 'anyNumber':
+		case 'p20bCostPaidCount':
+		case 'sacrificedCostStat':
+		case 'eventAmount':
+		case 'lastEffectAmount':
+		case 'countedThisWay':
+			return false;
+		case 'negate':
+		case 'mul':
+		case 'half':
+			return amountIsDeterminableWithoutCost(a.of);
+		case 'sum':
+		case 'min':
+		case 'max':
+			return a.args.every(amountIsDeterminableWithoutCost);
+		case 'difference':
+			return amountIsDeterminableWithoutCost(a.left) && amountIsDeterminableWithoutCost(a.right);
+		case 'conditional':
+			return (
+				amountIsDeterminableWithoutCost(a.then) &&
+				amountIsDeterminableWithoutCost(a.else)
+			);
+		default:
+			return true;
+	}
+}
+
+function extractManaFromAddSteps(
+	steps: EffectStep[],
+	condCtx: FilterContext,
+	cmdColors: ManaColor[],
+	chosenColor: ManaColor | undefined,
+	perm: CardInstance,
+	controller: PlayerGameState,
+	state: GameState
+): ExtractedManaPotential {
+	const direct = new Set<ManaColor>();
+	let hasOppLandColors = false;
+	let hasCtrlLandTypes = false;
+	let hasCtrlLandColors = false;
+
+	for (const s of steps) {
+		if (s.verb !== 'addMana') continue;
+		if (s.condition && !evaluateFilterCondition(s.condition, condCtx)) continue;
+		if (
+			s.amount &&
+			amountIsDeterminableWithoutCost(s.amount) &&
+			evaluateAmount(s.amount, condCtx) <= 0
+		) {
+			continue;
+		}
+		const p = s.params;
+		if (!p) continue;
+		if (Array.isArray(p.mana)) {
+			for (const c of p.mana) direct.add(c);
+		}
+		if (Array.isArray(p.manaWithChosenColor)) {
+			for (const c of p.manaWithChosenColor) direct.add(c);
+			if (chosenColor) direct.add(chosenColor);
+		}
+		if (Array.isArray(p.manaOrChosenColor)) {
+			for (const c of p.manaOrChosenColor) direct.add(c);
+			if (chosenColor) direct.add(chosenColor);
+		}
+		if (Array.isArray(p.manaBundles)) {
+			for (const b of p.manaBundles) {
+				for (const c of b) direct.add(c);
+			}
+		}
+		if (p.manaCombinationColors) {
+			const combCols =
+				p.manaCombinationColors === 'any' ? FIVE_MANA_COLORS : p.manaCombinationColors;
+			for (const c of combCols) direct.add(c);
+		}
+		if (p.addManaFromExiledColors) {
+			for (const c of exiledLinkedColors(state, perm.instanceId, perm.objectVersion ?? 1)) {
+				direct.add(c);
+			}
+		}
+		if (p.addManaPerColorControlled) {
+			for (const c of controlledPermanentColors(state, controller.playerId)) direct.add(c);
+		}
+		const ch = p.manaChoice;
+		if (Array.isArray(ch)) {
+			for (const c of ch) direct.add(c);
+		} else if (ch === 'any') {
+			for (const c of FIVE_MANA_COLORS) direct.add(c);
+		} else if (ch === 'commanderIdentity') {
+			for (const c of cmdColors) direct.add(c);
+		} else if (ch === 'chosenColor') {
+			if (chosenColor) direct.add(chosenColor);
+		} else if (ch === 'opponentLandColors') {
+			hasOppLandColors = true;
+		} else if (ch === 'controlledLandProducedTypes') {
+			hasCtrlLandTypes = true;
+		} else if (ch === 'controlledLandProducedColors') {
+			hasCtrlLandColors = true;
+		}
+	}
+
+	return { direct, hasOppLandColors, hasCtrlLandTypes, hasCtrlLandColors };
+}
+
+function collectDirectPermanentManaProduction(
+	state: GameState,
+	controller: PlayerGameState,
+	perm: CardInstance,
+	includeColorless: boolean
+): ExtractedManaPotential {
+	const direct = new Set<ManaColor>();
+	let hasOppLandColors = false;
+	let hasCtrlLandTypes = false;
+	let hasCtrlLandColors = false;
+	if (perm.phasedOut) {
+		return { direct, hasOppLandColors, hasCtrlLandTypes, hasCtrlLandColors };
+	}
+	const ev = evaluatePermanent(state, perm);
+	const cmdColors = commanderColorsOfPlayer(controller);
+	const condCtx: FilterContext = { state, controllerId: controller.playerId, source: perm };
+
+	const allow = (c: ManaColor) => {
+		if (c !== 'C' || includeColorless) direct.add(c);
+	};
+
+	const mergeSteps = (steps: EffectStep[], effChosenColor: ManaColor | undefined) => {
+		const res = extractManaFromAddSteps(
+			steps,
+			condCtx,
+			cmdColors,
+			effChosenColor,
+			perm,
+			controller,
+			state
+		);
+		for (const c of res.direct) allow(c);
+		if (res.hasOppLandColors) hasOppLandColors = true;
+		if (res.hasCtrlLandTypes) hasCtrlLandTypes = true;
+		if (res.hasCtrlLandColors) hasCtrlLandColors = true;
+	};
+
+	if (ev.isLand && (!ev.losesAllAbilities || permanentRetainsInnateManaAbilities(perm, state))) {
+		for (const [sub, col] of BASIC_LAND_COLORS) {
+			if (ev.hasSubType(sub)) allow(col);
+		}
+	}
+
+	const { timedLayer1a, effectiveCard, effectiveFaceOpts } = effectiveBattlefieldCardAndFaceOpts(state, perm);
+	if (!ev.losesAllAbilities || permanentRetainsInnateManaAbilities(perm, state)) {
+		if (!effectiveFaceOpts.isFaceDown) {
+			const resolvedFaces = resolveObjectFaces(effectiveCard, effectiveFaceOpts);
+			const cardDef = compileCard(effectiveFaceOpts.copiableState?.card ?? effectiveCard);
+			const rawIdCounts = new Map<string, number>();
+			for (const fi of resolvedFaces.activeFaceIndices) {
+				const face = cardDef.faces[fi];
+				if (!face) continue;
+				for (const ab of face.abilities) {
+					if (
+						((ab.kind === 'activated' && !ab.intrinsic) ||
+							(ab.kind === 'unsupported' && ab.id && ab.id !== 'cast')) &&
+						ab.id
+					) {
+						rawIdCounts.set(ab.id, (rawIdCounts.get(ab.id) ?? 0) + 1);
+					}
 				}
 			}
-			for (const t of ['Plains:W', 'Island:U', 'Swamp:B', 'Mountain:R', 'Forest:G'] as const) {
-				const [sub, col] = t.split(':') as [string, ManaColor];
-				if (oppEval.typeLine.includes(sub)) found.add(col);
+			for (const fi of resolvedFaces.activeFaceIndices) {
+				const face = cardDef.faces[fi];
+				if (!face) continue;
+				for (const ab of face.abilities) {
+					if (
+						(ab.kind !== 'activated' && ab.kind !== 'unsupported') ||
+						(ab.kind === 'activated' && ab.intrinsic) ||
+						!ab.isMana ||
+						!ab.effect?.length
+					) {
+						continue;
+					}
+					const rawId = ab.id ?? 'mana_tap';
+					const abId =
+						resolvedFaces.activeFaceIndices.length > 1 && (rawIdCounts.get(rawId) ?? 0) > 1
+							? `f${fi}:${rawId}`
+							: rawId;
+					if (!isAbilityCurrentlyActivatableForMana(state, controller.playerId, perm, ab, condCtx, abId)) {
+						continue;
+					}
+					mergeSteps(ab.effect, perm.chosenColor);
+				}
 			}
-			const oppBreakdown = inspectCardContinuousBreakdown(oppPerm, state);
-			for (const item of oppBreakdown.items) {
-				if (item.removed || item.isInnate || !item.grantedAbility?.isMana) continue;
-				const grantSourceChosenColor = item.grantSourceId
-					? state.players
-							.flatMap((pl) => pl.battlefield)
-							.find((p) => p.instanceId === item.grantSourceId)?.chosenColor
-					: undefined;
-				const effChosenColor = grantSourceChosenColor ?? oppPerm.chosenColor;
-				for (const s of item.grantedAbility.effect) {
-					if (s.verb !== 'addMana') continue;
-					const choice = s.params?.manaChoice;
-					if (choice === 'opponentLandColors') continue;
-					const cols: ManaColor[] =
-						choice === 'any'
-							? ['W', 'U', 'B', 'R', 'G']
-							: choice === 'commanderIdentity'
-								? oppCmdId
-								: choice === 'chosenColor'
-									? effChosenColor
-										? [effChosenColor]
-										: []
-									: Array.isArray(choice)
-										? choice
-										: s.params?.manaWithChosenColor
-											? [
-													...s.params.manaWithChosenColor,
-													...(effChosenColor ? [effChosenColor] : [])
-												]
-											: s.params?.manaBundles
-												? s.params.manaBundles.flat()
-												: s.params?.manaCombinationColors
-													? s.params.manaCombinationColors === 'any'
-														? ['W', 'U', 'B', 'R', 'G']
-														: s.params.manaCombinationColors
-													: (s.params?.mana ?? []);
-					for (const c of cols) if (c !== 'C') found.add(c);
+		}
+		const effCopyLayer1 = timedLayer1a ?? perm.copiableState;
+		const effMergedComponents = effCopyLayer1
+			? effCopyLayer1.mergedComponents
+			: perm.mergedComponents;
+		if (!perm.isFaceDown && effMergedComponents && effMergedComponents.length > 1) {
+			for (let cIdx = 1; cIdx < effMergedComponents.length; cIdx++) {
+				const compFace = compileCard(effMergedComponents[cIdx]!).faces[0];
+				if (!compFace) continue;
+				for (const ab of compFace.abilities) {
+					if (
+						(ab.kind !== 'activated' && ab.kind !== 'unsupported') ||
+						(ab.kind === 'activated' && ab.intrinsic) ||
+						!ab.isMana ||
+						!ab.effect?.length
+					) {
+						continue;
+					}
+					const abId = `backup_act:merged_${cIdx}:${ab.id}`;
+					if (!isAbilityCurrentlyActivatableForMana(state, controller.playerId, perm, ab, condCtx, abId)) {
+						continue;
+					}
+					mergeSteps(ab.effect, perm.chosenColor);
 				}
 			}
 		}
 	}
-	return (['W', 'U', 'B', 'R', 'G'] as ManaColor[]).filter((c) => found.has(c));
+
+	const breakdown = inspectCardContinuousBreakdown(perm, state);
+	for (const item of breakdown.items) {
+		if (item.removed || item.isInnate) continue;
+		if (item.grantedAbility?.isMana) {
+			const ab = item.grantedAbility;
+			const abId =
+				ab.intrinsic && !item.grantSourceId
+					? ab.id
+					: item.grantSourceId
+						? `granted:${item.grantSourceId}:${ab.id}`
+						: ab.id;
+			if (!isAbilityCurrentlyActivatableForMana(state, controller.playerId, perm, ab, condCtx, abId)) {
+				continue;
+			}
+			const grantSourceChosenColor = item.grantSourceId
+				? state.players
+						.flatMap((pl) => pl.battlefield)
+						.find((p) => p.instanceId === item.grantSourceId)?.chosenColor
+				: undefined;
+			mergeSteps(ab.effect, grantSourceChosenColor ?? perm.chosenColor);
+		} else if (item.canonicalKey === 'mana_any') {
+			for (const c of FIVE_MANA_COLORS) allow(c);
+		}
+	}
+
+	if (state.timedContinuousEffects?.length) {
+		const permVer = perm.objectVersion ?? 1;
+		let quoteIdx = 0;
+		for (const eff of state.timedContinuousEffects) {
+			if (!eff.layer6?.grantedAbilityTexts?.length) continue;
+			if (!isTimedContinuousEffectActiveForState(state, eff)) continue;
+			if (
+				!eff.affected.some(
+					(a) => a.instanceId === perm.instanceId && (a.objectVersion ?? 1) === permVer
+				)
+			) {
+				continue;
+			}
+			for (const gt of eff.layer6.grantedAbilityTexts) {
+				for (const def of resolveQuotedAbilityDefs(gt, effectiveCard.name)) {
+					if (def.kind !== 'activated') continue;
+					const abId = `quoted_eot:${eff.timestamp}:${quoteIdx++}`;
+					if (!def.isMana || !def.effect?.length) continue;
+					if (!timedLayer6AbilitySurvivesRemoval(perm, state, eff.timestamp, Boolean(def.isMana))) {
+						continue;
+					}
+					if (!isAbilityCurrentlyActivatableForMana(state, controller.playerId, perm, def, condCtx, abId)) {
+						continue;
+					}
+					mergeSteps(def.effect, perm.chosenColor);
+				}
+			}
+		}
+	}
+
+	for (const bg of collectBackupGrantedAbilityGroups(state, perm)) {
+		for (const ab of bg.abilities) {
+			if (
+				(ab.kind !== 'activated' && ab.kind !== 'unsupported') ||
+				(ab.kind === 'activated' && ab.intrinsic) ||
+				!ab.isMana ||
+				!ab.effect?.length
+			) {
+				continue;
+			}
+			if (!timedLayer6AbilitySurvivesRemoval(perm, state, bg.timestamp, Boolean(ab.isMana))) {
+				continue;
+			}
+			const abId = `backup_act:${bg.sourceInstanceId}:${ab.id}`;
+			if (!isAbilityCurrentlyActivatableForMana(state, controller.playerId, perm, ab, condCtx, abId)) {
+				continue;
+			}
+			mergeSteps(ab.effect, perm.chosenColor);
+		}
+	}
+
+	return { direct, hasOppLandColors, hasCtrlLandTypes, hasCtrlLandColors };
+}
+
+function computeBoardLandManaFixedPoint(state: GameState): {
+	byPlayerDirect: Map<string, ExtractedManaPotential>;
+	landTypesByPlayer: Map<string, Set<ManaColor>>;
+} {
+	const active = state.players.filter((p) => !p.lost);
+	const byPlayerDirect = new Map<string, ExtractedManaPotential>();
+	const landTypesByPlayer = new Map<string, Set<ManaColor>>();
+	for (const p of active) {
+		const agg: ExtractedManaPotential = {
+			direct: new Set<ManaColor>(),
+			hasOppLandColors: false,
+			hasCtrlLandTypes: false,
+			hasCtrlLandColors: false
+		};
+		for (const perm of p.battlefield) {
+			if (perm.phasedOut) continue;
+			const ev = evaluatePermanent(state, perm);
+			if (!ev.isLand) continue;
+			const part = collectDirectPermanentManaProduction(state, p, perm, true);
+			for (const c of part.direct) agg.direct.add(c);
+			if (part.hasOppLandColors) agg.hasOppLandColors = true;
+			if (part.hasCtrlLandTypes) agg.hasCtrlLandTypes = true;
+			if (part.hasCtrlLandColors) agg.hasCtrlLandColors = true;
+		}
+		byPlayerDirect.set(p.playerId, agg);
+		landTypesByPlayer.set(p.playerId, new Set<ManaColor>(agg.direct));
+	}
+	for (let iter = 0; iter < 8; iter++) {
+		let changed = false;
+		for (const p of active) {
+			const agg = byPlayerDirect.get(p.playerId)!;
+			if (!agg.hasOppLandColors) continue;
+			const pSet = landTypesByPlayer.get(p.playerId)!;
+			for (const opp of active) {
+				if (opp.playerId === p.playerId) continue;
+				const oppSet = landTypesByPlayer.get(opp.playerId)!;
+				for (const c of FIVE_MANA_COLORS) {
+					if (oppSet.has(c) && !pSet.has(c)) {
+						pSet.add(c);
+						changed = true;
+					}
+				}
+			}
+		}
+		if (!changed) break;
+	}
+	return { byPlayerDirect, landTypesByPlayer };
+}
+
+export function playerLandColors(
+	state: GameState,
+	player: PlayerGameState
+): { direct: Set<ManaColor>; hasOrchard: boolean } {
+	const direct = new Set<ManaColor>();
+	let hasOrchard = false;
+	for (const perm of player.battlefield) {
+		if (perm.phasedOut) continue;
+		const ev = evaluatePermanent(state, perm);
+		if (!ev.isLand) continue;
+		const part = collectDirectPermanentManaProduction(state, player, perm, false);
+		for (const c of part.direct) {
+			if (c !== 'C') direct.add(c);
+		}
+		if (part.hasOppLandColors) hasOrchard = true;
+	}
+	return { direct, hasOrchard };
+}
+
+/**
+ * CR 106.7: Colors of mana (`W | U | B | R | G`, never `C`) that lands controlled by `actor`'s
+ * opponents could produce right now.
+ */
+export function opponentLandColors(state: GameState, actor: PlayerGameState): ManaColor[] {
+	const { landTypesByPlayer } = computeBoardLandManaFixedPoint(state);
+	const out = new Set<ManaColor>();
+	for (const opp of state.players) {
+		if (opp.playerId === actor.playerId || opp.lost) continue;
+		const oppTypes = landTypesByPlayer.get(opp.playerId);
+		if (!oppTypes) continue;
+		for (const c of FIVE_MANA_COLORS) {
+			if (oppTypes.has(c)) out.add(c);
+		}
+	}
+	return FIVE_MANA_COLORS.filter((c) => out.has(c));
+}
+
+/**
+ * CR 106.7: Computes the mana types (`W, U, B, R, G, C` when `includeColorless`, else `W..G`)
+ * that a single permanent on the battlefield could produce right now.
+ */
+export function permanentCouldProduceManaTypes(
+	state: GameState,
+	controller: PlayerGameState,
+	perm: CardInstance,
+	includeColorless: boolean
+): ManaColor[] {
+	const directRes = collectDirectPermanentManaProduction(state, controller, perm, includeColorless);
+	const out = new Set<ManaColor>(directRes.direct);
+	if (directRes.hasOppLandColors || directRes.hasCtrlLandTypes || directRes.hasCtrlLandColors) {
+		const { landTypesByPlayer } = computeBoardLandManaFixedPoint(state);
+		if (directRes.hasOppLandColors) {
+			for (const opp of state.players) {
+				if (opp.playerId === controller.playerId || opp.lost) continue;
+				const oppTypes = landTypesByPlayer.get(opp.playerId);
+				if (!oppTypes) continue;
+				for (const c of FIVE_MANA_COLORS) {
+					if (oppTypes.has(c)) out.add(c);
+				}
+			}
+		}
+		if (directRes.hasCtrlLandTypes || directRes.hasCtrlLandColors) {
+			const ctrlTypes = landTypesByPlayer.get(controller.playerId);
+			if (ctrlTypes) {
+				for (const c of ctrlTypes) {
+					if (c === 'C') {
+						if (directRes.hasCtrlLandTypes && includeColorless) out.add('C');
+					} else {
+						out.add(c);
+					}
+				}
+			}
+		}
+	}
+	return ALL_MANA_TYPES_ORDER.filter((c) => out.has(c));
 }
 
 function manaStepProduction(
 	steps: EffectStep[],
 	commanderIdentity: ManaColor[],
-	chosenColor?: ManaColor
+	chosenColor?: ManaColor,
+	condCtx?: FilterContext
 ): {
 	colors: ManaColor[];
 	amount: number;
@@ -467,8 +1011,13 @@ function manaStepProduction(
 	retainManaUntilEndOfTurn?: boolean;
 	// --- End Track P10 ---
 } | null {
-	const addSteps = steps.filter((s) => s.verb === 'addMana');
-	if (addSteps.length === 0) return null;
+	if (!steps.some((s) => s.verb === 'addMana')) return null;
+	const activeSteps = filterActiveEffectSteps(steps, condCtx);
+	const addSteps = activeSteps.filter((s) => s.verb === 'addMana');
+	if (addSteps.length === 0) {
+		// CR 605.2: still a mana ability even when 0 conditional addMana steps are active.
+		return { colors: [], amount: 0 };
+	}
 	const cmdColors: ManaColor[] = commanderIdentity.filter((c) => c !== 'C');
 	const colors: ManaColor[] = [];
 	let totalAmount = 0;
@@ -493,6 +1042,9 @@ function manaStepProduction(
 			fixedSymbols = null;
 			opponentLands = true;
 			totalAmount += amt;
+		} else if (choice === 'controlledLandProducedTypes' || choice === 'controlledLandProducedColors') {
+			fixedSymbols = null;
+			totalAmount += amt;
 		} else if (choice === 'any') {
 			fixedSymbols = null;
 			for (const c of ['W', 'U', 'B', 'R', 'G'] as ManaColor[]) {
@@ -507,6 +1059,20 @@ function manaStepProduction(
 			totalAmount += amt;
 		} else if (choice === 'chosenColor') {
 			fixedSymbols = null;
+			if (Array.isArray(s.params?.manaOrChosenColor)) {
+				for (const c of s.params.manaOrChosenColor) {
+					if (!colors.includes(c)) colors.push(c);
+				}
+			}
+			if (chosenColor && !colors.includes(chosenColor)) {
+				colors.push(chosenColor);
+			}
+			totalAmount += amt;
+		} else if (Array.isArray(s.params?.manaOrChosenColor)) {
+			fixedSymbols = null;
+			for (const c of s.params.manaOrChosenColor) {
+				if (!colors.includes(c)) colors.push(c);
+			}
 			if (chosenColor && !colors.includes(chosenColor)) {
 				colors.push(chosenColor);
 			}
@@ -551,6 +1117,19 @@ function manaStepProduction(
 				s.params.manaCombinationColors === 'any'
 					? 'any'
 					: [...s.params.manaCombinationColors];
+		} else if (s.params?.addManaFromExiledColors) {
+			fixedSymbols = null;
+			if (condCtx?.source) {
+				const cols = exiledLinkedColors(
+					condCtx.state,
+					condCtx.source.instanceId,
+					condCtx.source.objectVersion ?? 1
+				);
+				for (const c of cols) {
+					if (!colors.includes(c)) colors.push(c);
+				}
+				if (cols.length > 0) totalAmount += amt;
+			}
 		} else if (Array.isArray(s.params?.mana)) {
 			for (const c of s.params.mana) {
 				if (!colors.includes(c)) colors.push(c);
@@ -575,7 +1154,7 @@ function manaStepProduction(
 	}
 	return {
 		colors,
-		amount: Math.max(1, totalAmount),
+		amount: Math.max(0, totalAmount),
 		...(opponentLands ? { opponentLandColors: true } : {}),
 		...(manaRestriction ? { manaRestriction } : {}),
 		...(manaBundles ? { manaBundles } : {}),
@@ -592,6 +1171,7 @@ interface BuildEffectiveAbilityOptions {
 	displayCardName: string;
 	displayCard: ScryfallCard;
 	grantSourceCard?: ScryfallCard;
+	grantFaceIndex?: number;
 	grantSources?: string[];
 	labelOverride?: string;
 	costTextOverride?: string;
@@ -600,6 +1180,7 @@ interface BuildEffectiveAbilityOptions {
 	// --- Track P10 ---
 	grantedAbilityText?: string;
 	// --- End Track P10 ---
+	condCtx?: FilterContext;
 }
 
 function buildEffectiveActivatedAbility(
@@ -647,10 +1228,11 @@ function buildEffectiveActivatedAbility(
 	let manaRestrictionSpec: EffectiveActivatedAbility['manaRestrictionSpec'];
 	let retainManaUntilEndOfTurn: boolean | undefined;
 	// --- End Track P10 ---
+	const activeEffect = filterActiveEffectSteps(effect, opts.condCtx);
 	const freezesSelfUntap =
-		isMana && effect.some((s) => s.verb === 'freezeUntap' && s.subject.k === 'self');
+		isMana && activeEffect.some((s) => s.verb === 'freezeUntap' && s.subject.k === 'self');
 	if (isMana) {
-		const prod = manaStepProduction(effect, commanderIdentity, opts.chosenColor);
+		const prod = manaStepProduction(effect, commanderIdentity, opts.chosenColor, opts.condCtx);
 		if (prod?.opponentLandColors) {
 			const oppColors = resolveOpponentLandColors ? resolveOpponentLandColors() : [];
 			if (oppColors.length === 0) return null;
@@ -664,7 +1246,7 @@ function buildEffectiveActivatedAbility(
 			// --- End Track P10 ---
 		} else if (prod) {
 			producesMana = prod.colors;
-			producesAmount = prod.colors.length > 0 ? prod.amount : 0;
+			producesAmount = prod.amount;
 			hasManaProduction = true;
 			manaRestriction = prod.manaRestriction;
 			manaBundles = prod.manaBundles;
@@ -674,8 +1256,19 @@ function buildEffectiveActivatedAbility(
 			retainManaUntilEndOfTurn = prod.retainManaUntilEndOfTurn;
 			// --- End Track P10 ---
 		}
-		const dynStep = effect.find((s) => s.verb === 'addMana' && s.amount && s.amount.k !== 'const');
-		if (dynStep?.amount) manaAmount = dynStep.amount;
+		const activeAddSteps = activeEffect.filter((s) => s.verb === 'addMana');
+		if (activeAddSteps.some((s) => s.amount && s.amount.k !== 'const')) {
+			if (activeAddSteps.length === 1) {
+				manaAmount = activeAddSteps[0].amount;
+			} else {
+				manaAmount = {
+					k: 'sum',
+					args: activeAddSteps.map((s) =>
+						s.amount ?? { k: 'const', n: Array.isArray(s.params?.mana) ? s.params.mana.length : 1 }
+					)
+				};
+			}
+		}
 	}
 
 	const modal = ab.kind === 'activated' ? ab.modal : undefined;
@@ -766,6 +1359,7 @@ function buildEffectiveActivatedAbility(
 		// --- End Track P10 ---
 		...(freezesSelfUntap ? { freezesSelfUntap: true } : {}),
 		...(opts.grantSourceCard ? { grantSourceCard: opts.grantSourceCard } : {}),
+		...(opts.grantFaceIndex !== undefined ? { grantFaceIndex: opts.grantFaceIndex } : {}),
 		effectText: opts.effectTextOverride ?? effectPart,
 		...(modal ? { modal } : {}),
 		requiresTarget: targetInfo.requiresTarget,
@@ -781,7 +1375,9 @@ function buildFaceActivatedAbilities(
 	card: ScryfallCard,
 	commanderIdentity: ManaColor[],
 	resolveOpponentLandColors?: () => ManaColor[],
-	chosenColor?: ManaColor
+	chosenColor?: ManaColor,
+	condCtx?: FilterContext,
+	allowedIntrinsicColors?: ReadonlySet<ManaColor>
 ): EffectiveActivatedAbility[] {
 	const out: EffectiveActivatedAbility[] = [];
 
@@ -790,6 +1386,7 @@ function buildFaceActivatedAbilities(
 		if (ab.kind === 'activated' && ab.intrinsic) {
 			for (const s of ab.effect) {
 				for (const c of s.params?.mana ?? []) {
+					if (allowedIntrinsicColors && !allowedIntrinsicColors.has(c)) continue;
 					if (!intrinsicColors.includes(c)) intrinsicColors.push(c);
 				}
 			}
@@ -931,7 +1528,8 @@ function buildFaceActivatedAbilities(
 								labelOverride: built.label,
 								costTextOverride: built.costText,
 								effectTextOverride: built.effectText,
-								chosenColor
+								chosenColor,
+								condCtx
 							}
 						);
 						if (effective) out.push({ ...effective, faceIndex });
@@ -954,7 +1552,8 @@ function buildFaceActivatedAbilities(
 									labelOverride: unattachBuilt.label,
 									costTextOverride: unattachBuilt.costText,
 									effectTextOverride: unattachBuilt.effectText,
-									chosenColor
+									chosenColor,
+									condCtx
 								}
 							);
 							if (unattachEff) out.push({ ...unattachEff, faceIndex });
@@ -974,7 +1573,8 @@ function buildFaceActivatedAbilities(
 			const built = buildEffectiveActivatedAbility(ab, commanderIdentity, resolveOpponentLandColors, {
 				displayCardName: faceName,
 				displayCard: card,
-				chosenColor
+				chosenColor,
+				condCtx
 			});
 			if (built) out.push({ ...built, faceIndex });
 		}
@@ -992,7 +1592,9 @@ export function getCardActivatedAbilities(
 	commanderIdentity: ManaColor[] = [],
 	resolveOpponentLandColors?: () => ManaColor[],
 	faceOpts?: ResolveObjectFacesOptions,
-	chosenColor?: ManaColor
+	chosenColor?: ManaColor,
+	condCtx?: FilterContext,
+	allowedIntrinsicColors?: ReadonlySet<ManaColor>
 ): EffectiveActivatedAbility[] {
 	const resolved = resolveObjectFaces(card, faceOpts);
 	const def = compileCard(card);
@@ -1008,7 +1610,9 @@ export function getCardActivatedAbilities(
 				card,
 				commanderIdentity,
 				resolveOpponentLandColors,
-				chosenColor
+				chosenColor,
+				condCtx,
+				allowedIntrinsicColors
 			)
 		);
 	}
@@ -1030,6 +1634,7 @@ export function getEffectiveActivatedAbilities(
 	perm: CardInstance,
 	commanderIdentity: ManaColor[] = []
 ): EffectiveActivatedAbility[] {
+	const condCtx: FilterContext = { state, controllerId: actor.playerId, source: perm };
 	const resolveOppLands = () =>
 		state.lobbyCode === 'GOLDEN'
 			? (['W', 'U', 'B', 'R', 'G'] as ManaColor[])
@@ -1045,7 +1650,8 @@ export function getEffectiveActivatedAbilities(
 			commanderIdentity,
 			resolveOppLands,
 			instanceFaceOptions(perm, perm.zone),
-			perm.chosenColor
+			perm.chosenColor,
+			condCtx
 		).filter((ab) => !ab.grantCondition);
 		// --- Track P22a (CR 702.97 Scavenge / CR 702.84 Unearth graveyard grants) ---
 		if (perm.zone === 'graveyard' && perm.ownerId === actor.playerId) {
@@ -1064,7 +1670,8 @@ export function getEffectiveActivatedAbilities(
 						labelOverride: g.label,
 						costTextOverride: g.costText,
 						effectTextOverride: g.effectText,
-						chosenColor: perm.chosenColor
+						chosenColor: perm.chosenColor,
+						condCtx
 					}
 				);
 				if (built) rawAbilities.push(built);
@@ -1072,49 +1679,48 @@ export function getEffectiveActivatedAbilities(
 		}
 		// --- End Track P22a ---
 	} else {
+		const ev = evaluatePermanent(state, perm);
 		const breakdown = inspectCardContinuousBreakdown(perm, state);
 		const allInnateRemoved = permanentHasLostAllAbilities(perm, state).lost;
+		const retainsInnateMana =
+			allInnateRemoved && !perm.isFaceDown && permanentRetainsInnateManaAbilities(perm, state);
+		const activeBasicLandColors = new Set<ManaColor>();
+		if (ev.isLand) {
+			for (const [sub, col] of BASIC_LAND_COLORS) {
+				if (ev.hasSubType(sub)) activeBasicLandColors.add(col);
+			}
+		}
 		// --- Track P7 ---
-		const timedLayer1a = activeTimedLayer1aForPermanent(state, perm);
-		const effectiveCard = timedLayer1a?.card ?? perm.copiableCard ?? perm.card;
-		const baseFaceOpts = instanceFaceOptions(perm, 'battlefield');
-		const effectiveFaceOpts: ResolveObjectFacesOptions = timedLayer1a
-			? {
-					...baseFaceOpts,
-					copiableState: timedLayer1a,
-					faceIndex: timedLayer1a.faceIndex ?? 0,
-					isSingleFaceCopy: timedLayer1a.isSingleFaceCopy,
-					prototyped: Boolean(timedLayer1a.prototyped)
-				}
-			: baseFaceOpts;
+		const { timedLayer1a, effectiveCard, effectiveFaceOpts } =
+			effectiveBattlefieldCardAndFaceOpts(state, perm);
 		// --- End Track P7 ---
-		rawAbilities = allInnateRemoved
-			? []
-			: getCardActivatedAbilities(
-					effectiveCard,
-					commanderIdentity,
-					resolveOppLands,
-					effectiveFaceOpts,
-					perm.chosenColor
-				).filter(
-					(ab) =>
-						!ab.grantCondition ||
-						evaluateFilterCondition(ab.grantCondition, {
-							state,
-							controllerId: actor.playerId,
-							source: perm
-						})
-				);
+		rawAbilities =
+			allInnateRemoved && !retainsInnateMana
+				? []
+				: getCardActivatedAbilities(
+						effectiveCard,
+						commanderIdentity,
+						resolveOppLands,
+						effectiveFaceOpts,
+						perm.chosenColor,
+						condCtx,
+						activeBasicLandColors
+					).filter(
+						(ab) =>
+							(!allInnateRemoved || ab.isManaAbility) &&
+							(!ab.grantCondition || evaluateFilterCondition(ab.grantCondition, condCtx))
+					);
 
 		// Add granted activated abilities from Layer 4 / Layer 6 IR (`AttributedKeywordOrEffect.grantedAbility`)
 		for (const item of breakdown.items) {
 			if (item.removed || item.isInnate || !item.grantedAbility) continue;
 			const grantedIr = item.grantedAbility;
-			const abId = grantedIr.intrinsic
-				? grantedIr.id
-				: item.grantSourceId
-					? `granted:${item.grantSourceId}:${grantedIr.id}`
-					: grantedIr.id;
+			const abId =
+				grantedIr.intrinsic && !item.grantSourceId
+					? grantedIr.id
+					: item.grantSourceId
+						? `granted:${item.grantSourceId}:${grantedIr.id}`
+						: grantedIr.id;
 			if (rawAbilities.some((a) => a.id === abId)) continue;
 			const grantSourceChosenColor = item.grantSourceId
 				? state.players
@@ -1126,8 +1732,10 @@ export function getEffectiveActivatedAbilities(
 				displayCardName: effectiveCard.name,
 				displayCard: item.grantSourceCard ?? effectiveCard,
 				grantSourceCard: item.grantSourceCard,
+				...(item.grantFaceIndex !== undefined ? { grantFaceIndex: item.grantFaceIndex } : {}),
 				grantSources: item.sources,
-				chosenColor: grantSourceChosenColor ?? perm.chosenColor
+				chosenColor: grantSourceChosenColor ?? perm.chosenColor,
+				condCtx
 			});
 			if (built) rawAbilities.push(built);
 		}
@@ -1137,6 +1745,7 @@ export function getEffectiveActivatedAbilities(
 			let quoteIdx = 0;
 			for (const eff of state.timedContinuousEffects) {
 				if (!eff.layer6?.grantedAbilityTexts?.length) continue;
+				if (!isTimedContinuousEffectActiveForState(state, eff)) continue;
 				if (
 					!eff.affected.some(
 						(a) => a.instanceId === perm.instanceId && (a.objectVersion ?? 1) === permVer
@@ -1154,9 +1763,12 @@ export function getEffectiveActivatedAbilities(
 							displayCard: effectiveCard,
 							grantSources: [eff.sourceName],
 							chosenColor: perm.chosenColor,
-							grantedAbilityText: gt
+							grantedAbilityText: gt,
+							condCtx
 						});
-						if (built) rawAbilities.push(built);
+						if (built && timedLayer6AbilitySurvivesRemoval(perm, state, eff.timestamp, built.isManaAbility)) {
+							rawAbilities.push(built);
+						}
 					}
 				}
 			}
@@ -1164,21 +1776,23 @@ export function getEffectiveActivatedAbilities(
 		// --- End Track P10 ---
 
 		// --- Track P12: Backup-granted activated abilities (CR 702.165c) ---
-		if (!allInnateRemoved) {
-			for (const bg of collectBackupGrantedAbilityGroups(state, perm)) {
-				for (const ab of bg.abilities) {
-					if (ab.kind !== 'activated' || ab.intrinsic) continue;
-					const abId = `backup_act:${bg.sourceInstanceId}:${ab.id}`;
-					if (rawAbilities.some((a) => a.id === abId)) continue;
-					const built = buildEffectiveActivatedAbility(ab, commanderIdentity, resolveOppLands, {
-						idOverride: abId,
-						displayCardName: effectiveCard.name,
-						displayCard: bg.sourceCard,
-						grantSourceCard: bg.sourceCard,
-						grantSources: [bg.sourceName],
-						chosenColor: perm.chosenColor
-					});
-					if (built) rawAbilities.push(built);
+		for (const bg of collectBackupGrantedAbilityGroups(state, perm)) {
+			for (const ab of bg.abilities) {
+				if (ab.kind !== 'activated' || ab.intrinsic) continue;
+				const abId = `backup_act:${bg.sourceInstanceId}:${ab.id}`;
+				if (rawAbilities.some((a) => a.id === abId)) continue;
+				const built = buildEffectiveActivatedAbility(ab, commanderIdentity, resolveOppLands, {
+					idOverride: abId,
+					displayCardName: effectiveCard.name,
+					displayCard: bg.sourceCard,
+					grantSourceCard: bg.sourceCard,
+					grantFaceIndex: bg.faceIndex,
+					grantSources: [bg.sourceName],
+					chosenColor: perm.chosenColor,
+					condCtx
+				});
+				if (built && timedLayer6AbilitySurvivesRemoval(perm, state, bg.timestamp, built.isManaAbility)) {
+					rawAbilities.push(built);
 				}
 			}
 		}
@@ -1190,7 +1804,7 @@ export function getEffectiveActivatedAbilities(
 			? effCopyLayer1.mergedComponents
 			: perm.mergedComponents;
 		if (
-			!allInnateRemoved &&
+			(!allInnateRemoved || retainsInnateMana) &&
 			!perm.isFaceDown &&
 			effMergedComponents &&
 			effMergedComponents.length > 1
@@ -1209,10 +1823,12 @@ export function getEffectiveActivatedAbilities(
 							displayCardName: effectiveCard.name,
 							displayCard: compCard,
 							grantSourceCard: compCard,
+							grantFaceIndex: 0,
 							grantSources: [compCard.name],
-							chosenColor: perm.chosenColor
+							chosenColor: perm.chosenColor,
+							condCtx
 						});
-						if (built) rawAbilities.push(built);
+						if (built && (!allInnateRemoved || built.isManaAbility)) rawAbilities.push(built);
 					} else if (ab.kind === 'keyword') {
 						const { name: kwName } = ab.keyword;
 						const spec = getKeywordSpec(kwName);
@@ -1235,14 +1851,16 @@ export function getEffectiveActivatedAbilities(
 										displayCardName: effectiveCard.name,
 										displayCard: compCard,
 										grantSourceCard: compCard,
+										grantFaceIndex: 0,
 										grantSources: [compCard.name],
 										labelOverride: kwBuilt.label,
 										costTextOverride: kwBuilt.costText,
 										effectTextOverride: kwBuilt.effectText,
-										chosenColor: perm.chosenColor
+										chosenColor: perm.chosenColor,
+										condCtx
 									}
 								);
-								if (built) rawAbilities.push(built);
+								if (built && (!allInnateRemoved || built.isManaAbility)) rawAbilities.push(built);
 							}
 						}
 					}

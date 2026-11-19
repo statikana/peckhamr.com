@@ -22,6 +22,7 @@
  *
  * Pure IR and GameState metadata only — zero card-name comparisons and zero runtime rules-text reads.
  */
+import { compileQuotedAbilityString } from '../compiler/effects.ts';
 import { compileCard } from '../compiler/index.ts';
 import type { CostDef, ModalDef, TargetSpec, TokenSpec } from '../ir.ts';
 import { parseManaCost, type ManaCostRequirement } from '../oracle.ts';
@@ -57,6 +58,10 @@ import {
 	type CostContext
 } from './costs.ts';
 import {
+	hasCounterRemovalSerializedPart,
+	totalRemovedCountersFromSerializedParts
+} from './costsWave7.ts';
+import {
 	activeAbilityDefs,
 	effectiveManaValue,
 	instanceFaceOptions,
@@ -88,6 +93,7 @@ export interface Wave3FinalizeCastOptions {
 	exSourceName?: string;
 	descriptions?: string[];
 	additionalIncomplete?: boolean;
+	removedCounterCount?: number;
 }
 
 export interface Wave3Host {
@@ -906,6 +912,7 @@ function executeTriggerCastNow(
 	const req = effectiveSpellManaCost(state, actor, inst, xValue, baseCostArg, undefined, setup.faceIndex);
 
 	let descriptions: string[] = [];
+	let removedCounterCount: number | undefined;
 	if (setup.costDefs.length > 0) {
 		const ctx = host.costContext(state, actor, inst, xValue, true, req);
 		const resolvedPayment = costPayment ?? chooseCostPayment(ctx, setup.costDefs);
@@ -913,6 +920,9 @@ function executeTriggerCastNow(
 		const plan = planCosts(ctx, setup.costDefs, resolvedPayment);
 		if (!plan.ok || plan.question) return false;
 		const parts = serializeCostPlanParts(ctx, plan);
+		if (hasCounterRemovalSerializedPart(parts)) {
+			removedCounterCount = totalRemovedCountersFromSerializedParts(parts);
+		}
 		payTapAndManaCostParts(ctx, parts, plan.mana, descriptions);
 		const paid = executeCostPaymentParts(ctx, parts, 0, 0, descriptions);
 		descriptions = paid.descriptions;
@@ -942,7 +952,8 @@ function executeTriggerCastNow(
 		},
 		exSourceName,
 		descriptions,
-		additionalIncomplete: setup.additionalIncomplete
+		additionalIncomplete: setup.additionalIncomplete,
+		...(removedCounterCount !== undefined ? { removedCounterCount } : {})
 	});
 	return true;
 }
@@ -1729,7 +1740,30 @@ export function resolveWave3StackItem(
 		if (item.grantedKeyword === 'extort') {
 			return resolveExtortTrigger(state, item, controller);
 		}
-		if (item.triggeredAbilityIndex !== undefined && item.triggeredAbilityIndex >= 0) {
+		if (item.grantedKeyword === 'cascade') {
+			return resolveCascadeTrigger(state, item, controller);
+		}
+		if (item.grantedAbilityText) {
+			const qAb = compileQuotedAbilityString(item.grantedAbilityText, item.card.name)[0];
+			if (qAb?.kind === 'keyword') {
+				switch (qAb.keyword.name) {
+					case 'madness':
+						return resolveMadnessTrigger(state, item, controller);
+					case 'cascade':
+						return resolveCascadeTrigger(state, item, controller);
+					case 'fabricate':
+						return resolveFabricateTrigger(state, item, controller, qAb.keyword.n ?? 1);
+					case 'extort':
+						return resolveExtortTrigger(state, item, controller);
+				}
+			}
+		}
+		if (
+			item.triggeredAbilityIndex !== undefined &&
+			item.triggeredAbilityIndex >= 0 &&
+			!item.grantedAbilityText &&
+			!item.grantSourceCard
+		) {
 			const face = compileCard(item.card).faces[item.faceIndex ?? 0];
 			const ab = face?.abilities[item.triggeredAbilityIndex];
 			if (ab?.kind === 'keyword') {

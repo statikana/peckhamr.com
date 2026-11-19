@@ -342,7 +342,7 @@ describe('Zone-change behaviour pins: mulligan', () => {
 
 describe('Zone-change behaviour pins: commander and cleanup', () => {
 	for (const bot of [false, true]) {
-		it(`commander graveyard -> command zone (${bot ? 'bot SBA' : 'human prompt'}): clears damage/tap only, no bookkeeping`, () => {
+		it(`commander graveyard -> command zone (${bot ? 'bot SBA' : 'human prompt'}): clears damage/tap and applies CR 400.7 defaults`, () => {
 			const { state, p1 } = newGame();
 			p1.isBot = bot;
 			const cmd = p1.command.splice(0, 1)[0];
@@ -366,12 +366,13 @@ describe('Zone-change behaviour pins: commander and cleanup', () => {
 			assert.equal(cmd.damageMarked, 0);
 			assert.equal(cmd.tapped, false);
 			assert.equal(cmd.counters['+1/+1'], 2);
-			assert.deepEqual(marks(cmd), before);
+			assert.equal(cmd.objectVersion, before.v + 1);
+			assert.notEqual(cmd.enteredTimestamp, before.ts);
 		});
 	}
 
 	for (const bot of [false, true]) {
-		it(`discard to hand size (${bot ? 'bot: first cards in hand' : 'human: chosen cards'}): -> graveyard in order, no bookkeeping`, () => {
+		it(`discard to hand size (${bot ? 'bot: first cards in hand' : 'human: chosen cards'}): -> graveyard in order, CR 400.7 defaults`, () => {
 			const { state, p1 } = newGame();
 			p1.isBot = bot;
 			p1.hand = [];
@@ -385,7 +386,10 @@ describe('Zone-change behaviour pins: commander and cleanup', () => {
 			}
 			assert.deepEqual(ids(p1.graveyard.slice(-2)), ids(chosen));
 			assert.ok(chosen.every((c) => c.zone === 'graveyard'));
-			assert.deepEqual(chosen.map(marks), before);
+			chosen.forEach((c, idx) => {
+				assert.equal(c.objectVersion, before[idx].v + 1);
+				assert.notEqual(c.enteredTimestamp, before[idx].ts);
+			});
 		});
 	}
 
@@ -419,7 +423,7 @@ describe('Zone-change behaviour pins: library search', () => {
 		});
 	}
 
-	it('human pick to hand: end of hand, no bookkeeping', () => {
+	it('human pick to hand: end of hand, CR 400.7 defaults', () => {
 		const { state, p1 } = newGame();
 		const target = p1.library[10];
 		const before = marks(target);
@@ -427,7 +431,8 @@ describe('Zone-change behaviour pins: library search', () => {
 		assert.equal(applyGameAction(state, p1.playerId, { type: 'search_library_pick', instanceId: target.instanceId }).ok, true);
 		assert.equal(p1.hand[p1.hand.length - 1], target);
 		assert.equal(target.zone, 'hand');
-		assert.deepEqual(marks(target), before);
+		assert.equal(target.objectVersion, before.v + 1);
+		assert.notEqual(target.enteredTimestamp, before.ts);
 	});
 
 	it('human pick to battlefield tapped: end of battlefield, version +1, new timestamp', () => {
@@ -508,7 +513,8 @@ describe('Zone-change behaviour pins: library search', () => {
 		assert.equal(b1.tapped, true);
 		assert.equal(b1.objectVersion, m1.v + 1);
 		assert.equal(p1.hand[p1.hand.length - 1], b2);
-		assert.deepEqual(marks(b2), m2);
+		assert.equal(b2.objectVersion, m2.v + 1);
+		assert.notEqual(b2.enteredTimestamp, m2.ts);
 	});
 });
 
@@ -585,7 +591,7 @@ describe('Zone-change behaviour pins: graveyard effects', () => {
 		}
 	});
 
-	it('exile_all_graveyards: each graveyard moves to its owner\'s exile in reverse order, version +1 only', () => {
+	it('exile_all_graveyards: each graveyard moves to its owner\'s exile in reverse order, version +1 and fresh timestamp', () => {
 		const { state, p1, p2 } = newGame();
 		const cs = [1, 2, 3].map((i) => put(state, p1, BEAR(`Pin Bear ${i}`), 'graveyard'));
 		const d = put(state, p2, BEAR('Pin Bear 4'), 'graveyard');
@@ -594,10 +600,10 @@ describe('Zone-change behaviour pins: graveyard effects', () => {
 		assert.deepEqual(ids(p1.exile.slice(-3)), ids([cs[2], cs[1], cs[0]]));
 		assert.equal(p2.exile[p2.exile.length - 1], d);
 		assert.equal(p1.graveyard.length, 0);
-		assert.deepEqual(
-			cs.map(marks),
-			before.map((m) => ({ v: m.v + 1, ts: m.ts }))
-		);
+		cs.forEach((c, idx) => {
+			assert.equal(c.objectVersion, before[idx].v + 1);
+			assert.notEqual(c.enteredTimestamp, before[idx].ts);
+		});
 	});
 
 	it('return_from_graveyard_to_hand: target card moves to hand; version +1, new timestamp', () => {
@@ -717,7 +723,7 @@ describe('Zone-change behaviour pins: leaving the battlefield', () => {
 		const inGy = p1.graveyard[p1.graveyard.length - 1];
 		assert.equal(inGy.instanceId, draw.instanceId);
 		assert.equal(inGy.zone, 'graveyard');
-		assert.equal(inGy.objectVersion, 1);
+		assert.equal(inGy.objectVersion, 2);
 	});
 
 	it('elimination: permanents owned by others return to their owner\'s battlefield (control change, no bookkeeping); the rest are removed', () => {

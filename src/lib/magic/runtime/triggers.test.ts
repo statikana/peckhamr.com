@@ -361,7 +361,8 @@ describe('Phase 5 bug: Goldspan Dragon "or becomes the target of a spell"', () =
 describe('Phase 5 bug: unsupported qualifiers never fire', () => {
 	const cases: Array<[string, string]> = [
 		['Enchanted Runner', 'Whenever Enchanted Runner attacks while enchanted, draw a card.'],
-		['Player Hunter', 'Whenever Player Hunter attacks a player, draw a card.']
+		// --- Wave 9: "attacks a player" promoted from unsupported to supported; test an unmodelled attack qualifier ---
+		['Mud Stalker', 'Whenever Mud Stalker attacks during an extra turn while no creatures died, draw a card.']
 	];
 	for (const [name, text] of cases) {
 		it(text, () => {
@@ -378,6 +379,25 @@ describe('Phase 5 bug: unsupported qualifiers never fire', () => {
 			assert.equal(p[0].hand.length, handBefore, 'did not draw');
 		});
 	}
+
+	// --- Wave 9: "attacks a player" promoted from unsupported to supported ---
+	it('Wave 9: Player Hunter triggers when attacking a player', () => {
+		const { state, p } = game();
+		const c = card({
+			name: 'Player Hunter',
+			typeLine: 'Creature — Human',
+			oracleText: 'Whenever Player Hunter attacks a player, draw a card.',
+			power: '1',
+			toughness: '1'
+		});
+		assert.equal(compileCard(c).faces[0].abilities.some((a) => a.kind === 'unsupported'), false);
+		const inst = put(state, p[0], c, 'battlefield');
+		const handBefore = p[0].hand.length;
+		attack(state, p[0], p[1], [inst]);
+		resolveTriggers(state);
+		assert.equal(p[0].hand.length, handBefore + 1, 'drew when attacking a player');
+	});
+	// --- End Wave 9 ---
 
 	// --- Track P22b: "attacks the player with the most life" promoted from unsupported to supported ---
 	it('Track P22b: Most Life Hunter triggers only when attacking the player with the most life', () => {

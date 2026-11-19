@@ -1,0 +1,103 @@
+{
+  "oracleId": "9f6828e3-39d9-45d9-9bf1-0e3737a0321e",
+  "cardName": "Ulalek, Fused Atrocity",
+  "expectedTextHash": "2f3d3d65",
+  "compiledVersion": 44,
+  "notes": "Wave 13 override: Devoid + Eldrazi cast trigger optional pay {C}{C} to copy all controlled spells then other activated/triggered abilities.",
+  "faces": [
+    {
+      "name": "Ulalek, Fused Atrocity",
+      "characteristics": {
+        "manaCost": "{C/W}{C/U}{C/B}{C/R}{C/G}",
+        "types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Eldrazi"
+        ],
+        "supertypes": [
+          "Legendary"
+        ],
+        "colors": [],
+        "power": 2,
+        "toughness": 5
+      },
+      "abilities": [
+        {
+          "kind": "keyword",
+          "keyword": {
+            "name": "devoid"
+          },
+          "span": {
+            "start": 0,
+            "end": 6
+          }
+        },
+        {
+          "kind": "triggered",
+          "trigger": {
+            "event": "cast",
+            "filter": {
+              "object": {
+                "subtypes": [
+                  "Eldrazi"
+                ]
+              },
+              "player": {
+                "relation": "you"
+              }
+            }
+          },
+          "targets": [],
+          "effect": [
+            {
+              "verb": "payCost",
+              "subject": {
+                "k": "none"
+              },
+              "optional": {
+                "chooser": {
+                  "k": "you"
+                },
+                "cost": [
+                  {
+                    "k": "mana",
+                    "cost": "{C}{C}"
+                  }
+                ],
+                "mode": "doIfPaid"
+              },
+              "span": {
+                "start": 42,
+                "end": 61
+              }
+            },
+            {
+              "verb": "copySpell",
+              "subject": {
+                "k": "player",
+                "filter": {
+                  "relation": "you"
+                }
+              },
+              "ifPrecedingAccepted": 0,
+              "params": {
+                "copyAllControlledSpellsAndOtherAbilities": true,
+                "mayChooseNewTargets": true
+              },
+              "span": {
+                "start": 63,
+                "end": 212
+              }
+            }
+          ],
+          "text": "(This card has no color.)\nWhenever you cast an Eldrazi spell, you may pay {C}{C}. If you do, copy all spells you control, then copy all other activated and triggered abilities you control. You may choose new targets for the copies. (Mana abilities can't be copied.)",
+          "span": {
+            "start": 7,
+            "end": 212
+          }
+        }
+      ]
+    }
+  ]
+}

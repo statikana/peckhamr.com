@@ -519,11 +519,11 @@
 		{:else if view.attachments.length > 0}
 			<div
 				class="attached-items-strip"
-				title="Attached: {view.attachments.map((a) => a.card.name).join(', ')}"
+				title="Attached: {view.attachmentDetails.map((a) => a.name).join(', ')}"
 			>
-				{#each view.attachments as att (att.instanceId)}
+				{#each view.attachmentDetails as att (att.instanceId)}
 					<span class="attached-pill">
-						{att.card.typeLine.includes('Equipment') ? '🗡️' : '✨'} {att.card.name.split(',')[0]}
+						{att.isEquipment ? '🗡️' : '✨'} {att.name.split(',')[0]}
 					</span>
 				{/each}
 			</div>

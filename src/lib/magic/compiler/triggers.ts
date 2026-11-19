@@ -13,6 +13,12 @@ import { getKeywordSpec } from '../keywords.ts';
 import { normalizeCounterName, type CounterType, type GamePhase, type ManaColor, type TriggerScope, type ZoneType } from '../types.ts';
 import { COUNTERS, singularSubtype } from './costs.ts';
 import { parseExtendedObjectPhrase, type ExtendedObjectPhraseOptions } from './effectsWave5.ts';
+import {
+	parseTriggerConditionWave9,
+	parseTriggerHeadWave9,
+	parseWave9ObjectQualifiers,
+	type TriggersWave9Helpers
+} from './triggersWave9.ts';
 
 export interface TriggerParse {
 	trigger?: TriggerDef;
@@ -37,6 +43,15 @@ const NUMBER_WORDS: Record<string, number> = {
 	eight: 8,
 	nine: 9,
 	ten: 10,
+	eleven: 11,
+	twelve: 12,
+	thirteen: 13,
+	fourteen: 14,
+	fifteen: 15,
+	sixteen: 16,
+	seventeen: 17,
+	eighteen: 18,
+	nineteen: 19,
 	twenty: 20,
 	thirty: 30,
 	forty: 40,
@@ -74,7 +89,17 @@ const EXTENDED_ORDINAL_WORDS: Record<string, number> = {
 	seventh: 7,
 	eighth: 8,
 	ninth: 9,
-	tenth: 10
+	tenth: 10,
+	eleventh: 11,
+	twelfth: 12,
+	thirteenth: 13,
+	fourteenth: 14,
+	fifteenth: 15,
+	sixteenth: 16,
+	seventeenth: 17,
+	eighteenth: 18,
+	nineteenth: 19,
+	twentieth: 20
 };
 
 function parseExtendedOrdinal(raw: string): number | null {
@@ -439,6 +464,11 @@ function parseP16bObjectPhrase(
 		if (otherLead) {
 			outer.other = true;
 			rest = otherLead[1].trim();
+			continue;
+		}
+		const w9Qual = parseWave9ObjectQualifiers(rest, outer, parseTriggerCounter, number);
+		if (w9Qual.handled) {
+			rest = w9Qual.rest;
 			continue;
 		}
 		const modLead = rest.match(/^modified\s+(.+)$/i);
@@ -2515,6 +2545,14 @@ function triggerHead(head: string, depth = 0): TriggerDef | null {
 			if (left && right) return mergeCompoundTriggerDefs(left, right);
 		}
 		// --- End Track P19b ---
+		const w9Pre = parseTriggerHeadWave9(head, {
+			parseObjectPhrase: (phrase) => parseP16bObjectPhrase(phrase),
+			objectSubject,
+			parseCounterType: parseTriggerCounter,
+			numberWord: number,
+			objectFilterProblem
+		});
+		if (w9Pre) return w9Pre;
 		const compound = head.match(/^((?:when|whenever) .+?)\s+(?:and|or)\s+((?:when|whenever) .+)$/i);
 		if (compound) {
 			const left = triggerHead(compound[1].trim(), depth + 1);
@@ -2526,7 +2564,13 @@ function triggerHead(head: string, depth = 0): TriggerDef | null {
 		}
 	}
 	const at = head.match(/^at the beginning of (.+)$/i);
-	if (at) return phaseBegin(at[1].toLowerCase());
+	if (at) return phaseBegin(at[1].toLowerCase()) ?? parseTriggerHeadWave9(head, {
+		parseObjectPhrase: (phrase) => parseP16bObjectPhrase(phrase),
+		objectSubject,
+		parseCounterType: parseTriggerCounter,
+		numberWord: number,
+		objectFilterProblem
+	});
 	if (/^at (?:the )?end of combat$/i.test(head)) {
 		return { event: 'phaseBegin', filter: { phase: 'end_combat' }, scope: 'each_turn' };
 	}
@@ -4147,6 +4191,14 @@ export function parseCondition(
 		return { k: 'yourLifeLessThanStarting' };
 	}
 	// --- End Track P22b ---
+	const w9Cond = parseTriggerConditionWave9(t, {
+		parseObjectPhrase: (phrase) => parseP16bObjectPhrase(phrase),
+		objectSubject,
+		parseCounterType: parseTriggerCounter,
+		numberWord: number,
+		objectFilterProblem
+	});
+	if (w9Cond) return w9Cond;
 	return null;
 }
 
@@ -4468,8 +4520,13 @@ const RUNTIME_OBJECT_FIELDS: ReadonlySet<string> = new Set([
 	// --- Track P22b ---
 	'enchantedOrEquipped',
 	'controllerAndNotOwner',
-	'dealtDamageByAttachedThisTurn'
+	'dealtDamageByAttachedThisTurn',
 	// --- End Track P22b ---
+	// --- Wave 9 ---
+	'zone',
+	'powerOrToughness',
+	'manaValueCompare'
+	// --- End Wave 9 ---
 ]);
 
 /** EventFilter fields each event kind's matcher checks (runtime/triggers.ts). */
@@ -4479,6 +4536,7 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'orSelf',
 		'orAttachedToSelf',
 		'from',
+		'fromZones',
 		'to',
 		'fromAnywhere',
 		'notFromZone',
@@ -4488,6 +4546,7 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'attachedFilter',
 		'dealtDamageBySelfThisTurn',
 		'oneOrMore',
+		'firstTimeEachTurn',
 		'player',
 		'duringStep',
 		'duringCombat'
@@ -4511,6 +4570,7 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	attacks: new Set([
 		'object',
 		'orSelf',
+		'orCommander',
 		'orAttachedToSelf',
 		'oneOrMore',
 		'player',
@@ -4525,9 +4585,11 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'firstTimeEachTurn',
 		'nthEventThisTurn',
 		'attackingWithFilter',
-		'minAttackingWithCount'
+		'minAttackingWithCount',
+		'attackingTotalPowerMin',
+		'attackEnchantedOrAttackedByEnchanted'
 	]),
-	combatDamageBatchPlayer: new Set(['object', 'oneOrMore', 'player']),
+	combatDamageBatchPlayer: new Set(['object', 'oneOrMore', 'player', 'combatDamageBatchPlayer']),
 	blocks: new Set([
 		'object',
 		'orSelf',
@@ -4549,7 +4611,8 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'player',
 		'attachedFilter',
 		'damageTargetFilter',
-		'damageTargetEnchantedPlayer'
+		'damageTargetEnchantedPlayer',
+		'watchedBoundObject'
 	]),
 	dealtDamage: new Set([
 		'object',
@@ -4558,12 +4621,14 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'combat',
 		'noncombatOnly',
 		'damagedPlayer',
+		'singleSourceDamageMin',
 		'attachedFilter'
 	]),
 	phaseBegin: new Set([
 		'phase',
 		'enchantedControllerUpkeep',
 		'enchantedPlayerUpkeep',
+		'enchantedOpponentEndStep',
 		'attachedFilter',
 		'phaseTurnFilter',
 		'anyMainPhase',
@@ -4583,7 +4648,9 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'object',
 		'orSelf',
 		'orAttachedToSelf',
+		'oneOrMore',
 		'targetedBy',
+		'targetedByActivatedAbility',
 		'targetingSourceFilter',
 		'targetPlayer',
 		'player',
@@ -4630,13 +4697,22 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	// --- Track P6 ---
 	counterRemoved: new Set(['object', 'counter', 'lastCounter']),
 	// --- Track P10 ---
-	attackedAndUnblocked: new Set(['object', 'orSelf', 'orAttachedToSelf', 'oneOrMore', 'attachedFilter']),
+	attackedAndUnblocked: new Set([
+		'object',
+		'orSelf',
+		'orAttachedToSelf',
+		'oneOrMore',
+		'attachedFilter',
+		'player',
+		'attackedTarget',
+		'attackingUnblocked'
+	]),
 	becomesUntapped: new Set(['object', 'orSelf', 'orAttachedToSelf', 'attachedFilter']),
 	scry: new Set(['player', 'duringTurn']),
 	committedCrime: new Set(['player', 'duringTurn']),
 	exploited: new Set(['object', 'orSelf']),
 	expended: new Set(['player', 'expendThreshold']),
-	sacrificed: new Set(['object', 'orSelf', 'orAttachedToSelf', 'player', 'oneOrMore']),
+	sacrificed: new Set(['object', 'orSelf', 'orAttachedToSelf', 'player', 'oneOrMore', 'duringTurn']),
 	blocksOrBecomesBlocked: new Set(['object', 'orSelf', 'orAttachedToSelf', 'host', 'attachedFilter']),
 	graveyardLeaveBatch: new Set(['object', 'player', 'oneOrMore', 'duringTurn']),
 	discover: new Set(['player', 'duringTurn']),
@@ -4653,7 +4729,7 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	stateTriggered: new Set(['stateCondition']),
 	dayNightChanged: new Set(['dayNightDirection']),
 	facedDilemma: new Set(['player']),
-	loseLife: new Set(['player', 'duringTurn', 'firstTimeEachTurn', 'nthEventThisTurn']),
+	loseLife: new Set(['player', 'duringTurn', 'firstTimeEachTurn', 'nthEventThisTurn', 'oneOrMore']),
 	exhaustActivated: new Set(['object', 'player']),
 	unattached: new Set(['object', 'orSelf', 'orAttachedToSelf']),
 	phasedIn: new Set(['object', 'orSelf', 'orAttachedToSelf']),
@@ -4686,7 +4762,8 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 		'orSelf',
 		'isLoyaltyAbility',
 		'isNonManaAbility',
-		'abilitySourceFilter'
+		'abilitySourceFilter',
+		'abilitySourceControlledByEventPlayer'
 	]),
 	playersFinishedVoting: new Set(['player']),
 	clash: new Set(['player', 'won']),
@@ -4694,8 +4771,13 @@ const RUNTIME_EVENT_FIELDS: Partial<Record<TriggerDef['event'], ReadonlySet<stri
 	spellCopied: new Set(['object', 'player']),
 	spellCountered: new Set(['object', 'player']),
 	sagaChapterResolved: new Set(['object', 'orSelf', 'finalChapter']),
-	saddledMount: new Set(['object', 'orSelf', 'duringPhase', 'duringTurn'])
+	saddledMount: new Set(['object', 'orSelf', 'duringPhase', 'duringTurn']),
 	// --- End Track P22b ---
+	// --- Wave 9 ---
+	giftGiven: new Set(['player']),
+	tokenCreated: new Set(['player', 'object']),
+	attackTriggered: new Set(['object'])
+	// --- End Wave 9 ---
 };
 
 function objectFilterProblem(f: ObjectFilter | undefined): string | null {

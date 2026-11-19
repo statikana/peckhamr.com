@@ -1,14 +1,15 @@
 # MTG Engine: Next Steps Spec
 
-**Status:** spec, written 2026-11-12 against `engine-rewrite` at `ad82d00`, updated for **Track F** (`COMPILER_VERSION = 30` baseline). Track A (`A1`–`A4`), **B1**, **B2**, **B3**, **Cycling** (`CR 702.29`), **B4** (Phases 1–3: `0fc1211`, `8b772d5`, `91335a5`), **Track B Tokens/Investigate/Surveil** (`eab9015`), **Track D** (`f988d0c`), and **Track E** (`8cbb247`) are **done**.
+**Status:** historical work-package spec (originally 2026-11-12, updated 2026-11-19 to **`COMPILER_VERSION = 46`** post-Wave-2 completion). Track A (`A1`–`A4`), **B1**, **B2**, **B3**, **Cycling** (`CR 702.29`), **B4** (Phases 1–3 + Split/Adventure/Transform/Flip/Meld/Room/Omen/Prepare), **Track B Tokens/Investigate/Surveil**, **Track D**, **Track E**, **Track F**, **Engine Waves 1–8 (`P1`–`P22d`)**, **UI Tracks `U1`–`U9`**, and **Wave 2 Stages 1–3** (`teamwork-mtg-wave2`) are **✅ Done**.
 
-**Purpose:** the recommended next work for the engine, written so that each work package can be handed to one agent. Track A is near-term fixes (complete). Track B is the structural work that full keyword and rules coverage needs (the reasoning is in [`FULL_COVERAGE_STRUCTURE.md`](./FULL_COVERAGE_STRUCTURE.md)). Track C keeps the docs honest as the code changes. Track E (`8cbb247`) knocked out top `dig`/`Devoid`/`delayed`/`linked exile`/`Layer 2`/`Convoke`/`Delve` templates; **Track F** targets the next largest `COVERAGE.md` (`v30`) template clusters and 8 of the 13 remaining unsupported precon cards.
+**Purpose:** records the completed Track A/B/D/E/F/P1–P22/U1–U9 hand-off specs and summarizes the completed **Wave 2 (Stages 1–3)** upgrade on `teamwork-mtg-wave2` (modularization + invariant closure, 36 newly imported Archidekt Commander decks, and 100% imported-deck coverage).
 
 **Order:**
-1. ~~A1, A2, A3 and A4~~ — **done** (`b68ef55`, `dfbc69e`, `94b04de`, `972a90c`).
-2. ~~B1, B2, B3, Cycling, B4, Track B Tokens, Track D, Track E~~ — **done**.
-3. **Track F** (Slices 1–4) — **in progress**.
-4. Track C rides along with every package.
+1. ~~A1, A2, A3 and A4~~ — **✅ done** (`b68ef55`, `dfbc69e`, `94b04de`, `972a90c`).
+2. ~~B1, B2, B3, Cycling, B4, Track B Tokens, Track D, Track E, Track F~~ — **✅ done** (merged to `master`).
+3. ~~Waves 1–8 (`P1`–`P22d`) & UI Tracks `U1`–`U9`~~ — **✅ done** (`COMPILER_VERSION = 41`, merged to `master`).
+4. ~~Wave 2 Stages 1–3 (`teamwork-mtg-wave2`)~~ — **✅ done** (`COMPILER_VERSION = 46`; see §Wave 2 Roadmap below).
+5. Track C rides along with every package.
 
 ---
 
@@ -17,19 +18,19 @@
 - **Read first:** [`ENGINE_INVARIANTS.md`](./ENGINE_INVARIANTS.md) and [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2. Never add card-name checks or runtime reads of rules text.
 - **Comprehensive Rules lookup (`src/lib/rules/`):** Prefer the split, single-read CR section files in [`src/lib/rules/INDEX.md`](../../rules/INDEX.md) (every file `< 44 KB` and `< 760` lines, including [`701-INDEX.md`](../../rules/700-additional-rules/701-keyword-actions/701-INDEX.md), [`702-INDEX.md`](../../rules/700-additional-rules/702-keyword-abilities/702-INDEX.md), and [`glossary/`](../../rules/glossary/glossary-a-to-c.md)) over grepping or slicing the monolithic `src/lib/rules.txt`.
 - **Tests:**
-  - Run the full suite before starting, and record the result: `node --test 'src/lib/magic/**/*.test.ts'`. It takes about 40 s.
+  - Run the full suite before starting, and record the result: `node --test 'src/lib/magic/**/*.test.ts'` (and `node --test 'src/lib/server/**/*.test.ts' 'scripts/*.test.ts'` for dual-mode server/migration changes).
   - Every behaviour change gets a test that fails before the change. Use a real card where one fits, plus a synthetic card with an invented name.
   - Drive behaviour tests through `applyGameAction`, not internal helpers.
-- **Type check:** `npm run check` must show no errors under `src/lib/magic/` or `src/routes/magic/`. Errors in other routes already exist; leave them alone.
+- **Type check:** `npx svelte-kit sync && npx svelte-check --tsconfig ./tsconfig.json --output machine` must show 0 `ERROR` diagnostics under `src/lib/magic/`, `src/routes/magic/`, and `server/` (see CI `.github/workflows/magic-engine.yml`; `npm run check` also runs `wrangler types --check`).
 - **Compiler changes:**
   - Bump `COMPILER_VERSION` (`compiler/index.ts`) and regenerate the IR snapshot (`UPDATE_IR_SNAPSHOTS=1 node --test src/lib/magic/compiler/compiler.test.ts`).
-  - Regenerate the coverage report: `node scripts/magic-coverage.ts ~/data/scryfall/oracle-cards.jsonl.gz --out src/lib/magic/docs/COVERAGE.md`.
+  - Regenerate the coverage report: `node scripts/magic-coverage.ts /home/ryan/data/scryfall/oracle-cards.jsonl.gz --out src/lib/magic/docs/COVERAGE.md`.
 - **Golden snapshot** (`runtime/__snapshots__/golden.json`): regenerate only when behaviour legitimately changed. Read the diff, and say in the report which bot decisions changed and why.
 - **Docs:** when a package closes a gap, do all three of the following:
   - remove or narrow the matching **Not yet enforced** note in `ENGINE_INVARIANTS.md`;
   - re-check the affected `rules-audit/` rows and mark them **Updated YYYY-MM-DD**;
-  - update [`audits/README.md`](./audits/README.md) "Open" if the gap was listed there.
-- **Commits:** one commit per work package, on `engine-rewrite`, `magic:` prefix. Don't push. Don't touch `src/routes/+page.svelte`.
+  - update [`audits/README.md`](./audits/README.md) status if the gap was listed there.
+- **Commits:** `engine-rewrite` merged to `master`; active Wave 2 work runs on `teamwork-mtg-wave2` (`magic:` prefix). Don't push. Don't touch `src/routes/+page.svelte`.
 - **Report:** what changed, the tests added, before and after suite counts, snapshot changes, and anything skipped or left as `todo`, with the reason.
 
 ---
@@ -210,25 +211,9 @@ See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.13 (`COMP
 - Generalized `activationZones?: ZoneType[]`, `{ k: 'discard', filter: 'self' }`, `effectiveAbilityManaCost` keyword matching, generic `[quality]cycling` parsing (`cycling`, `basic landcycling`, `landcycling`, `typecycling` via `parseObjectPhrase`), keyword-blind UI (`ArenaTable.svelte`) & bot AI (`ai.ts`).
 - Added `CardDiscardedEvent` (`reason: 'cycle' | 'discard'`), `"When you cycle ~"` (`fromZone: 'any'`, `CR 702.29c`), `"cycles or discards"` (`CR 702.29d`), IR snapshots, live `vite dev` Chromium verification, and regenerated [`COVERAGE.md`](./COVERAGE.md) (`keyword_not_implemented`: `3,584 → 3,240`, `-344`).
 
-### B4. Object model for multi-faced and face-down cards (CR 707–712, 708)
+### B4. Object model for multi-faced and face-down cards (CR 707–712, 708) — ✅ Done (`0fc1211`, `8b772d5`, `91335a5`)
 
-**Status:** Design doc written and approved in [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.14. No code changes in this package.
-
-**Problem.**
-- The engine assumes one face per card.
-- `multiface` is its own unsupported reason, covering 895 abilities.
-- Face-down permanents and the copy rules are partial.
-
-**Goal of this package: a design doc only.** It goes in `ENGINE_ARCHITECTURE_PLAN.md` §2 and answers these questions:
-- how faces are represented in `ScryfallCard`, `CardInstance` and the IR;
-- which face's characteristics apply in each zone;
-- how transforming keeps object identity (CR 712.15);
-- how split, adventure and modal double-faced cards are cast (through B2's cast options);
-- what changes in layers (layer 1 copiable values, layer 1b face-down) and in the client.
-
-Implementation is a later spec.
-
-**Size:** S (doc only).
+**Status:** Implemented in [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.14 (`runtime/faces.ts` `resolveObjectFaces`, `CastOption.faceIndex`, `b4-phase2-multiface.test.ts`, `transform-flip-facedown.test.ts`, `sanitizeGameStateForViewer` face-down scrubbing; extended in Waves 5–6 for `Meld`, `Flip`, `Room`, `Omen`, and `Prepare`). `multiface` unsupported abilities in [`COVERAGE.md`](./COVERAGE.md) are **`0`**.
 
 ---
 
@@ -262,7 +247,7 @@ See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.15 for th
 
 ## Track E: Dig, Devoid, Delayed Triggers, Linked Exile, Layer 2 Control, & Convoke/Delve — ✅ Done (`COMPILER_VERSION = 30`)
 
-See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.16 for the full architecture spec. Dispatch sequentially in four slices (`oracleTextRead === 0`, `cardNameComparison === 0`, no IR serialized in `GameState`, UI/AI keyword-blind):
+See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.16 for the full architecture spec. Completed across four slices (`oracleTextRead === 0`, `cardNameComparison === 0`, no IR serialized in `GameState`, UI/AI keyword-blind):
 
 1. **Slice 1 (Generalized Top-N `Dig` & All-Zone `Devoid` `CR 702.114a`):**
    - Expand `dig` IR (`keepFilter`, `keepTo`, `keepTapped`, `revealAll`, `revealKept`, `keepAllMatching`, `restOrder: 'any' | 'random'`) + multi-sentence combining (`Look at the top N cards...` / `Reveal the top N cards...` + keep/reveal filter clause + `Put the rest on the bottom in a random order` / `in any order`) + `Run.dig` (`chooseObjects`, `orderObjects`, `nextRandom`, replacement-pausable moves).
@@ -280,9 +265,9 @@ See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.16 for th
 
 ---
 
-## Track F: Land Animation, Copy Retargeting & Storm, Graveyard/Hand Abilities & Cast Keywords, Coercive Discard & Count Triggers, and Precon Closers
+## Track F: Land Animation, Copy Retargeting & Storm, Graveyard/Hand Abilities & Cast Keywords, Coercive Discard & Count Triggers, and Precon Closers — ✅ Done (`COMPILER_VERSION = 34`)
 
-See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.17 for the full architecture spec. Dispatch sequentially in four slices (`oracleTextRead === 0`, `cardNameComparison === 0`, zero IR serialized in `GameState`, UI/AI keyword-blind):
+See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.17 for the full architecture spec. Completed across four slices (`oracleTextRead === 0`, `cardNameComparison === 0`, zero IR serialized in `GameState`, UI/AI keyword-blind):
 
 1. **Slice 1 (Land Animation `"It's still a land."` `CR 205.1b`, Spell/Ability Copy Retargeting `CR 707.10b–c,f`, & `Storm` `CR 702.40a–b`):**
    - Extend `animate` (`ir.ts`, `compiler/effects.ts`, `compiler/statics.ts`, `runtime/effects.ts`) to emit full `TimedContinuousEffect` (`layer4`, `layer5`, `layer6`, `layer7b`) for `"becomes a [P/T] [colors] [subtypes] creature [with <keywords>] [until end of turn][, where X is ...]. It's still a land."` and `"Enchanted <land> is a ... creature ... It's still a land."`, preserving `'Land'` type and land mana abilities (`CR 205.1b`) while honoring `summoningSick` (`CR 302.6`).
@@ -301,23 +286,37 @@ See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.17 for th
 
 ---
 
-## Track P: Orthogonal Parallel Worktree Tracks (P1–P3 alongside `teamwork-mtg-engine`)
+## Track P & UI Tracks: Engine Waves 1–8 (`P1–P22d`) & UI Tracks (`U1–U9`) — ✅ Done (`COMPILER_VERSION = 41`)
 
-See [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §2.18 for the full architecture and CR specification. Each worktree branches cleanly off `engine-rewrite`, keeps `ir.ts` / `types.ts` / `keywords.ts` edits strictly additive, writes its own dedicated runtime test file, and defers `COMPILER_VERSION`, `ir.json`, and `COVERAGE.md` regeneration to the post-merge integration step:
+All parallel engine and UI worktrees from `engine-rewrite` were completed and merged to `master` (see [`ENGINE_ARCHITECTURE_PLAN.md`](./ENGINE_ARCHITECTURE_PLAN.md) §§2.18–2.25 for details):
 
-1. **Track P1 (`mtg_p1_sagas_energy`) — ✅ Done (`5910db0`):** Saga Cards (`CR 715.1–4`), Energy `{E}` Counters (`CR 107.14`), & The Monarch (`CR 726.1–5`, `CR 800.4k`) -> `src/lib/magic/runtime/sagas-energy-monarch.test.ts`.
-2. **Track P2 (`mtg_p2_fight_impulse_triggers`) — ✅ Done (`28a716f`):** Two-Target Fight & Power-Damage "Bite" (`CR 701.14`, `CR 608.2b`), Multi-Turn & Free-Cast Impulsive Draw (`CR 601.1a`, `CR 118.9`), & Attached-Permanent LKI Death (*Skullclamp*) + Cast-Targeting Heroic Triggers (`CR 603.10a`) -> `src/lib/magic/runtime/fight-impulse-attached-triggers.test.ts`.
-3. **Track P3 (`mtg_p3_orthogonal_keywords`) — ✅ Done (`4c7e45e`):** `Foretell` (`CR 702.143`), `Plot` (`CR 702.170`), `Saddle` (`CR 702.171`), `Entwine` (`CR 702.42`), `Disturb` (`CR 702.146`), `Blitz` (`CR 702.152`), `Retrace` (`CR 702.81`), `Jump-start` (`CR 702.133`), & `Cumulative upkeep` (`CR 702.24`) -> `src/lib/magic/runtime/orthogonal-keywords-p3.test.ts`.
-4. **UI Tracks `U1–U3` + `U4` (`ENGINE_ARCHITECTURE_PLAN.md` §2.19A):**
-   - **Track U1 (`6de2bfc` — ✅ Merged):** `boardViewModel.ts`, `autoTapPreview.ts`, `ManaSymbol.svelte` (`{E}`, `{Q}`, `{S}`, Phyrexian, Hybrid), `HudBar.svelte`, `PlayerVitals.svelte`, `OpponentPod.svelte`, `PermanentCard.svelte`, `HandTray.svelte`.
-   - **Track U2 (`c4883ba` — ✅ Merged):** `targetingController.ts` (`Slot K of N`, `CR 115.3` `otherTarget`, optional `"up to"` Skip/Confirm, graveyard/exile drawers) + `TargetBanner`, `CastOptionsModal`, `ModePickerModal`, `XCostModal`, `AbilityMenuModal`.
-   - **Track U3 (`ef74cd7` — ✅ Merged):** `promptViewModel.ts` + `ChoicePromptModal`, `GuidedResolutionBuilder`, `AllocationStepperWidget`, `SearchableOptionPicker`, `ZoneBrowserModal`, `CardInspector`, `RightDock`, `AltHoverPreview`, `VictoryModal`, & `ui/lobby/*.svelte` (`+page.svelte` `4,770` -> `1,203` lines).
-   - **Track U4 (`mtg_u4_arena_shell` — In Progress):** Modular `ArenaTable.svelte` shell wiring + headless Chromium live `/magic` verification.
-5. **Wave 2 Engine Tracks `P4–P6` (`ENGINE_ARCHITECTURE_PLAN.md` §2.19B — In Progress):**
-   - **Track P4 (`mtg_p4_tuck_freeze_chosen_mana`):** Library Top/Bottom/Top-or-Bottom/Nth-from-Top (`CR 401.2, 401.4, 401.7`), Next-Untap Freeze + `Exert` (`CR 502.3, 611.2b, 701.43`), ETB Chosen Creature Type & Color (`CR 614.12`), & Multi-Color Combo / Filter / Verge Mana (`CR 106.1a–b, 602.5b`) -> `src/lib/magic/runtime/tuck-freeze-chosen-mana-p4.test.ts`.
-   - **Track P5 (`mtg_p5_cr701_keyword_actions`):** `Amass` (`701.47`), `Incubate` (`701.53`/`111.10i`), `Populate` (`701.36`), `Manifest`/`Cloak`/`Manifest dread` (`701.40`/`701.58`/`701.62`), `Monstrosity` (`701.37`), `Bolster` (`701.39`), `Support` (`701.41`), & `Adapt` (`701.46`) -> `src/lib/magic/runtime/keyword-actions-p5.test.ts`.
-   - **Track P6 (`mtg_p6_striated_frames_and_cast_keywords`):** `Station` (`CR 722`/`702.184`), `Level up` (`CR 711`/`702.87`), `Prototype` (`CR 719`/`702.160`), `Offspring` (`702.175`), `Squad` (`702.157`), `Replicate` (`702.56`), `Conspire` (`702.78`), `Casualty` (`702.153`), `Warp` (`702.185`), `Vanishing` (`702.63`), `Fading` (`702.32`), `Transmute` (`702.53`), & `Reinforce` (`702.77`) -> `src/lib/magic/runtime/striated-frames-and-keywords-p6.test.ts`.
-6. **Wave 3 Zero-Overlap Engine Tracks `P7–P9` (`ENGINE_ARCHITECTURE_PLAN.md` §2.20 — Queued Immediately After Wave 2, `+1,795` Deduplicated Full Cards):**
-   - **Track P7 (`mtg_p7_copy_prevention_effects` — owns `compiler/effects.ts`, `compiler/triggers.ts`, `compiler/interpretable.ts`, `runtime/copyPreventionAndEffects.ts`; `+561` solo cards):** `CR 615` damage prevention shields & burn/evasion riders (`P7.1`), `CR 707` token copies & temporary Layer 1a copies (`P7.2`), edict sacrifice / wheel / random discard / `CR 601.2d` divided damage & counters (`P7.3`), and trigger `power`/`toughness`/`manaValue`, `attachedTo` combat/damage triggers, & *Morbid*/*Raid*/*Revolt*/lifegain intervening-if (`P7.4`) -> `src/lib/magic/runtime/copy-prevention-effects-p7.test.ts`.
-   - **Track P8 (`mtg_p8_statics_layers_restrictions` — owns `compiler/statics.ts`, `compiler/costs.ts`, `runtime/staticsLayersAndRestrictions.ts`; `+884` solo cards):** `ObjectFilter` completeness (`notColors`, `multicolored`/`monocolored`, `hasKeywords`/`lacksKeywords`, `hasCounters`, `toughness`, `allTypes`, `P8.1`), static blocking/evasion rules `CR 509.1c` & activated-ability locks `CR 602.5a` (`P8.2`), conditional statics (`During your turn`, `Threshold`, `Metalcraft`, `Delirium`, `Ferocious`) & all-zone `*/*` Layer 7a CDAs `CR 604.3` (`P8.3`), and Shocklands/Checklands/Fastlands/Slowlands + generalized *Clone* + top-of-library `CR 401.5` & graveyard land play (`P8.4`) -> `src/lib/magic/runtime/statics-layers-restrictions-p8.test.ts`.
-   - **Track P9 (`mtg_p9_keywords_wave3` — owns `keywords.ts`, `compiler/card.ts`, `runtime/keywordsWave3.ts`; `+328` solo cards):** 18 orthogonal `CR 702` keywords — `Echo`, `Madness`, `Cascade`, `Rebound` (`P9.1`); `Soulshift`, `Undying`, `Modular`, `Persist` with `CR 704.8` pre-SBA LKI (`P9.2`); `Improvise`, `Dash`, `Ninjutsu` + `Commander ninjutsu`, `Scavenge` (`P9.3`); `Toxic`, `Bloodthirst`, `Flanking`, `Fabricate`, `Unleash`, `Extort`, `Riot` (`P9.4`) -> `src/lib/magic/runtime/keywords-wave3-p9.test.ts`.
+1. **Wave 1 (`P1–P3` — ✅ Done):**
+   - **Track P1 (`5910db0`):** Saga Cards (`CR 715.1–4`), Energy `{E}` (`CR 107.14`), & The Monarch (`CR 726.1–5`).
+   - **Track P2 (`28a716f`):** Two-Target Fight/Bite (`CR 701.14`), Multi-Turn & Free-Cast Impulsive Draw, Attached-Permanent LKI Death & Heroic Triggers.
+   - **Track P3 (`4c7e45e`):** `Foretell`, `Plot`, `Saddle`, `Entwine`, `Disturb`, `Blitz`, `Retrace`, `Jump-start`, & `Cumulative upkeep`.
+2. **UI Tracks `U1–U9` (`src/lib/magic/ui/` & `ArenaTable.svelte` — ✅ Done):**
+   - **`U1` (`6de2bfc`):** `boardViewModel.ts`, `autoTapPreview.ts`, `ManaSymbol.svelte`, HUD/vitals/card components.
+   - **`U2` (`c4883ba`):** `targetingController.ts` + targeting/cast/mode/X/ability modals.
+   - **`U3` (`ef74cd7`):** `promptViewModel.ts`, `ChoicePromptModal`, `GuidedResolutionBuilder`, `AllocationStepperWidget`, `SearchableOptionPicker`, `ZoneBrowserModal`, lobby panels.
+   - **`U4`–`U9` (`6051779`, `77907c8`, `3817b25`, `1d2234f`, `b3156b1`):** Modular `ArenaTable.svelte` shell, designations HUD, Class/Case/Mutate/Meld/Flip frames, Companion pedestal & GY/library visibility, arbitrary P/T & keyword counters, stax HUD, auto-tap provenance & linked-exile HUD.
+3. **Wave 2 (`P4–P6` — ✅ Done):** Library tuck/nth-from-top, next-untap freeze + `Exert`, ETB chosen type/color, filter/verge mana (`P4`); `Amass`, `Incubate`, `Populate`, `Manifest`/`Cloak`/`Manifest dread`, `Monstrosity`, `Bolster`, `Support`, `Adapt` (`P5`); `Station`, `Level up`, `Prototype`, `Offspring`, `Squad`, `Replicate`, `Conspire`, `Casualty`, `Warp`, `Vanishing`, `Fading`, `Transmute`, `Reinforce` (`P6`).
+4. **Wave 3 (`P7–P9` — ✅ Done):** Damage prevention shields & token/Layer 1a copies & edict/divided damage (`P7`); `ObjectFilter` parity, combat/ability locks, conditional statics, all-zone `*/*` CDAs, conditional duals, *Clone*, top-of-library/GY play (`P8`); 18 `CR 702` keywords (`P9`).
+5. **Wave 4 (`P10–P12` — ✅ Done):** Reflexive triggers, mana spending restrictions, `Discover`/`Clash`/coin flips/die rolls (`P10`); Layer 6 quoted grants, Party/Domain, named/ability counters, Snow/Phyrexian/Twobrid mana (`P11`); `Class`, `Case`, `Spree`, `Tiered`, `Escalate`, `Exhaust`, `Boast`, `Forecast`, + 41 `CR 702` keywords (`P12`).
+6. **Wave 5 (`P13–P15` — ✅ Done):** Emblems (`CR 114`), Roles/Dungeons/Initiative/Ring, cross-turn durations (`P13`); Devotion type-removal, Commander/Relentless statics, `Waterbend`/`Behold` (`P14`); Battles/Sieges, Rooms, Preparation, Omen, Partner variants, Daybound/Nightbound, Speed (`P15`).
+7. **Wave 6 (`P16a–P18b` — ✅ Done):** Inline conditionals, universal `normalizeCounterName` counters, `pileSplit`/`castFree` (`P16a`); compound/`CR 603.8` state triggers & `CR 700` batching (`P16b`); *Future Sight*/taxes/multipliers/rule locks (`P17a`); generalized cost modifiers & non-mana costs (`P17b`); `Mutate`, `Fortify`, `Soulbond`, `Banding`, `Hideaway`, `Tribute`, `Haunt`, `Epic`, etc. (`P18a`); `Meld`, `Flip`, `Companion`, modals (`P18b`).
+8. **Wave 7 (`P19a–P21` — ✅ Done):** Compound clauses, stack redirection, Layer 2 `gainControl` (`P19a`); `CR 605.1b` triggered mana abilities & `0` `event_not_implemented` (`P19b`); static filter parity, clones/CDAs, ETB anchors (`P20a`); variable counter/Strive/Trap/Defiler costs (`P20b`); `0` Paper-Eternal `keyword_not_implemented`, Enchant/Equip/Cleave/Saga frames, & `src/lib/magic/overrides/` registry (`P21`).
+9. **Wave 8 (`P22a–P22d` + Archidekt Precon Importer — ✅ Done, `COMPILER_VERSION = 41`):** Remaining `CR 614.12` ETB choices, damage redirection, counter locks, stax & GY/hand grants (`P22a`); trigger heads & intervening-ifs (`P22b`); short-name normalization, bullet flavor words, modal riders & 19 overrides (`P22c`); `dig`/`exileUntil`/`preventDamage` riders (`P22d`); Archidekt precon importer (`scripts/magic-add-archidekt-precon.ts`, `precons.archidekt.json`, `precon-oracle.fixture.json`, `compiler/precon-assurance.test.ts`), bringing live coverage to **`24,436 / 35,062 (69.7%)`** full cards and **`201 / 201 (100.0%)`** precon cards (`0` compiler errors).
+
+---
+
+## Wave 2 Roadmap (Stages 1–3 on `teamwork-mtg-wave2` — ✅ Done, `COMPILER_VERSION = 46`)
+
+1. **Stage 1 — Structural Modularization & Invariant Gap Closure — ✅ Done:**
+   - Widened `layerReads` / `READ_*` bitmasks in `runtime/layers.ts` and `runtime/layersPredicates.ts` / `runtime/layerCache.ts` from 32-bit `number` to `bigint` (`> 32` flags, verified with `MAGIC_LAYER_CACHE_CHECK=1`).
+   - Decomposed `engine.ts` (`26,791 -> 3,957` lines), `runtime/effects.ts` (`11,550 -> 5,433`), `runtime/layers.ts` (`7,565 -> 5,351`), and `runtime/triggers.ts` (`7,340 -> 5,298`) across `65` cohesive non-test runtime modules (all `<= 6,000` lines), preserving all public entry points, deterministic replay, and dual-mode (`cloudflare` / `homelab`) compatibility.
+   - Closed open `ENGINE_INVARIANTS.md` enforcement gaps: replaced runtime/UI raw `.typeLine` reads with evaluated characteristics (`rawTypeLineRead = 0`), made `moveObject` enforce `CR 400.7` (`bumpVersion`, `newTimestamp`, `leaveBattlefieldReset` + `summoningSick = false`) by default (`moveObjectResetOptOut = 0`), and migrated `scryfall.ts` copy-limit/commander text tables onto compiled IR (`scryfallLegacyDeckTables = 0`, `scryfallOracleScan = 0`) — locking all 10 ratchet categories at `0` in `architecture.test.ts`.
+2. **Stage 2 — Archidekt Popular Commander Corpus (36 New Decks, 41 Total — ✅ Done):**
+   - Discovered and imported `36` distinct, legal 100-card popular Commander decks from Archidekt into `precons.archidekt.json` (`37` Archidekt decks including baseline *Bragos Spirit*, `41` total `PRECON_DECKS` including the `4` hardcoded baseline decks) and `precon-oracle.fixture.json`, validated against `/home/ryan/data/scryfall/oracle-cards.jsonl.gz`.
+3. **Stage 3 — 100% Imported-Deck Card & Ability Coverage + Dual-Mode E2E Verification — ✅ Done (`COMPILER_VERSION = 46`):**
+   - Expanded compiler grammar (`19` compiler modules) and runtime mechanics (`runtime/*Wave9–11`) with only `11` Wave 2 JSON overrides (`38` total overrides = `1.74% < 5%` of `2,188` precon cards), bringing all `41` `PRECON_DECKS` to **`2,188 / 2,188 (100.0%)`** cards and **`4,579 / 4,579 (100.0%)`** abilities supported, and lifting Scryfall full-card coverage to **`25,417 / 35,062 (72.5%)`** (`76.6%` ignoring statics, `0` compiler errors).
+   - Verified with canonical + synthetic rename-invariance tests, `runtime/archidekt-smoke.test.ts` (100% of Archidekt decks across 10 4-bot pods + `pace: true` pod, passing normally and with `MAGIC_LAYER_CACHE_CHECK=1`), `svelte-check` (`0` magic/server errors), `npx vite build` (`MAGIC_MODE = "cloudflare"`), and `node scripts/build-magic-backend.mjs`.
